@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "habitrain_lottery:block/login_calendar" },
+    "facing=south": { "model": "habitrain_lottery:block/login_calendar", "y": 180 },
+    "facing=west": { "model": "habitrain_lottery:block/login_calendar", "y": 270 },
+    "facing=east": { "model": "habitrain_lottery:block/login_calendar", "y": 90 }
+  }
+}

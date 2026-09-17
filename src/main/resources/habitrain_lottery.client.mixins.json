@@ -1,0 +1,20 @@
+{
+    "required": true,
+    "package": "com.habitrain.lottery.mixin.client",
+    "plugin": "com.habitrain.lottery.mixin.HabiLotteryMixinPlugin",
+    "compatibilityLevel": "JAVA_21",
+    "client": [
+        "LootBatchButtonsMixin",
+        "LootBatchTitleMixin",
+        "LotteryThemeMixin",
+        "LootInfoCoverMixin",
+        "MapIntroduceEmptyMixin",
+        "ClientPlayerTitlePrefixMixin",
+        "BackpackScreenMixin",
+        "LoginCalendarBlockClientMixin",
+        "SkinModelLocationMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 1
+    }
+}

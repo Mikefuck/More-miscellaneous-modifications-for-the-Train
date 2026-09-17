@@ -1,0 +1,31 @@
+{
+    "required": true,
+    "package": "com.habitrain.lottery.mixin",
+    "plugin": "com.habitrain.lottery.mixin.HabiLotteryMixinPlugin",
+    "compatibilityLevel": "JAVA_21",
+    "mixins": [
+        "LootMultiResultPacketMixin",
+        "PlayerEconomyManagerMixin",
+        "PlayerEconomyMysqlMixin",
+        "SrePlayerSkinsMysqlMixin",
+        "LotteryManagerMixin",
+        "LotteryPoolMixin",
+        "SkinFromStringMixin",
+        "SkinableItemMixin",
+        "MatchRecordStoreMixin",
+        "MatchRecordServiceMixin",
+        "BackpackManagerMixin",
+        "FactionCardTypeRoleIdMixin",
+        "ProgressionDataManagerMixin",
+        "RoleRotationCardMixin",
+        "RoleRotationLightningCardMixin",
+        "NameTagMysqlBypassMixin",
+        "NameTagInventoryPersistMixin",
+        "NameTagGenerateLiteralMixin",
+        "NameTagSyncVisibilityMixin",
+        "ServerPlayerTabTitleMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 1
+    }
+}

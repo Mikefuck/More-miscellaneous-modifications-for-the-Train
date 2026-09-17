@@ -1,0 +1,122 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    maven { url "https://maven.ladysnake.org/releases" }
+    maven { url "https://api.modrinth.com/maven" }
+    maven { url "https://maven.terraformersmc.com/releases/" }
+    flatDir { dirs "libs" }
+}
+
+loom { }
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    modImplementation "com.terraformersmc:modmenu:11.0.3"
+    modImplementation files("libs/star_rail_express-4.3.0.jar")
+    // 通过 v2 RoleCatalogApi 读取有效角色目录；运行时需要 core 类。
+    modImplementation files("libs/habitrain_core.jar")
+    modImplementation("org.ladysnake.cardinal-components-api:cardinal-components-base:6.1.1") { transitive = false }
+    modImplementation("org.ladysnake.cardinal-components-api:cardinal-components-entity:6.1.1") { transitive = false }
+
+    testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    testImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+
+afterEvaluate {
+    configurations.testCompileClasspath.extendsFrom(
+            configurations.getByName("minecraftNamedCompile")
+    )
+    configurations.testRuntimeClasspath.extendsFrom(
+            configurations.getByName("minecraftNamedRuntime")
+    )
+}
+
+def stagedTestRuntimeDir = new File(gradle.gradleUserHomeDir, "habitrain-lottery-test-runtime")
+
+tasks.register("stageTestRuntime", Sync) {
+    dependsOn(tasks.named("testClasses"))
+    into(stagedTestRuntimeDir)
+    from(sourceSets.test.output.classesDirs) {
+        into("test")
+    }
+    from(sourceSets.main.output) {
+        into("main")
+    }
+    from(configurations.testRuntimeClasspath) {
+        into("libs")
+    }
+}
+
+tasks.named("test", Test).configure {
+    useJUnitPlatform()
+    dependsOn(tasks.named("stageTestRuntime"))
+    // Gradle's Windows test worker corrupts non-ASCII classpath entries.
+    testClassesDirs = files(new File(stagedTestRuntimeDir, "test"))
+    classpath = files(
+            new File(stagedTestRuntimeDir, "test"),
+            new File(stagedTestRuntimeDir, "main")
+    ) + fileTree(new File(stagedTestRuntimeDir, "libs")) {
+        include("*.jar")
+    }
+}
+
+processResources {
+    def version = project.version
+    inputs.property "version", version
+    filesMatching("fabric.mod.json") {
+        expand "version": version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+    from("LICENSE") {
+        rename { "${it}_${project.archives_base_name}" }
+    }
+}
+
+def releaseOutputDir = rootProject.file("../临时")
+
+tasks.register("copyReleaseJar", Copy) {
+    dependsOn(tasks.named("remapJar"))
+    from(tasks.named("remapJar").flatMap { it.archiveFile })
+    into(releaseOutputDir)
+}
+
+tasks.named("assemble") {
+    dependsOn(tasks.named("copyReleaseJar"))
+}
+
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        mavenLocal()
+    }
+}

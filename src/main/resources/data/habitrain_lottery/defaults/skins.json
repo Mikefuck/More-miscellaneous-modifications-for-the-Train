@@ -1,0 +1,1284 @@
+{
+    "skins":  [
+                  {
+                      "type":  "bat",
+                      "id":  "advanced_crowbar"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "anvil"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "astral_defense"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "bamboo"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "bamboo_bat"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "baseball_bat"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "bat_wrench"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "battlesign"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "between_limits"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "black_king"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "blood_bat"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "boming"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "bread"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "chigang"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "combat_instrument"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "composite_club"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "cylinder"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "diamond_pickaxe"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "eel"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "excalibur"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "fried_legs"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "ground_chain_sickle"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "guitar"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "hammer"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "huaqiangbei"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "ice_bat"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "iron_hammer"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "jin_gu_bang"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "musical"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "ore_pickaxe"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pipe"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "plasma_axe"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "platinum_arm"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "purgatory_forging"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pvz_ladder"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pvz_newspaper"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pvz_tall_peanut"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pvz_wire_pole"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pvz_zombie_bat"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "pvz_zombie_skin_bat"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "red_axe"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "road_roller"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "rune_sword"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "sfa"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "slippers"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "snow_kings_staff"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "steel_tube"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "tnt_triple_sword"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "ultimate_gold_weapon"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "wolf_teeth_club_2"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "wolfteeth_mace"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "wrench"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "yellow_sword"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "zmd_amethyst_fiber"
+                  },
+                  {
+                      "type":  "bat",
+                      "id":  "zmd_bambooshoots"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "beast_ancestors"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "big_banana"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "big_bomb"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "bottled_flame"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "brown_substance"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "coordinate_system"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "destroy_explosive"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "detonator"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "diablo"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "dio"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "engine_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "exponential_explosion"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "final_times"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "fire_charge"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "flying_knife_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "foxy_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "fragmentation_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "gas_cylinder"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "gugugaga"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "haha"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "halo"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "ice_dart"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "indonesian_bytes"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "jiliang_op"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "kettle"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "king_ball"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "lao_gan_ma"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "lemon_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "magnetic_bomb"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "markov_chain"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "minecraft_tnt"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "mini_nuke"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "mobile"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "molotov_cocktail"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "my_sword_shield"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "naval_mine"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "nugrenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "null_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "o_god_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "phone"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "pisces"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "poop"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "pvz_cherrybomb"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "pvz_destruction_mushrooms"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "pvz_jalapeno"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "pvz_joke_box"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "rainbow_crepper_grenade"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "rainbow_fireworks"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "rock"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "rocket"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "rotary_iron_ball"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "rune_blasting"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "scorpio"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "shiguimian"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "slime_redstone_torch"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "standdisc"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "submunition_mine"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "taiji"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "the_world"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "tnt"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "voice_star"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "withered_heart_bomb"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "zmd_cangminmeng"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "zmd_daowangshipian"
+                  },
+                  {
+                      "type":  "grenade",
+                      "id":  "zmd_keshi"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "anubis"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "balisong"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "bear_claw"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "black_blade"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "blade_of_blood_red"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "blade_of_soul"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "blue_curved_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "blue_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "broken_bottle"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "brush"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "canyue_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "carp_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "carrot_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "cat_paw"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "ceremonial"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "cheems_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "chicken_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "chopper"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "colorful_folding_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "coral"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "crystalline"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "cultist"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "cutter_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "dagger"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "dark_sparks"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "dart"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "death_edge"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "diamond_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "dragon_blade"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "dusks_epitaph"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "echoium_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "edge_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "evolutionary_truster"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "ew_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "exknife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "flame_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "flaying_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "flesh_and_blood_resonance"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "fly_cutter"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "folly_stick"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "fork"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "foxy_blade"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "galaxy_spark"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "gamma_doppler_claw_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "giant_roasted_chicken"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "glass"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "glass_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "gold_claw_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "golden_shear"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "greed"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "green_butterfly_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "harpy_star"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "head_dart"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "herring_sword_fish"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "ice_fish"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "icicle"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "inflammatory_burial"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "jett"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "jolly_stick"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "katar"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "kunai"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "light_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "lightning_nunchakus"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "lightning_whip"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "loyalty"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "machete"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "magnetite_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "makeshift"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "matchstick_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "missing_source"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "missing_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "mountain_opening"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "nail"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "neptune_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "ninja_claw"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "not_cooked"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "ou_bu_rapier"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "peach_stick"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "pick"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "qingjian"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "qu"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "quenched_titanium"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "quill"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "rainbow_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "real_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "red_butterfly_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "red_light_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "roze"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "ruby_claw_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "sacrificial_dagger"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "sapphire"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "sapphire_feast"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "scarlet_scar"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "scorching_heat"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "scribbled_hammer"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "small_real_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "starlight"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "steel_claw"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "storm_blade"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "sweet_tooth"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "swiss_army_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "sword_executioner"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "sword_in_stone"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "tenet"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "thousands_source"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "tianjie_bit"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "tianyuan_fairy"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "time_limit_sword"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "unconscious_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "zenith_knife"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "zmd_ansehuoju"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "zmd_fuyao"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "zmd_guangrongjiyi"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "zmd_helafenge"
+                  },
+                  {
+                      "type":  "knife",
+                      "id":  "zmd_xiangxinzhiyin"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "anshidian"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "art_tyrant"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "beak_peak"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "blackgold"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "blue_rose"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "burn_out_sulfur"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "cannon"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "canyue_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "caplock_pistol"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "carved_emperor"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "cat_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "close_relations"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "coal_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "colt_45"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "dark_blue"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "desert_eagle"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "devils_claws"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "divine"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "double_pistol"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "dragon_fractal"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "electrodynamics"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "european_long_revolver"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "eyeball"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "flower_sleep"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "g18"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "glass_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "gold_defibrillator"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "golden_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "golden_gyration"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "green_glass"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "habilis"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "hattansang"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "heavy_pistol"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "hummingbird"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "hunt_of_glory"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "infinity"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "iron_ball_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "izumo_41_style"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "izumo_four_one_style"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "jungle_edge"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "kekedi"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "king_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "knife_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "lava_rock"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "lengcui"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "m3"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "margas_flintlock"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "minimalist_line"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "nail_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "navy_then_issued_pistols"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "pixel_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "potato_launcher"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "pvz_icemelon_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "pvz_peashooter"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "qianxia"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "rune_magic_bow"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "rust_lake"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "sex_pistol"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "shengxuan_white"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "signal_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "sine_wave"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "soul_cairn"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "spit_cattle"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "stick_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "strange_box"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "the_moon"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "thorn_slingshot"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "time"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "tooth_3"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "uzi"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "water_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "west_revolver"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "white_gold_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "white_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "wood_gun"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "woodcarving_pistol"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "yellow_paper"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zero_purchase"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_gaobie"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_linghangzhe"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_luocao"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_obj"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_qizi"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_wangxiang"
+                  },
+                  {
+                      "type":  "revolver",
+                      "id":  "zmd_xiangshi"
+                  }
+              ]
+}

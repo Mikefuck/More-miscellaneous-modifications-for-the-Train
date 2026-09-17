@@ -1,0 +1,47 @@
+{
+  "events": [
+    {
+      "id": "win_passenger",
+      "amount": 1,
+      "modes": ["*"],
+      "enabled": true
+    },
+    {
+      "id": "win_killer",
+      "amount": 2,
+      "modes": ["*"],
+      "enabled": true
+    },
+    {
+      "id": "win_neutral",
+      "amount": 5,
+      "modes": ["*"],
+      "enabled": true
+    },
+    {
+      "id": "blackout_participate",
+      "amount": 1,
+      "modes": ["blackout"],
+      "enabled": true
+    },
+    {
+      "id": "sre_participate",
+      "amount": 1,
+      "modes": ["murder", "repair"],
+      "enabled": true
+    },
+    {
+      "id": "task_complete",
+      "amount": 1,
+      "modes": ["*"],
+      "enabled": false
+    },
+    {
+      "id": "level_every_n",
+      "amount": 1,
+      "everyLevels": 5,
+      "modes": ["*"],
+      "enabled": false
+    }
+  ]
+}

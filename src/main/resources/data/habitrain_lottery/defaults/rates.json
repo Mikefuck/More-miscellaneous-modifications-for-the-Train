@@ -1,0 +1,14 @@
+{
+    "drawCostMultiplier": 1,
+    "duplicateCoinMultiplier": 1,
+    "duplicateCoinFlat": 60,
+    "coinPerDraw": 160,
+    "loginRewardCap": 10,
+    "qualityWeightBias": [0, 0, 0, 0, 0, 0],
+    "modeMultipliers": {
+        "blackout": 1,
+        "murder": 1,
+        "repair": 1
+    },
+    "opPermissionLevel": 2
+}

@@ -1,0 +1,107 @@
+{
+    "parent":  "item/generated",
+    "textures":  {
+                     "layer0":  "starrailexpress:item/gun/zmd_xiangshi"
+                 },
+    "display":  {
+                    "head":  {
+                                 "rotation":  [
+                                                  0,
+                                                  -180,
+                                                  0
+                                              ],
+                                 "translation":  [
+                                                     0,
+                                                     13,
+                                                     7
+                                                 ]
+                             },
+                    "ground":  {
+                                   "translation":  [
+                                                       0,
+                                                       2,
+                                                       0
+                                                   ],
+                                   "scale":  [
+                                                 0.5,
+                                                 0.5,
+                                                 0.5
+                                             ]
+                               },
+                    "firstperson_lefthand":  {
+                                                 "rotation":  [
+                                                                  0,
+                                                                  90,
+                                                                  -25
+                                                              ],
+                                                 "translation":  [
+                                                                     0,
+                                                                     4,
+                                                                     0
+                                                                 ],
+                                                 "scale":  [
+                                                               0.8,
+                                                               0.8,
+                                                               0.8
+                                                           ]
+                                             },
+                    "firstperson_righthand":  {
+                                                  "rotation":  [
+                                                                   0,
+                                                                   -90,
+                                                                   25
+                                                               ],
+                                                  "translation":  [
+                                                                      0,
+                                                                      4,
+                                                                      0
+                                                                  ],
+                                                  "scale":  [
+                                                                0.8,
+                                                                0.8,
+                                                                0.8
+                                                            ]
+                                              },
+                    "fixed":  {
+                                  "rotation":  [
+                                                   0,
+                                                   -180,
+                                                   0
+                                               ]
+                              },
+                    "thirdperson_lefthand":  {
+                                                 "rotation":  [
+                                                                  0,
+                                                                  90,
+                                                                  0
+                                                              ],
+                                                 "translation":  [
+                                                                     0,
+                                                                     2,
+                                                                     0
+                                                                 ],
+                                                 "scale":  [
+                                                               0.6,
+                                                               0.6,
+                                                               0.6
+                                                           ]
+                                             },
+                    "thirdperson_righthand":  {
+                                                  "rotation":  [
+                                                                   0,
+                                                                   -90,
+                                                                   0
+                                                               ],
+                                                  "translation":  [
+                                                                      0,
+                                                                      2,
+                                                                      0
+                                                                  ],
+                                                  "scale":  [
+                                                                0.6,
+                                                                0.6,
+                                                                0.6
+                                                            ]
+                                              }
+                }
+}

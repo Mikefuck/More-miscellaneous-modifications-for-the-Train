@@ -1,0 +1,39 @@
+{
+    "schemaVersion": 1,
+    "id": "habitrain_lottery",
+    "version": "${version}",
+    "name": "哈比列车抽奖补齐",
+    "description": "哈比列车皮肤/抽奖管理补齐：修复皮肤注册、world 权威存档、Mod Menu 奖池/倍率/发次/画面配置；本地化邮箱/战绩/阵营卡并桥接大厅元功能",
+    "authors": ["HabiTrain"],
+    "contact": { "homepage": "https://github.com/" },
+    "license": "MIT",
+    "icon": "assets/habitrain_lottery/icon.png",
+    "environment": "*",
+    "provides": ["habitrain_lottery_skin_api"],
+    "entrypoints": {
+        "main": ["com.habitrain.lottery.HabiLotteryMod"],
+        "client": ["com.habitrain.lottery.client.HabiLotteryClient"],
+        "modmenu": ["com.habitrain.lottery.client.ModMenuIntegration"]
+    },
+    "mixins": [
+        "habitrain_lottery.mixins.json",
+        { "config": "habitrain_lottery.client.mixins.json", "environment": "client" }
+    ],
+    "depends": {
+        "fabricloader": ">=0.18.1",
+        "minecraft": "~1.21.1",
+        "java": ">=21",
+        "fabric-api": "*",
+        "starrailexpress": "*",
+        "habitrain_core": "*"
+    },
+    "suggests": {
+        "modmenu": "*"
+    },
+    "custom": {
+        "habitrain_lottery:skin_api": {
+            "version": 1,
+            "entrypoint": "habitrain_lottery_skins"
+        }
+    }
+}

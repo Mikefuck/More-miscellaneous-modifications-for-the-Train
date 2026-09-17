@@ -1,0 +1,14 @@
+{
+    "qualityBackgrounds":  [
+                               "noellesroles:textures/gui/loot/common_skin.png",
+                               "noellesroles:textures/gui/loot/uncommon_skin.png",
+                               "noellesroles:textures/gui/loot/rare_skin.png",
+                               "noellesroles:textures/gui/loot/epic_skin.png",
+                               "noellesroles:textures/gui/loot/legendary_skin.png",
+                               "noellesroles:textures/gui/loot/unbelievable.png"
+                           ],
+    "poolButtonIdle":  "noellesroles:textures/gui/loot/pool_btn_idle.png",
+    "poolButtonHover":  "noellesroles:textures/gui/loot/pool_btn_hover.png",
+    "poolButtonPressed":  "noellesroles:textures/gui/loot/pool_btn_pressed.png",
+    "viewPoolBackground":  "noellesroles:textures/gui/loot/view_pool_bg.png"
+}
