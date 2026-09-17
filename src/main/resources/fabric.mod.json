@@ -9,7 +9,7 @@
     "license": "MIT",
     "icon": "assets/habitrain_lottery/icon.png",
     "environment": "*",
-    "provides": ["habitrain_lottery_skin_api"],
+    "provides": ["habitrain_lottery_skin_api", "habitrain_lottery_player_api"],
     "entrypoints": {
         "main": ["com.habitrain.lottery.HabiLotteryMod"],
         "client": ["com.habitrain.lottery.client.HabiLotteryClient"],
@@ -34,6 +34,10 @@
         "habitrain_lottery:skin_api": {
             "version": 1,
             "entrypoint": "habitrain_lottery_skins"
+        },
+        "habitrain_lottery:player_api": {
+            "version": 1,
+            "facade": "com.habitrain.lottery.api.player.HabiLotteryApi"
         }
     }
 }

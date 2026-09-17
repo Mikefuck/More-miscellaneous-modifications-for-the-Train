@@ -1,6 +1,5 @@
 package com.habitrain.lottery.card;
 
-import com.habitrain.lottery.backpack.DailyFactionCardService;
 import com.habitrain.lottery.backpack.ActiveCardForces;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
 import com.habitrain.lottery.grant.LoginRewardService;

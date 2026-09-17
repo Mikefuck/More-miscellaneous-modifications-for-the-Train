@@ -4,7 +4,6 @@ import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
-import io.wifi.starrailexpress.backpack.BackpackManager;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;

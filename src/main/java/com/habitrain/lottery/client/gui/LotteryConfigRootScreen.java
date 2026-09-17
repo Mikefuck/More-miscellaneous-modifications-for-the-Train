@@ -20,7 +20,6 @@ import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.network.PlayerAdminModels;
 import com.habitrain.lottery.skin.SkinContentBootstrap;
 import com.habitrain.lottery.title.TitleCatalog;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
@@ -30,9 +29,6 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,17 +43,6 @@ public class LotteryConfigRootScreen extends Screen {
             "奖池配置", "经济倍率", "奖励规则", "画面主题", "玩家资产",
             "皮肤内容", "撰写邮件", "称号管理", "高级 JSON"
     };
-    private static final String[] TAB_DESCRIPTIONS = {
-            "管理奖池、品质带、概率与奖品条目",
-            "调整抽奖成本、兑换比例、模式倍率与管理权限",
-            "配置参与及胜利等奖励事件",
-            "设置各品质抽奖画面的背景资源",
-            "查询玩家资产；抽数调整与备份操作会即时提交",
-            "查看并即时重新注册内置皮肤内容",
-            "进入系统邮件撰写页面",
-            "保存称号模板；玩家称号操作会即时提交",
-            "直接查看或编辑完整配置 JSON"
-    };
     private static final ConfigSectionId[] SECTION_IDS = {
             ConfigSectionId.POOLS, ConfigSectionId.RATES, ConfigSectionId.GRANTS,
             ConfigSectionId.THEME, ConfigSectionId.PLAYERS, ConfigSectionId.SKINS,
@@ -65,7 +50,6 @@ public class LotteryConfigRootScreen extends Screen {
     };
     /** Visual order in the grouped navigation rail. */
     private static final int[] NAV_ORDER = {0, 1, 2, 3, 4, 7, 5, 6, 8};
-    private static final int PAD = 8;
     private static final int ROW_H = 22;
     /** Tab indices after inserting 「称号」 before JSON. */
     private static final int TAB_PLAYERS = 4;
@@ -251,10 +235,6 @@ public class LotteryConfigRootScreen extends Screen {
 
     private ConfigConsoleLayout consoleLayout() {
         return ConfigConsoleLayout.calculate(width, height);
-    }
-
-    private int navigationWidth() {
-        return consoleLayout().navigation().width();
     }
 
     private int pageLeft() {

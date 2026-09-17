@@ -9,6 +9,12 @@ Fabric 1.21.1 管理/补齐模组：修复旧皮肤包注册、把抽奖相关�
 - API 奖池条目不会写入世界配置，移除扩展模组后不会留下失效项。
 - 完整接入示例、资源路径和兼容规则见 [`docs/skin-api.md`](docs/skin-api.md)。
 
+## 1.1.6 玩家数据 API
+
+- 其他 Fabric 模组可通过 `com.habitrain.lottery.api.player` 下的 `HabiLotteryApi` / `HabiCardApi` / `HabiSkinPlayerApi` / `HabiTitleApi` / `HabiMailApi` 读写单个玩家的金币、抽数、皮肤解锁与装备、阵营卡/自选卡/突破上限卡、称号，并投递带奖励的邮件。
+- 写入遵循“权威 world JSON 落盘 + 失败回滚”，在线玩家自动同步 SRE/CCA 镜像；只允许在服务端主线程调用；世界未就绪时返回 `NOT_READY` 而不抛异常。
+- 完整方法表、数值边界与示例见 [`docs/player-api.md`](docs/player-api.md)。
+
 ## 1.0.6 皮肤连抽
 
 - 抽奖页面提供单抽、十连抽、五十连抽；服务端每次最多处理 50 抽。

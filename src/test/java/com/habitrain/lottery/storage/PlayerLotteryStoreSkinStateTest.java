@@ -3,7 +3,6 @@ package com.habitrain.lottery.storage;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
