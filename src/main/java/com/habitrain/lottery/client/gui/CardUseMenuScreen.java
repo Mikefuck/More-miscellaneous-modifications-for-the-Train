@@ -11,7 +11,11 @@ import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 职业卡使用菜单：在背包点击职业卡后显示直接使用/自选角色两个入口。
@@ -41,12 +45,24 @@ public class CardUseMenuScreen extends Screen {
             "杀手阵营卡", "平民阵营卡", "中立阵营卡", "杀手中立阵营卡"
     };
 
+    /** questKey 白名单：只允许小写字母与下划线，避免服务端可控字符串拼出越界路径。 */
+    private static final Pattern SAFE_CARD_ID = Pattern.compile("[a-z_]{1,32}");
+
+    private static final int ART_TEXTURE_SIZE = 128;
+
     private final Screen parent;
     private int panelX;
     private int panelY;
     private int panelW;
     private int panelH;
     private int tickCounter;
+
+    /**
+     * 上一帧到这一帧的毫秒数。悬停插值必须用它而不是固定系数，否则动画速度会随帧率变化
+     * （与角色卡背包 / 自选角色页保持一致）。
+     */
+    private float frameDelta = 16.0F;
+    private long lastFrameMillis = System.currentTimeMillis();
 
     private OptionCardWidget directOption;
     private boolean closedForGameStart;
@@ -122,6 +138,30 @@ public class CardUseMenuScreen extends Screen {
         return "职业卡";
     }
 
+    /**
+     * 当前卡牌的立绘贴图，与角色卡背包 / 自选角色页共用同一套资源。
+     *
+     * <p>{@code questKey} 来自服务端下发的 {@code CardUseMenuS2C}，属于外部输入，因此先用
+     * 白名单正则约束成 {@code [a-z_]} 再拼路径；资源不存在时返回 {@code null}，由调用方
+     * 回退到程序化图标，绝不渲染紫黑占位图。</p>
+     */
+    private static ResourceLocation cardArt(String questKey) {
+        if (questKey == null || questKey.isBlank()) {
+            return null;
+        }
+        String id = questKey.trim().toLowerCase(Locale.ROOT);
+        if (!SAFE_CARD_ID.matcher(id).matches()) {
+            return null;
+        }
+        try {
+            ResourceLocation art = ResourceLocation.fromNamespaceAndPath(
+                    "habitrain_lottery", "textures/gui/cards/" + id + ".png");
+            return CardUiStyle.textureExists(art) ? art : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private boolean canSubmit() {
         if (closedForGameStart || selectionSubmitted) {
             return false;
@@ -162,6 +202,9 @@ public class CardUseMenuScreen extends Screen {
         if (closedForGameStart) {
             return;
         }
+        long now = System.currentTimeMillis();
+        frameDelta = Mth.clamp(now - lastFrameMillis, 0.0F, 120.0F);
+        lastFrameMillis = now;
         renderBackground(graphics, mouseX, mouseY, partialTick);
         drawPanel(graphics);
         super.render(graphics, mouseX, mouseY, partialTick);
@@ -271,7 +314,8 @@ public class CardUseMenuScreen extends Screen {
         @Override
         protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
             boolean hovered = active && isMouseOver(mouseX, mouseY);
-            hoverAnimation = Mth.lerp(0.22F, hoverAnimation, hovered ? 1.0F : 0.0F);
+            // 约 47ms 半衰期，与原固定系数 0.22 在 60fps 下的手感一致，但不受帧率影响。
+            hoverAnimation = GuiFx.approach(hoverAnimation, hovered ? 1.0F : 0.0F, frameDelta, 47.0F);
 
             int x = getX();
             int y = getY();
@@ -289,15 +333,28 @@ public class CardUseMenuScreen extends Screen {
                     hovered ? GOLD : blend(0xFF5A4530, accent, 0.45F));
             graphics.fill(x + 1, y + 1, x + 5, y + h - 1, accent);
 
-            int iconSize = Math.min(30, h - 16);
-            int iconX = x + 14;
+            int iconSize = Math.min(34, h - 14);
+            int iconX = x + 12;
             int iconY = y + (h - iconSize) / 2;
-            graphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize,
-                    withAlpha(accent, hovered ? 0xD0 : 0xA0));
-            graphics.renderOutline(iconX, iconY, iconSize, iconSize, 0xCCFFF4DC);
-            String icon = selfSelect ? "✦" : "↻";
-            graphics.drawCenteredString(font, Component.literal(icon),
-                    iconX + iconSize / 2, iconY + iconSize / 2 - 4, 0xFFFFFFFF);
+            ResourceLocation art = cardArt(questKey());
+            if (art != null) {
+                // 与背包 / 自选角色页同一张立绘：柔光 + 立绘 + 悬停金边
+                GuiFx.glow(graphics, iconX + iconSize / 2, iconY + iconSize / 2,
+                        iconSize / 2 + 5, iconSize / 2 + 5, accent,
+                        0.22F + hoverAnimation * 0.35F);
+                graphics.blit(art, iconX, iconY, iconSize, iconSize, 0.0F, 0.0F,
+                        ART_TEXTURE_SIZE, ART_TEXTURE_SIZE, ART_TEXTURE_SIZE, ART_TEXTURE_SIZE);
+                GuiFx.roundOutline(graphics, iconX - 1, iconY - 1, iconX + iconSize + 1,
+                        iconY + iconSize + 1, 6,
+                        GuiFx.fade(hovered ? GOLD : 0xCCFFF4DC, 0.5F + hoverAnimation * 0.5F));
+            } else {
+                graphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize,
+                        withAlpha(accent, hovered ? 0xD0 : 0xA0));
+                graphics.renderOutline(iconX, iconY, iconSize, iconSize, 0xCCFFF4DC);
+                String icon = selfSelect ? "✦" : "↻";
+                graphics.drawCenteredString(font, Component.literal(icon),
+                        iconX + iconSize / 2, iconY + iconSize / 2 - 4, 0xFFFFFFFF);
+            }
 
             int textX = iconX + iconSize + 12;
             graphics.drawString(font, Component.literal(heading), textX, y + 9, TEXT, false);
