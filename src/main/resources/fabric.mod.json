@@ -24,8 +24,8 @@
         "minecraft": "~1.21.1",
         "java": ">=21",
         "fabric-api": "*",
-        "starrailexpress": "*",
-        "habitrain_core": "*"
+        "starrailexpress": "~4.3.0",
+        "habitrain_core": ">=2.0.19"
     },
     "suggests": {
         "modmenu": "*"

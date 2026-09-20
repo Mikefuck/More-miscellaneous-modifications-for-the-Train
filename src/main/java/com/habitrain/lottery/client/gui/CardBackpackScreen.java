@@ -165,6 +165,8 @@ public final class CardBackpackScreen extends Screen {
         NO_USES("no_uses", CardUiStyle.GOLD),
         EMPTY("empty", CardUiStyle.MUTED),
         SYNCING("syncing", CardUiStyle.CYAN),
+        /** 重试次数用尽仍拿不到快照：数量与次数都不可信，既不能显示 0 也不能显示旧值。 */
+        UNKNOWN("unknown", CardUiStyle.DANGER),
         PENDING("pending", CardUiStyle.GOLD),
         LOCKED("locked", CardUiStyle.DANGER);
 
@@ -194,7 +196,17 @@ public final class CardBackpackScreen extends Screen {
     private final List<CardTile> tiles = new ArrayList<>();
 
     private Button backButton;
-    private CardTile focusedTile;
+
+    /**
+     * 当前由方向键选中的卡片。
+     *
+     * <p><b>没有独立字段</b>：焦点以控件树（{@link #getFocused()}）为唯一真源。鼠标点击卡片
+     * 同样会改变原生焦点，若在屏幕里再存一份副本，鼠标点过之后方向键/Enter 仍会作用在旧卡上，
+     * 可能误用一张完全不同的卡。焦点环本来就画的是 {@code isFocused()}，两者现在天然一致。</p>
+     */
+    private CardTile focusedTile() {
+        return getFocused() instanceof CardTile tile ? tile : null;
+    }
 
     /** 正在播放确认动画的卡；非 null 时冻结全部输入。 */
     private Slot activatingSlot;
@@ -263,7 +275,7 @@ public final class CardBackpackScreen extends Screen {
         super.init();
         clearWidgets();
         tiles.clear();
-        focusedTile = null;
+        setFocused(null);
 
         long now = System.currentTimeMillis();
         baseMillis = now;
@@ -428,14 +440,20 @@ public final class CardBackpackScreen extends Screen {
         return activatingSlot != null || submitLocked();
     }
 
+    /** 首次快照尚未到达：数量与今日次数都不可信（重试放弃后仍然不可信）。 */
+    private boolean inventoryUnknown() {
+        return inventoryArrivedMillis < 0;
+    }
+
     private boolean loading() {
-        return inventoryArrivedMillis < 0 && !gaveUp;
+        return inventoryUnknown() && !gaveUp;
     }
 
     /** 有数量、次数够（突破上限卡只看数量）时才算可用。 */
     private Status statusOf(Slot slot) {
-        if (loading()) {
-            return Status.SYNCING;
+        if (inventoryUnknown()) {
+            // 还在等首次快照 → 骨架态；重试已放弃 → 明确的未知态，而不是假装「未持有」。
+            return gaveUp ? Status.UNKNOWN : Status.SYNCING;
         }
         if (CardGuiGameState.gameActiveOrStarting()) {
             return Status.LOCKED;
@@ -443,13 +461,17 @@ public final class CardBackpackScreen extends Screen {
         if (balance(slot) <= 0) {
             return Status.EMPTY;
         }
+        // 确认动画期间一律显示「提交中」，突破上限卡也不例外（它没有每日次数）。
+        if (activatingSlot == slot) {
+            return Status.PENDING;
+        }
         if (slot == Slot.LIMIT_BREAK) {
             return limitBreakPending() ? Status.PENDING : Status.READY;
         }
         if (remainingUses(slot) <= 0) {
             return Status.NO_USES;
         }
-        return activatingSlot == slot ? Status.PENDING : Status.READY;
+        return Status.READY;
     }
 
     private static int totalCards() {
@@ -518,15 +540,26 @@ public final class CardBackpackScreen extends Screen {
         if (!inventoryRequested) {
             return;
         }
-        if (LotteryNetwork.ClientLotteryState.cardInventoryVersion != inventoryEpoch) {
+        int version = LotteryNetwork.ClientLotteryState.cardInventoryVersion;
+        if (version != inventoryEpoch) {
+            // 必须把版本消费掉（inventoryEpoch = version），否则这个分支恒真，下面的
+            // limitBreakPendingSince = -1 会在每 tick（50ms）把 fireActivate 刚写下的
+            // 等待标记抹掉，LIMIT_BREAK_WAIT_MILLIS 变成死常量、PENDING 不可达，
+            // 冷却到期后重复点击还能再发一个 bonus 包（双花）。
+            inventoryEpoch = version;
             if (inventoryArrivedMillis < 0) {
                 inventoryArrivedMillis = now;
             }
-            // 服务端已处理完一次操作（含突破上限卡），解除等待态。
+            // 服务端处理完一次操作（含突破上限卡）后会主动回一次 inventory，
+            // 只有「新快照到达」这一个变化沿才解除等待态。
             limitBreakPendingSince = -1L;
             return;
         }
-        if (gaveUp || now - lastRequestMillis < INVENTORY_RETRY_MILLIS) {
+        if (!inventoryUnknown() || gaveUp) {
+            // 快照已到、或已放弃重试：不再发请求，免得回包持续冲掉等待态。
+            return;
+        }
+        if (now - lastRequestMillis < INVENTORY_RETRY_MILLIS) {
             return;
         }
         if (requestAttempts >= INVENTORY_MAX_ATTEMPTS) {
@@ -576,8 +609,10 @@ public final class CardBackpackScreen extends Screen {
                 return true;
             }
             case 257, 335, 32 -> { // Enter / 小键盘 Enter / 空格
-                if (focusedTile != null) {
-                    activate(focusedTile);
+                // 只认原生焦点：与焦点环（isFocused()）同源，鼠标点过之后不会用错卡。
+                CardTile focused = focusedTile();
+                if (focused != null) {
+                    activate(focused);
                     return true;
                 }
                 return super.keyPressed(keyCode, scanCode, modifiers);
@@ -592,19 +627,14 @@ public final class CardBackpackScreen extends Screen {
         if (tiles.isEmpty() || delta == 0) {
             return;
         }
-        int current = tiles.indexOf(focusedTile);
+        int current = tiles.indexOf(focusedTile());
         int next = current < 0 ? (delta > 0 ? 0 : tiles.size() - 1) : current + delta;
         focusTile(tiles.get(Mth.clamp(next, 0, tiles.size() - 1)));
     }
 
     private void focusTile(CardTile target) {
-        if (focusedTile != null && focusedTile != target) {
-            focusedTile.setFocused(false);
-        }
-        focusedTile = target;
-        if (target != null) {
-            target.setFocused(true);
-        }
+        // 交给控件树统一处理：它会先清掉旧焦点的 setFocused(false)。
+        setFocused(target);
     }
 
     // =====================================================================
@@ -700,7 +730,11 @@ public final class CardBackpackScreen extends Screen {
             subtitle = Component.translatable("screen.habitrain_lottery.backpack.subtitle",
                     totalCards());
         }
-        graphics.drawString(font, subtitle, contentX + 10, titleY + 17, subtitleColor, false);
+        // 右上角次数胶囊占位固定，窄窗口下副标题必须截断，否则会被胶囊整段盖住。
+        int subtitleBudget = Math.max(24, chipX - 6 - (contentX + 10));
+        graphics.drawString(font, Component.literal(
+                        font.plainSubstrByWidth(subtitle.getString(), subtitleBudget)),
+                contentX + 10, titleY + 17, subtitleColor, false);
 
         drawQuotaChips(graphics);
     }
@@ -719,7 +753,7 @@ public final class CardBackpackScreen extends Screen {
         int segW = 5;
         int segGap = 2;
         int barW = BASE_DAILY_USES * segW + (BASE_DAILY_USES - 1) * segGap;
-        boolean known = !loading();
+        boolean known = !inventoryUnknown();
         int value = known ? Math.min(remaining, 99) : 0;
         int accent = !known ? CardUiStyle.DIM : (value > 0 ? color : CardUiStyle.DANGER);
 
@@ -763,13 +797,19 @@ public final class CardBackpackScreen extends Screen {
             GuiFx.gradient(graphics, contentX, hintY - 5, contentX + contentW, hintY - 4,
                     GuiFx.alpha(0xFF3C4A5E, 130), GuiFx.alpha(0xFF3C4A5E, 20));
 
-            graphics.drawString(font,
-                    Component.translatable("screen.habitrain_lottery.backpack.hint"),
-                    contentX, hintY, CardUiStyle.MUTED, false);
-            String keys = Component.translatable(
-                    "screen.habitrain_lottery.backpack.keys").getString();
+            // 左提示 + 右快捷键同处一行，窄窗口（en_us 下两串合计约 644px > compact 的
+            // 536px contentW）会左右对撞：各自按预算截断，宁可省略也不叠字。
+            String keys = font.plainSubstrByWidth(
+                    Component.translatable("screen.habitrain_lottery.backpack.keys").getString(),
+                    Math.max(24, contentW / 2));
+            int keysW = font.width(keys);
+            String hint = font.plainSubstrByWidth(
+                    Component.translatable("screen.habitrain_lottery.backpack.hint").getString(),
+                    Math.max(24, contentW - keysW - 8));
+            graphics.drawString(font, Component.literal(hint), contentX, hintY,
+                    CardUiStyle.MUTED, false);
             graphics.drawString(font, Component.literal(keys),
-                    panelX + panelW - pad - font.width(keys), hintY, CardUiStyle.DIM, false);
+                    panelX + panelW - pad - keysW, hintY, CardUiStyle.DIM, false);
         }
 
         if (activatingSlot != null) {
@@ -829,7 +869,7 @@ public final class CardBackpackScreen extends Screen {
         /** 「×N」文本缓存，避免每帧重新查表拼接。 */
         private String countText;
         private int countTextCount = Integer.MIN_VALUE;
-        private boolean countTextSyncing;
+        private boolean countTextUnknown;
 
         private CardTile(Slot slot, int x, int y, int w, int h, int enterOrder) {
             super(x, y, w, h, slot.displayName());
@@ -878,6 +918,9 @@ public final class CardBackpackScreen extends Screen {
             int count = balance(slot);
             syncTooltip(status, count);
 
+            // 让 active 与真实可用状态同步：否则不可用的卡仍会吃掉点击（播点击音并进 onClick），
+            // 再被 activate() 的 statusOf != READY 静默丢弃，玩家只听到一声空响。
+            active = status == Status.READY;
             boolean usable = active && status == Status.READY;
             boolean frozen = activatingSlot != null && activatingSlot != slot;
             float delta = frameDelta;
@@ -1095,11 +1138,11 @@ public final class CardBackpackScreen extends Screen {
         }
 
         private String countText(Status status, int count) {
-            boolean syncing = status == Status.SYNCING;
-            if (countText == null || countTextCount != count || countTextSyncing != syncing) {
+            boolean unknown = status == Status.SYNCING || status == Status.UNKNOWN;
+            if (countText == null || countTextCount != count || countTextUnknown != unknown) {
                 countTextCount = count;
-                countTextSyncing = syncing;
-                countText = syncing
+                countTextUnknown = unknown;
+                countText = unknown
                         ? Component.translatable(
                                 "screen.habitrain_lottery.backpack.count_unknown").getString()
                         : Component.translatable(
@@ -1132,14 +1175,14 @@ public final class CardBackpackScreen extends Screen {
             int w = font.width(text) + 12;
             int x = getX() + width - w - 5;
             int y = getY() + 5;
-            boolean owned = count > 0 && status != Status.SYNCING;
+            boolean owned = count > 0 && status != Status.SYNCING && status != Status.UNKNOWN;
             int accent = owned ? slot.accent : CardUiStyle.DIM;
 
             GuiFx.roundGradient(graphics, x, y, x + w, y + 13, 6,
                     GuiFx.alpha(0xFF10151F, 240), GuiFx.alpha(0xFF0A0E15, 240));
             GuiFx.roundOutline(graphics, x, y, x + w, y + 13, 6, GuiFx.fade(accent, 0.6F));
             GuiFx.centered(graphics, font, Component.literal(text), x + w / 2, y + 3,
-                    status == Status.SYNCING ? CardUiStyle.DIM
+                    status == Status.SYNCING || status == Status.UNKNOWN ? CardUiStyle.DIM
                             : (owned ? GuiFx.mix(CardUiStyle.TEXT, accent, 0.45F)
                                     : CardUiStyle.MUTED));
         }
@@ -1185,9 +1228,11 @@ public final class CardBackpackScreen extends Screen {
 
         @Override
         public boolean mouseClicked(double mouseX, double mouseY, int button) {
-            if (button == 0 && active && !busy() && statusOf(slot) == Status.READY) {
-                pressed = true;
+            // 不可用 / 非左键直接放行：不播点击音，也不进入确认动画。
+            if (button != 0 || !active || busy() || statusOf(slot) != Status.READY) {
+                return false;
             }
+            pressed = true;
             return super.mouseClicked(mouseX, mouseY, button);
         }
 

@@ -1,5 +1,6 @@
 package com.habitrain.lottery.grant;
 
+import com.habitrain.core.api.match.MatchWinFaction;
 import com.habitrain.core.api.role.v2.EffectiveRoleProfile;
 
 /**
@@ -12,20 +13,21 @@ public final class WinFactionRules {
     /**
      * Blackout end-faction → grant bucket.
      * BAD → killer; SIN_KILLER_SHARE + killer win → killer; independent → neutral; GOOD → passenger.
+     *
+     * <p><b>审核 B-25：本方法不自己维护阵营名表，直接委托核心的
+     * {@link MatchWinFaction#fromBlackoutName(String, boolean)}。</b>
+     * 旧实现手抄了一张 {@code switch} 表，于是丢掉了核心的
+     * {@code trim() + toUpperCase(Locale.ROOT)} 归一化：{@code " bad "} / {@code "good"}
+     * 会被抽奖侧判成「未知阵营」（返回 {@code null}，玩家拿不到胜利奖），
+     * 而核心侧判成 {@code KILLER}/{@code PASSENGER}。归一化只能有一处，留在 core。</p>
+     *
+     * @param factionName 结算快照里的停电局阵营名（大小写/首尾空白由核心归一化）
+     * @param killerWon   本局杀手方是否获胜（只影响 {@code SIN_KILLER_SHARE}）
+     * @return 发奖桶；未知 / {@code null} / 空白阵营名返回 {@code null}（与核心一致，调用方必须判空）
      */
     public static GrantEventHooks.WinFaction fromBlackoutName(String factionName, boolean killerWon) {
-        if (factionName == null || factionName.isBlank()) {
-            return null;
-        }
-        return switch (factionName) {
-            case "BAD" -> GrantEventHooks.WinFaction.KILLER;
-            case "SIN_KILLER_SHARE" -> killerWon
-                    ? GrantEventHooks.WinFaction.KILLER
-                    : GrantEventHooks.WinFaction.NEUTRAL;
-            case "SIN_INDEPENDENT" -> GrantEventHooks.WinFaction.NEUTRAL;
-            case "GOOD" -> GrantEventHooks.WinFaction.PASSENGER;
-            default -> null;
-        };
+        MatchWinFaction faction = MatchWinFaction.fromBlackoutName(factionName, killerWon);
+        return faction == null ? null : GrantEventHooks.WinFaction.from(faction);
     }
 
     /**

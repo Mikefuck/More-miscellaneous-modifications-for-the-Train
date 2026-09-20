@@ -582,60 +582,110 @@ public final class PlayerLotteryStore {
         update(uuid, d -> d.coinNum = Math.max(0, value));
     }
 
+    /**
+     * 批量写在线玩家抽数（审核 B-20）。
+     *
+     * <p>旧实现逐人 {@code setLootChance + flush} 并丢弃 flush 返回值，
+     * 最后把<b>循环次数</b>当成成功人数返回——磁盘满 / 世界只读时会向管理员
+     * 虚报「已为在线 N 人调整」而实际一个都没落盘。
+     *
+     * <p>现在逐人快照 + 检查 flush，失败即回滚该玩家并<b>不计入</b>返回计数，
+     * 因此返回值是真实的成功人数。
+     *
+     * @return 真正写入成功的玩家数
+     */
     public int setLootChanceToOnline(MinecraftServer server, int value) {
         if (server == null) {
             return 0;
         }
         int count = 0;
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            setLootChance(sp.getUUID(), value);
-            flush(sp.getUUID());
-            EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-            count++;
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.lootChance = Math.max(0, value))) {
+                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
+                count++;
+            }
         }
         return count;
     }
 
+    /** 批量加在线玩家抽数（审核 B-20，语义同 {@link #setLootChanceToOnline}）。 */
     public int addLootChanceToOnline(MinecraftServer server, int delta) {
         if (server == null) {
             return 0;
         }
         int count = 0;
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            addLootChance(sp.getUUID(), delta);
-            flush(sp.getUUID());
-            EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-            count++;
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.lootChance = Math.max(0, d.lootChance + delta))) {
+                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
+                count++;
+            }
         }
         return count;
     }
 
+    /** 批量加在线玩家金币（审核 B-20，语义同 {@link #setLootChanceToOnline}）。 */
     public int addCoinsToOnline(MinecraftServer server, int delta) {
         if (server == null) {
             return 0;
         }
         int count = 0;
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            addCoinNum(sp.getUUID(), delta);
-            flush(sp.getUUID());
-            EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-            count++;
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.coinNum = Math.max(0, d.coinNum + delta))) {
+                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
+                count++;
+            }
         }
         return count;
     }
 
+    /** 批量清零在线玩家金币（审核 B-20，语义同 {@link #setLootChanceToOnline}）。 */
     public int clearCoinsForOnline(MinecraftServer server) {
         if (server == null) {
             return 0;
         }
         int count = 0;
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            setCoinNum(sp.getUUID(), 0);
-            flush(sp.getUUID());
-            EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-            count++;
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.coinNum = 0)) {
+                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
+                count++;
+            }
         }
         return count;
+    }
+
+    /** 设置在线玩家金币（审核 B-20）。 */
+    public int setCoinsToOnline(MinecraftServer server, int value) {
+        if (server == null) {
+            return 0;
+        }
+        int count = 0;
+        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.coinNum = Math.max(0, value))) {
+                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 审核 B-20：单玩家「改动 + 落盘 + 失败回滚」的公共实现。
+     *
+     * @return {@code true} 表示改动已成功持久化；{@code false} 表示已回滚、调用方不得计为成功
+     */
+    public boolean applyToPlayerWithRollback(UUID uuid, java.util.function.Consumer<PlayerLotteryData> mutator) {
+        if (uuid == null || mutator == null || isLoadFailed(uuid)) {
+            return false;
+        }
+        PlayerLotteryData snapshot = getOrLoad(uuid).copy();
+        boolean wasDirty = isDirty(uuid);
+        update(uuid, mutator);
+        if (flush(uuid)) {
+            return true;
+        }
+        restoreSnapshot(uuid, snapshot, wasDirty);
+        HabiLotteryMod.LOGGER.error("bulk write failed for {}; rolled back (audit B-20)", uuid);
+        return false;
     }
 
     public java.util.List<com.habitrain.lottery.network.PlayerAdminModels.PlayerRow> listPlayers(MinecraftServer server) {

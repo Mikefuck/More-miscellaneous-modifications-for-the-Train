@@ -1135,7 +1135,6 @@ public class LotteryConfigRootScreen extends Screen {
                 }
             }
             playerSearchQuery = next;
-            playerAssetsViewState.setSearch(next);
             if (narrow) {
                 playerAssetsViewState.setNarrowPage(PlayerAssetsViewState.NarrowPage.LIST);
             }
@@ -1181,7 +1180,6 @@ public class LotteryConfigRootScreen extends Screen {
             if (fi >= 0 && fi < rows.size()) {
                 PlayerAdminModels.PlayerRow row = rows.get(fi);
                 selectedPlayerUuid = row != null && row.uuid != null ? row.uuid : "";
-                playerAssetsViewState.setSelectedUuid(selectedPlayerUuid);
                 if (narrow) {
                     playerAssetsViewState.setNarrowPage(PlayerAssetsViewState.NarrowPage.DETAIL);
                 }
@@ -1236,13 +1234,11 @@ public class LotteryConfigRootScreen extends Screen {
             addTab(Button.builder(Component.literal((playerCardsPage ? "○ " : "● ")
                             + Component.translatable("screen.habitrain_lottery.config.players.base_assets").getString()), b -> {
                         playerCardsPage = false;
-                        playerAssetsViewState.setDetailPage(PlayerAssetsViewState.DetailPage.BASE);
                         rebuildTabContent();
                     }).bounds(tabX, tabY, tabW, 20).build());
             addTab(Button.builder(Component.literal((playerCardsPage ? "● " : "○ ")
                             + Component.translatable("screen.habitrain_lottery.config.players.role_cards").getString()), b -> {
                         playerCardsPage = true;
-                        playerAssetsViewState.setDetailPage(PlayerAssetsViewState.DetailPage.CARDS);
                         playerAssetsViewState.setCardScroll(0);
                         rebuildTabContent();
                     }).bounds(tabX + tabW + 4, tabY, tabW, 20).build());

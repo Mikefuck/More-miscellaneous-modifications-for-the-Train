@@ -1,6 +1,6 @@
 package com.habitrain.lottery.mixin;
 
-import com.habitrain.core.game.sre.EliminatedRestAreaService;
+import com.habitrain.lottery.bridge.RestAreaStateBridge;
 import net.exmo.sre.nametag.NameTagInventoryComponent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ComponentUtils;
@@ -70,11 +70,13 @@ public class NameTagGenerateLiteralMixin {
         if (!(player instanceof ServerPlayer sp)) {
             return false;
         }
-        try {
-            return EliminatedRestAreaService.isResting(sp);
-        } catch (Throwable ignored) {
+        // 审核 B-01：经本模组的单一桥接调用核心公开层，不再越层 import 实现层服务。
+        // 注意这是名牌渲染路径（非门禁）：桥接在核心缺失时的 fail-closed 会返回 true，
+        // 此时直接退化为「不按休息处理」，避免整屏名牌在核心缺失时被误渲染。
+        if (!RestAreaStateBridge.isAvailable()) {
             return false;
         }
+        return RestAreaStateBridge.isResting(sp);
     }
 
     @Unique

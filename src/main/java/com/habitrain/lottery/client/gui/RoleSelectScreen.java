@@ -61,13 +61,7 @@ public class RoleSelectScreen extends Screen {
     // 全部取自 {@link CardUiStyle}：角色卡背包页与自选卡页共用同一份色板，两处不能各自
     // 漂移。这里保留同名别名只是为了让本文件里的调用点保持简短。
     // ---------------------------------------------------------------------
-    private static final int BG_TOP = CardUiStyle.BG_TOP;
-    private static final int BG_BOTTOM = CardUiStyle.BG_BOTTOM;
-    private static final int PANEL_TOP = CardUiStyle.PANEL_TOP;
-    private static final int PANEL_BOTTOM = CardUiStyle.PANEL_BOTTOM;
-    private static final int PANEL_BORDER = CardUiStyle.PANEL_BORDER;
     private static final int GOLD = CardUiStyle.GOLD;
-    private static final int GOLD_DEEP = CardUiStyle.GOLD_DEEP;
     private static final int CYAN = CardUiStyle.CYAN;
     private static final int TEXT = CardUiStyle.TEXT;
     private static final int MUTED = CardUiStyle.MUTED;
@@ -78,7 +72,6 @@ public class RoleSelectScreen extends Screen {
     private static final int CARD_GAP = 8;
     private static final int MAX_COLUMNS = 5;
     private static final int CARD_RADIUS = CardUiStyle.CARD_RADIUS;
-    private static final int PANEL_RADIUS = CardUiStyle.PANEL_RADIUS;
 
     private static final float CARD_STAGGER_MILLIS = 34.0F;
     private static final float CARD_ENTER_WINDOW_MILLIS = 470.0F;
@@ -148,6 +141,11 @@ public class RoleSelectScreen extends Screen {
         public String name;
         public int color;
         public String bound;
+        /**
+         * 是否已被本局其他玩家自选占用。服务端在下发候选时就标记好，
+         * 客户端据此置灰并禁止点击，避免玩家选到一个必然被服务端拒绝的角色。
+         */
+        public boolean taken;
 
         private transient String cachedDisplayName;
         private transient String cachedBoundDisplayName;
@@ -206,6 +204,11 @@ public class RoleSelectScreen extends Screen {
     private RoleCardWidget confirmingCard;
     private Candidate confirmedCandidate;
     private long confirmStartMillis;
+
+    /** 一次性页脚提示（例如「没有自选卡」/「提交失败」），到时自动消失。 */
+    private Component noticeText;
+    private long noticeMillis;
+    private static final float NOTICE_MILLIS = 1800.0F;
 
     private int page;
     private int pageCount = 1;
@@ -497,7 +500,11 @@ public class RoleSelectScreen extends Screen {
             removeWidget(card);
         }
         roleCards.clear();
-        confirmingCard = null;
+        // 刻意不清 confirmingCard：确认动画（200ms）期间 resize 会重建控件树，
+        // 在这里清掉的话这一次点击就永远不会发包，也没有任何提示。
+        // 真正的清理交给 closeForGameStart / submitConfirmed。
+        // 原生焦点必须一并清除，否则已移除的卡片仍会收到 Enter。
+        setFocused(null);
         focusedCard = null;
         if (previousPageButton != null) {
             removeWidget(previousPageButton);
@@ -522,6 +529,27 @@ public class RoleSelectScreen extends Screen {
         return key == null ? "" : key;
     }
 
+    /** 持有的自选卡数量（服务端下发，客户端不推算）。 */
+    private static int selfSelectCardCount() {
+        return Math.max(0,
+                LotteryNetwork.ClientLotteryState.cardBalances.getOrDefault("self_select", 0));
+    }
+
+    /** 今日剩余的自选次数。 */
+    private static int selfSelectUsesLeft() {
+        return Math.max(0, LotteryNetwork.ClientLotteryState.cardUseRemainingSelfUses);
+    }
+
+    /**
+     * 是否真的可以用一张自选卡：持有 ≥ 1 张且今日次数 > 0。
+     *
+     * <p>老实现只看次数，于是 0 张自选卡时右上角仍显示金色可用，点击还会走完确认动画
+     * 并把页面关掉，只在聊天栏丢下一行报错。</p>
+     */
+    private static boolean hasUsableCard() {
+        return selfSelectCardCount() > 0 && selfSelectUsesLeft() > 0;
+    }
+
     /** 现在是否还允许提交；顺带处理「已开局」时的自动返回。 */
     private boolean canSubmit() {
         if (closedForGameStart || selectionSubmitted) {
@@ -531,7 +559,17 @@ public class RoleSelectScreen extends Screen {
             closeForGameStart();
             return false;
         }
-        return !questKey().isBlank();
+        return !questKey().isBlank() && hasUsableCard();
+    }
+
+    private void showNotice(Component text) {
+        noticeText = text;
+        noticeMillis = System.currentTimeMillis();
+    }
+
+    private boolean noticeActive() {
+        return noticeText != null
+                && System.currentTimeMillis() - noticeMillis < (long) NOTICE_MILLIS;
     }
 
     /**
@@ -546,7 +584,14 @@ public class RoleSelectScreen extends Screen {
         if (candidate == null || candidate.id == null || candidate.id.isBlank()) {
             return;
         }
+        if (candidate.taken) {
+            showNotice(Component.translatable("screen.habitrain_lottery.role_select.taken"));
+            return;
+        }
         if (!canSubmit()) {
+            if (!closedForGameStart && !selectionSubmitted && !hasUsableCard()) {
+                showNotice(Component.translatable("screen.habitrain_lottery.role_select.no_card"));
+            }
             return;
         }
         confirmingCard = card;
@@ -559,13 +604,21 @@ public class RoleSelectScreen extends Screen {
         if (selectionSubmitted || closedForGameStart) {
             return;
         }
-        selectionSubmitted = true;
         String roleId = confirmedCandidate == null ? "" : confirmedCandidate.id;
+        boolean sent;
         try {
-            LotteryClientNetwork.clientCardUseConfirm(questKey(), "self", roleId);
+            sent = LotteryClientNetwork.clientCardUseConfirm(questKey(), "self", roleId);
         } catch (Throwable ignored) {
-            // 网络层失败也不能把玩家卡在已完成的选择页：下面统一返回。
+            sent = false;
         }
+        if (!sent) {
+            // 发包失败不能把玩家卡在「已完成」状态：留在本页，恢复可点击并说明原因。
+            confirmingCard = null;
+            confirmedCandidate = null;
+            showNotice(Component.translatable("screen.habitrain_lottery.role_select.send_failed"));
+            return;
+        }
+        selectionSubmitted = true;
         // 选择已经提交后立即返回职业卡父页面；服务端负责最终校验。
         if (parent instanceof CardUseMenuScreen menu) {
             menu.closeAfterSelection();
@@ -804,14 +857,15 @@ public class RoleSelectScreen extends Screen {
         }
 
         // 右上：持有数量 + 今日剩余次数
-        int owned = LotteryNetwork.ClientLotteryState.cardBalances.getOrDefault("self_select", 0);
-        int remaining = Math.max(0, LotteryNetwork.ClientLotteryState.cardUseRemainingSelfUses);
+        int owned = selfSelectCardCount();
+        int remaining = selfSelectUsesLeft();
         String stats = Component.translatable("screen.habitrain_lottery.role_select.stats", owned, remaining)
                 .getString();
         int statsW = font.width(stats) + 22;
         int statsX = panelX + panelW - pad - statsW;
         int statsY = titleY + 1;
-        boolean usable = remaining > 0;
+        // 只持有 0 张时不再显示成金色「可用」：与服务端 canSubmit 的判定保持同源。
+        boolean usable = hasUsableCard();
         int statsColor = usable ? GOLD : DANGER;
         GuiFx.roundGradient(graphics, statsX, statsY, statsX + statsW, statsY + 17, 8,
                 GuiFx.alpha(0xFF1B2434, 235), GuiFx.alpha(0xFF121821, 235));
@@ -884,24 +938,40 @@ public class RoleSelectScreen extends Screen {
         GuiFx.gradient(graphics, contentX, footerTop + 1, contentX + contentW, footerTop + 2,
                 GuiFx.alpha(0xFF3C4A5E, 130), GuiFx.alpha(0xFF3C4A5E, 20));
 
+        // 页脚只有一行，三种内容共用：一次性提示 > 确认反馈 > 提示 + 快捷键。
+        // 老实现把确认提示画在 hintY 附近、同时又照画提示与快捷键，窄面板下必然叠字。
         int hintY = footerTop + (compact ? 7 : 9);
-        graphics.drawString(font, Component.translatable("screen.habitrain_lottery.role_select.hint"),
-                contentX, hintY, MUTED, false);
-        String keys = Component.translatable("screen.habitrain_lottery.role_select.keys").getString();
-        graphics.drawString(font, Component.literal(keys),
-                panelX + panelW - pad - font.width(keys), hintY, DIM, false);
-
-        // 确认中：在翻页行上方给出明确反馈
-        if (confirmingCard != null && confirmedCandidate != null) {
+        if (noticeActive()) {
+            String notice = font.plainSubstrByWidth(noticeText.getString(), contentW);
+            float t = GuiFx.clamp01(
+                    (System.currentTimeMillis() - noticeMillis) / NOTICE_MILLIS);
+            GuiFx.centered(graphics, font, Component.literal(notice), panelX + panelW / 2, hintY,
+                    GuiFx.fade(DANGER, 1.0F - t * 0.7F));
+        } else if (confirmingCard != null && confirmedCandidate != null) {
             float t = GuiFx.progress(nowMillis, confirmStartMillis, CONFIRM_MILLIS);
             Component message = Component.translatable("screen.habitrain_lottery.role_select.confirming",
                     confirmedCandidate.displayName());
             int color = GuiFx.mix(GOLD, 0xFFFFFFFF, GuiFx.pulse(t));
-            GuiFx.centered(graphics, font, message, panelX + panelW / 2, navY - 13,
+            String text = font.plainSubstrByWidth(message.getString(), contentW);
+            GuiFx.centered(graphics, font, Component.literal(text), panelX + panelW / 2, hintY,
                     GuiFx.fade(color, 0.35F + 0.65F * t));
-        } else if (pageCount > 1) {
-            GuiFx.centered(graphics, font, Component.literal("\u2039  \u00B7  \u00B7  \u00B7  \u203A"),
-                    panelX + panelW / 2, navY + 6, GuiFx.alpha(MUTED, 70));
+        } else {
+            // 提示在左、快捷键在右，同处一行：各给一半预算并按需截断，绝不左右对撞。
+            String keys = font.plainSubstrByWidth(
+                    Component.translatable("screen.habitrain_lottery.role_select.keys").getString(),
+                    Math.max(24, contentW / 2));
+            int keysW = font.width(keys);
+            String hint = font.plainSubstrByWidth(
+                    Component.translatable("screen.habitrain_lottery.role_select.hint").getString(),
+                    Math.max(24, contentW - keysW - 8));
+            graphics.drawString(font, Component.literal(hint), contentX, hintY, MUTED, false);
+            graphics.drawString(font, Component.literal(keys),
+                    panelX + panelW - pad - keysW, hintY, DIM, false);
+
+            if (pageCount > 1) {
+                GuiFx.centered(graphics, font, Component.literal("\u2039  \u00B7  \u00B7  \u00B7  \u203A"),
+                        panelX + panelW / 2, navY + 6, GuiFx.alpha(MUTED, 70));
+            }
         }
     }
 
@@ -996,6 +1066,8 @@ public class RoleSelectScreen extends Screen {
             this.cardY = y;
             this.enterOrder = enterCursor++;
             this.enterStartMillis = cardEnterTimes.computeIfAbsent(candidate.id, key -> pageEnterMillis);
+            // 已被他人占用的职业不可点击：靠 active 让原版控件层直接吞掉点击与点击音。
+            this.active = !candidate.taken;
 
             String boundText = "";
             if (candidate.isBound()) {
@@ -1004,9 +1076,11 @@ public class RoleSelectScreen extends Screen {
                         boundName.isBlank() ? shortId(candidate.bound)
                                 : boundName + " (" + shortId(candidate.bound) + ")").getString();
             }
+            String tail = candidate.taken
+                    ? Component.translatable("screen.habitrain_lottery.role_select.taken").getString()
+                    : Component.translatable("screen.habitrain_lottery.role_select.card_tip").getString();
             setTooltip(Tooltip.create(Component.literal(candidate.displayName()
-                    + "\n" + candidate.id + boundText + "\n"
-                    + Component.translatable("screen.habitrain_lottery.role_select.card_tip").getString())));
+                    + "\n" + candidate.id + boundText + "\n" + tail)));
         }
 
         /** 本卡片的入场进度（0..1），错峰延迟由序号决定。 */
@@ -1018,7 +1092,7 @@ public class RoleSelectScreen extends Screen {
 
         /** 是否被鼠标指向或键盘选中；命名避开 {@link AbstractWidget#isHoveredOrFocused()}。 */
         private boolean wantsAttention() {
-            return (active && isHovered) || isFocused();
+            return active && (isHovered || isFocused());
         }
 
         private boolean isConfirming() {
@@ -1096,6 +1170,9 @@ public class RoleSelectScreen extends Screen {
             drawPortrait(graphics, accent, faction, lift, pop);
             drawNameplate(graphics, accent, lift);
 
+            if (candidate.taken) {
+                drawTakenOverlay(graphics);
+            }
             if (confirming) {
                 drawConfirmOverlay(graphics, accent, confirmT);
             }
@@ -1103,6 +1180,25 @@ public class RoleSelectScreen extends Screen {
                 GuiFx.roundOutline(graphics, x0 - 2, y0 - 2, x1 + 2, y1 + 2, CARD_RADIUS + 2,
                         GuiFx.fade(GOLD, focusAnim * 0.75F));
             }
+        }
+
+        /** 已被他人自选占用的职业：整体压暗 + 居中的「已被占用」标记，明确不可点。 */
+        private void drawTakenOverlay(GuiGraphics graphics) {
+            int x0 = cardX;
+            int y0 = cardY;
+            int x1 = cardX + width;
+            int y1 = cardY + height;
+            GuiFx.roundRect(graphics, x0 + 1, y0 + 1, x1 - 1, y1 - 1, CARD_RADIUS - 1, 0x8C0B0A10);
+
+            String label = font.plainSubstrByWidth(
+                    Component.translatable("screen.habitrain_lottery.role_select.taken").getString(),
+                    Math.max(20, width - 12));
+            int tw = font.width(label) + 12;
+            int tx = x0 + (width - tw) / 2;
+            int ty = y0 + height / 2 - 7;
+            GuiFx.roundRect(graphics, tx, ty, tx + tw, ty + 14, 4, GuiFx.alpha(0xFF3A1418, 235));
+            GuiFx.roundOutline(graphics, tx, ty, tx + tw, ty + 14, 4, GuiFx.fade(DANGER, 0.85F));
+            GuiFx.centered(graphics, font, Component.literal(label), tx + tw / 2, ty + 4, DANGER);
         }
 
         /** 确认反馈：外圈脉冲 + 上升星点 + 右上勾选。 */
@@ -1264,6 +1360,9 @@ public class RoleSelectScreen extends Screen {
 
         @Override
         public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (button != 0 || !active) {
+                return false;
+            }
             pressed = true;
             return super.mouseClicked(mouseX, mouseY, button);
         }

@@ -20,6 +20,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -29,54 +30,242 @@ import java.util.function.BooleanSupplier;
  *
  * <p>Claims acquire a persisted lock before granting rewards. Failed grants
  * reopen the mail only after every reward store has been restored.
+ *
+ * <h2>Concurrency (audit B-15)</h2>
+ * <p>Every read-modify-write of a mailbox file runs under a per-recipient monitor
+ * ({@link #mailboxLock(UUID)}), the same pattern {@code LootRollServer} uses for rolls:
+ * <ul>
+ *   <li>the monitor is a plain {@code synchronized} object, so it is <b>reentrant</b> —
+ *       {@link #claimAll} holds it for the player and calls {@link #claimInternal}, which
+ *       takes it again for the same player;</li>
+ *   <li>it is always taken for <b>exactly one</b> UUID per operation. {@code send},
+ *       {@code sendOffline}, {@code claim}, {@code claimAll} and {@code list} each touch a
+ *       single mailbox, so two mailbox locks are never held at the same time and no
+ *       lock-order inversion is possible. An operation that had to touch two mailboxes
+ *       would have to establish a fixed order first; none does today.</li>
+ *   <li>{@link #list} takes the same lock even though it is a read for the caller: it
+ *       persists read flags and the claim reconciliation below, so a concurrent claim
+ *       briefly blocks a list instead of racing it. Both still complete; neither deadlocks.</li>
+ * </ul>
+ * <p>{@link #MAILBOX_LOCKS} is never evicted (one small monitor per player UUID ever seen),
+ * mirroring {@code LootRollServer.ROLL_LOCKS}.
+ *
+ * <h2>Recoverable claims (audit B-14)</h2>
+ * <p>The durable "claim in progress" marker is a {@code hltclaim:v1:<mailId>} token inside
+ * the existing {@link MailJson#commands} list. The mailbox JSON schema is unchanged and no
+ * new file is created; {@link MailCommandsCodec} ignores the token because it only
+ * understands the {@code hltmail:v1:} prefix, and so does the client mailbox screen.
+ * The order of durable writes is:
+ * <ol>
+ *   <li>before the grant: marker added, persisted <b>while {@code claimed} stays
+ *       {@code false}</b> — so an {@link Error} or a hard kill during the grant can never
+ *       leave a durably "claimed" mail whose rewards were never delivered;</li>
+ *   <li>after a successful grant: {@code claimed=true} persisted and the marker removed;</li>
+ *   <li>after a successful rollback: marker removed, mail claimable again;</li>
+ *   <li>when the rollback itself failed: the marker is replaced by
+ *       {@code hltclaimfailed:v1:<mailId>} and the mail is persisted as claimed, so a
+ *       restart does <b>not</b> silently re-open a mail whose compensation is unknown.</li>
+ * </ol>
+ * <p>{@link #reconcileClaimMarkers} runs on every mailbox load through
+ * {@link #loadReconciled(UUID)}: an interrupted in-flight marker logs a WARN naming the
+ * mail id and returns that mail to the claimable state; an unresolved marker is left locked
+ * and logged at ERROR once per mail.
  */
 public final class MailService {
+    /**
+     * Per-recipient mailbox monitor (audit B-15), mirroring
+     * {@code LootRollServer.ROLL_LOCKS}. Reentrant, one entry per player UUID, never evicted.
+     */
+    private static final ConcurrentHashMap<UUID, Object> MAILBOX_LOCKS = new ConcurrentHashMap<>();
+
+    /** In-flight claim marker token prefix. Deliberately not a {@code hltmail:v1:} token. */
+    static final String CLAIMING_PREFIX = "hltclaim:v1:";
+
+    /** Marker for a claim whose compensation failed: the mail stays locked on purpose. */
+    static final String CLAIM_FAILED_PREFIX = "hltclaimfailed:v1:";
+
+    /** Deduplicates the "unresolved claim" ERROR log, which is re-checked on every load. */
+    private static final java.util.Set<String> LOGGED_UNRESOLVED_CLAIMS = ConcurrentHashMap.newKeySet();
+
     private MailService() {
+    }
+
+    private static Object mailboxLock(UUID uuid) {
+        return MAILBOX_LOCKS.computeIfAbsent(uuid, id -> new Object());
+    }
+
+    /**
+     * Loads the mailbox and reconciles interrupted claims before anybody uses it.
+     *
+     * <p>The {@link MailLoad} returned by the store exposes the live list it parsed, so
+     * reconciling {@code loaded.mails()} in place also changes what the caller sees.
+     *
+     * @return the loaded mailbox; {@code corrupt} loads are returned untouched
+     */
+    private static MailLoad loadReconciled(UUID uuid) {
+        MailLoad loaded = LocalMailboxStore.loadWithStatus(uuid);
+        List<MailJson> mails = loaded.mails();
+        if (loaded.corrupt() || mails == null) {
+            return loaded;
+        }
+        if (reconcileClaimMarkers(uuid, mails) && !LocalMailboxStore.save(uuid, mails)) {
+            HabiLotteryMod.LOGGER.error(
+                    "Failed persisting the reconciled mailbox of {}; the interrupted claim will be "
+                            + "reconciled again on the next load", uuid);
+        }
+        return loaded;
+    }
+
+    /**
+     * Repairs the durable state left behind by an interrupted claim (audit B-14).
+     *
+     * <ul>
+     *   <li>{@code hltclaim:v1:} (in flight, so the process died between the pre-grant write
+     *       and the post-grant write): logs a WARN naming the mail id and returns the mail to
+     *       the claimable state. {@code claimed} is normally already {@code false} — it is
+     *       only persisted after a delivered reward — but a mailbox written by an older build
+     *       can carry {@code claimed=true}, and that case is reopened explicitly.</li>
+     *   <li>{@code hltclaimfailed:v1:} (compensation failed while the server was up): left
+     *       locked on purpose and logged at ERROR, because its rewards cannot be proven absent
+     *       and re-opening it could double-grant.</li>
+     * </ul>
+     *
+     * @return {@code true} when {@code list} changed and must be persisted
+     */
+    static boolean reconcileClaimMarkers(UUID uuid, List<MailJson> list) {
+        if (list == null || list.isEmpty()) {
+            return false;
+        }
+        boolean changed = false;
+        for (MailJson mail : list) {
+            if (mail == null) {
+                continue;
+            }
+            if (hasPrefix(mail, CLAIM_FAILED_PREFIX)) {
+                if (LOGGED_UNRESOLVED_CLAIMS.add(uuid + "/" + mail.id)) {
+                    HabiLotteryMod.LOGGER.error(
+                            "Mail {} for {} still carries an unresolved claim marker (a reward rollback "
+                                    + "failed earlier); leaving it locked for manual recovery",
+                            mail.id, uuid);
+                }
+                continue;
+            }
+            if (!hasPrefix(mail, CLAIMING_PREFIX)) {
+                continue;
+            }
+            clearClaimMarkers(mail);
+            if (mail.claimed) {
+                // Legacy/hybrid state: `claimed` had been persisted before the grant and the
+                // in-flight marker was never cleared, so the reward is absent -> reopen.
+                mail.claimed = false;
+                mail.read = false;
+            }
+            changed = true;
+            HabiLotteryMod.LOGGER.warn(
+                    "Interrupted mail claim: mail {} for {} was left in progress; it is claimable "
+                            + "again — verify manually whether any partial reward was granted",
+                    mail.id, uuid);
+        }
+        return changed;
+    }
+
+    /** Adds the durable in-flight marker. {@code claimed} is deliberately left untouched. */
+    static void markClaiming(MailJson mail) {
+        setClaimMarker(mail, CLAIMING_PREFIX);
+    }
+
+    /** Marks a claim whose compensation failed, so a restart keeps it locked. */
+    static void markClaimFailed(MailJson mail) {
+        setClaimMarker(mail, CLAIM_FAILED_PREFIX);
+    }
+
+    private static void setClaimMarker(MailJson mail, String prefix) {
+        if (mail == null || mail.commands == null) {
+            return;
+        }
+        clearClaimMarkers(mail);
+        mail.commands.add(prefix + (mail.id == null ? "" : mail.id));
+    }
+
+    /** Removes every claim marker; reward tokens are untouched. */
+    static void clearClaimMarkers(MailJson mail) {
+        if (mail == null || mail.commands == null) {
+            return;
+        }
+        mail.commands.removeIf(MailService::isClaimMarker);
+    }
+
+    /** True for both marker kinds; {@code hltmail:v1:} reward tokens are never markers. */
+    static boolean isClaimMarker(String token) {
+        return token != null && (token.startsWith(CLAIMING_PREFIX) || token.startsWith(CLAIM_FAILED_PREFIX));
+    }
+
+    static boolean hasClaimingMarker(MailJson mail) {
+        return hasPrefix(mail, CLAIMING_PREFIX);
+    }
+
+    private static boolean hasPrefix(MailJson mail, String prefix) {
+        if (mail == null || mail.commands == null || prefix == null) {
+            return false;
+        }
+        for (String token : mail.commands) {
+            if (token != null && token.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static boolean send(ServerPlayer target, MailDraft draft) {
         if (target == null || draft == null || !WorldLotteryPaths.ready()) {
             return false;
         }
-        try {
-            MailLoad loaded = LocalMailboxStore.loadWithStatus(target.getUUID());
-            if (loaded.corrupt()) {
-                HabiLotteryMod.LOGGER.error("Refusing to send mail over corrupt mailbox {}", target.getUUID());
+        UUID uuid = target.getUUID();
+        boolean queued;
+        synchronized (mailboxLock(uuid)) {
+            try {
+                MailLoad loaded = loadReconciled(uuid);
+                if (loaded.corrupt()) {
+                    HabiLotteryMod.LOGGER.error("Refusing to send mail over corrupt mailbox {}", uuid);
+                    return false;
+                }
+                List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
+                list.add(LocalMailboxStore.fromDraft(draft));
+                queued = LocalMailboxStore.save(uuid, list);
+            } catch (Exception e) {
+                HabiLotteryMod.LOGGER.error("send mail to {} failed", target.getGameProfile().getName(), e);
                 return false;
             }
-            List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
-            list.add(LocalMailboxStore.fromDraft(draft));
-            if (!LocalMailboxStore.save(target.getUUID(), list)) {
-                return false;
-            }
-            target.sendSystemMessage(Component.literal("§a[邮箱] 你收到一封新邮件：" + draft.title()));
-            return true;
-        } catch (Exception e) {
-            HabiLotteryMod.LOGGER.error("send mail to {} failed", target.getGameProfile().getName(), e);
+        }
+        if (!queued) {
             return false;
         }
+        target.sendSystemMessage(Component.literal("§a[邮箱] 你收到一封新邮件：" + draft.title()));
+        return true;
     }
 
     public static boolean sendOffline(UUID uuid, String nameHint, MailDraft draft) {
         if (uuid == null || draft == null || !WorldLotteryPaths.ready()) {
             return false;
         }
-        try {
-            MailLoad loaded = LocalMailboxStore.loadWithStatus(uuid);
-            if (loaded.corrupt()) {
-                HabiLotteryMod.LOGGER.error("Refusing to send offline mail over corrupt mailbox {}", uuid);
+        synchronized (mailboxLock(uuid)) {
+            try {
+                MailLoad loaded = loadReconciled(uuid);
+                if (loaded.corrupt()) {
+                    HabiLotteryMod.LOGGER.error("Refusing to send offline mail over corrupt mailbox {}", uuid);
+                    return false;
+                }
+                List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
+                list.add(LocalMailboxStore.fromDraft(draft));
+                if (!LocalMailboxStore.save(uuid, list)) {
+                    return false;
+                }
+                HabiLotteryMod.LOGGER.info("Queued offline mail for {} ({})", nameHint, uuid);
+                return true;
+            } catch (Exception e) {
+                HabiLotteryMod.LOGGER.error("offline mail to {} failed", uuid, e);
                 return false;
             }
-            List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
-            list.add(LocalMailboxStore.fromDraft(draft));
-            if (!LocalMailboxStore.save(uuid, list)) {
-                return false;
-            }
-            HabiLotteryMod.LOGGER.info("Queued offline mail for {} ({})", nameHint, uuid);
-            return true;
-        } catch (Exception e) {
-            HabiLotteryMod.LOGGER.error("offline mail to {} failed", uuid, e);
-            return false;
         }
     }
 
@@ -91,6 +280,10 @@ public final class MailService {
     /**
      * Claims all unclaimed, unexpired mails using the same per-mail transaction
      * as {@link #claim}. Not wired to a C2S packet.
+     *
+     * <p>Holds the player's mailbox monitor for the whole sweep (the lock is reentrant, so
+     * the nested {@link #claimInternal} calls re-enter it); the id snapshot therefore cannot
+     * go stale against a concurrent send.
      */
     public static int claimAll(ServerPlayer player) {
         if (player == null || !WorldLotteryPaths.ready()) {
@@ -100,73 +293,83 @@ public final class MailService {
             player.sendSystemMessage(Component.literal(PlayerStateGate.MAIL_BLOCKED));
             return 0;
         }
-        MailLoad loaded = LocalMailboxStore.loadWithStatus(player.getUUID());
-        if (loaded.corrupt()) {
-            HabiLotteryMod.LOGGER.error("Refusing claimAll on corrupt mailbox {}", player.getUUID());
-            player.sendSystemMessage(Component.literal("§c[邮箱] 邮箱数据损坏，无法领取"));
-            return 0;
-        }
-        List<String> ids = new ArrayList<>();
-        List<MailJson> list = loaded.mails() != null ? loaded.mails() : List.of();
-        for (MailJson m : list) {
-            if (m == null || m.claimed || LocalMailboxStore.isExpired(m) || m.id == null || m.id.isBlank()) {
-                continue;
+        UUID uuid = player.getUUID();
+        synchronized (mailboxLock(uuid)) {
+            MailLoad loaded = loadReconciled(uuid);
+            if (loaded.corrupt()) {
+                HabiLotteryMod.LOGGER.error("Refusing claimAll on corrupt mailbox {}", uuid);
+                player.sendSystemMessage(Component.literal("§c[邮箱] 邮箱数据损坏，无法领取"));
+                return 0;
             }
-            ids.add(m.id);
-        }
-        if (ids.isEmpty()) {
-            player.sendSystemMessage(Component.literal("§e[邮箱] 没有可领取的邮件"));
-            return 0;
-        }
-        int count = 0;
-        for (String id : ids) {
-            if (claimInternal(player, id, false)) {
-                count++;
+            List<String> ids = new ArrayList<>();
+            List<MailJson> list = loaded.mails() != null ? loaded.mails() : List.of();
+            for (MailJson m : list) {
+                if (m == null || m.claimed || hasClaimingMarker(m) || LocalMailboxStore.isExpired(m)
+                        || m.id == null || m.id.isBlank()) {
+                    continue;
+                }
+                ids.add(m.id);
             }
+            if (ids.isEmpty()) {
+                player.sendSystemMessage(Component.literal("§e[邮箱] 没有可领取的邮件"));
+                return 0;
+            }
+            int count = 0;
+            for (String id : ids) {
+                if (claimInternal(player, id, false)) {
+                    count++;
+                }
+            }
+            if (count > 0) {
+                player.sendSystemMessage(Component.literal("§a[邮箱] 已领取 " + count + " 封邮件"));
+            } else {
+                player.sendSystemMessage(Component.literal("§e[邮箱] 没有可领取的邮件"));
+            }
+            return count;
         }
-        if (count > 0) {
-            player.sendSystemMessage(Component.literal("§a[邮箱] 已领取 " + count + " 封邮件"));
-        } else {
-            player.sendSystemMessage(Component.literal("§e[邮箱] 没有可领取的邮件"));
-        }
-        return count;
     }
 
     /**
      * Returns the non-expired inbox, marking everything read (unread badge
      * source). Persists when the read flags changed. Corrupt files are not
      * overwritten.
+     *
+     * <p>Takes the caller's mailbox monitor (see the class javadoc): it can persist read
+     * flags, so it must not race a concurrent claim of the same player.
      */
     public static List<MailJson> list(ServerPlayer player) {
         if (player == null || !WorldLotteryPaths.ready()) {
             return new ArrayList<>();
         }
-        MailLoad loaded = LocalMailboxStore.loadWithStatus(player.getUUID());
-        if (loaded.corrupt()) {
-            HabiLotteryMod.LOGGER.error("Refusing list/save on corrupt mailbox {}", player.getUUID());
-            return new ArrayList<>();
-        }
-        List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
-        List<MailJson> out = new ArrayList<>();
-        boolean changed = false;
-        for (MailJson m : list) {
-            if (m == null) {
-                continue;
+        UUID uuid = player.getUUID();
+        synchronized (mailboxLock(uuid)) {
+            MailLoad loaded = loadReconciled(uuid);
+            if (loaded.corrupt()) {
+                HabiLotteryMod.LOGGER.error("Refusing list/save on corrupt mailbox {}", uuid);
+                return new ArrayList<>();
             }
-            if (LocalMailboxStore.isExpired(m)) {
-                changed = true;
-                continue;
+            List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
+            List<MailJson> out = new ArrayList<>();
+            boolean changed = false;
+            for (MailJson m : list) {
+                if (m == null) {
+                    continue;
+                }
+                if (LocalMailboxStore.isExpired(m)) {
+                    changed = true;
+                    continue;
+                }
+                if (!m.read) {
+                    m.read = true;
+                    changed = true;
+                }
+                out.add(m);
             }
-            if (!m.read) {
-                m.read = true;
-                changed = true;
+            if (changed && !LocalMailboxStore.save(uuid, list)) {
+                HabiLotteryMod.LOGGER.error("Failed persisting mailbox read flags for {}", uuid);
             }
-            out.add(m);
+            return out;
         }
-        if (changed && !LocalMailboxStore.save(player.getUUID(), list)) {
-            HabiLotteryMod.LOGGER.error("Failed persisting mailbox read flags for {}", player.getUUID());
-        }
-        return out;
     }
 
     static boolean claimInternal(ServerPlayer player, String mailId, boolean announce) {
@@ -179,7 +382,15 @@ public final class MailService {
             }
             return false;
         }
-        MailLoad loaded = LocalMailboxStore.loadWithStatus(player.getUUID());
+        synchronized (mailboxLock(player.getUUID())) {
+            return claimLocked(player, mailId, announce);
+        }
+    }
+
+    /** The claim transaction; always called with the player's mailbox monitor held. */
+    private static boolean claimLocked(ServerPlayer player, String mailId, boolean announce) {
+        UUID uuid = player.getUUID();
+        MailLoad loaded = loadReconciled(uuid);
         if (loaded.corrupt()) {
             if (announce) {
                 player.sendSystemMessage(Component.literal("§c[邮箱] 邮箱数据损坏，无法领取"));
@@ -203,34 +414,57 @@ public final class MailService {
         try {
             snap = snapshotRewards(player);
         } catch (RuntimeException failure) {
-            HabiLotteryMod.LOGGER.error("Cannot snapshot mail rewards for {}", player.getUUID(), failure);
+            HabiLotteryMod.LOGGER.error("Cannot snapshot mail rewards for {}", uuid, failure);
             player.sendSystemMessage(Component.literal("§c[邮箱] 玩家存档读取失败，未领取"));
             return false;
         }
         boolean wasRead = target.read;
-        markClaimed(target);
+        // B-14: the durable pre-grant lock is the in-flight marker, NOT `claimed`. The
+        // claimed flag must never reach disk before the rewards did, otherwise a crash
+        // leaves a mail that is claimed forever and never delivered.
+        markClaiming(target);
         var result = MailClaimTransaction.run(
-                () -> LocalMailboxStore.save(player.getUUID(), list),
+                () -> LocalMailboxStore.save(uuid, list),
                 () -> applyRewardsStrict(player, rewards),
                 () -> restoreRewards(player, snap),
                 () -> {
+                    clearClaimMarkers(target);
                     unmarkClaimed(target, wasRead);
-                    return LocalMailboxStore.save(player.getUUID(), list);
+                    return LocalMailboxStore.save(uuid, list);
                 });
-        if (result != MailClaimTransaction.Result.SUCCESS) {
-            if (result == MailClaimTransaction.Result.RECOVERY_REQUIRED) {
-                HabiLotteryMod.LOGGER.error("Mail {} for {} needs manual recovery; claim remains locked", mailId, player.getUUID());
-                player.sendSystemMessage(Component.literal("§c[邮箱] 领取失败且回滚未完成，请联系管理员核对；邮件已锁定以避免重复发放"));
-            } else {
-                player.sendSystemMessage(Component.literal(result == MailClaimTransaction.Result.ROLLED_BACK
-                        ? "§c[邮箱] 领取失败，奖励已回滚，可稍后重试" : "§c[邮箱] 领取存档失败，未发放奖励"));
+        if (result == MailClaimTransaction.Result.SUCCESS) {
+            clearClaimMarkers(target);
+            markClaimed(target);
+            if (!LocalMailboxStore.save(uuid, list)) {
+                HabiLotteryMod.LOGGER.error(
+                        "Mail {} for {} was delivered but the claimed flag could not be persisted; the "
+                                + "interrupted-claim reconciler may re-open it after a restart — check for "
+                                + "duplicate rewards",
+                        mailId, uuid);
             }
-            return false;
+            if (announce) {
+                player.sendSystemMessage(Component.literal("§a[邮箱] 已领取：" + target.title));
+            }
+            return true;
         }
-        if (announce) {
-            player.sendSystemMessage(Component.literal("§a[邮箱] 已领取：" + target.title));
+        if (result == MailClaimTransaction.Result.RECOVERY_REQUIRED) {
+            // Compensation failed: keep the mail locked across restarts, but say so with a
+            // marker the reconciler understands, so it is not mistaken for an in-flight claim.
+            markClaimFailed(target);
+            markClaimed(target);
+            if (!LocalMailboxStore.save(uuid, list)) {
+                HabiLotteryMod.LOGGER.error(
+                        "Failed persisting the unresolved-claim marker of mail {} for {}; a restart may "
+                                + "re-open a claim whose compensation failed",
+                        mailId, uuid);
+            }
+            HabiLotteryMod.LOGGER.error("Mail {} for {} needs manual recovery; claim remains locked", mailId, uuid);
+            player.sendSystemMessage(Component.literal("§c[邮箱] 领取失败且回滚未完成，请联系管理员核对；邮件已锁定以避免重复发放"));
+        } else {
+            player.sendSystemMessage(Component.literal(result == MailClaimTransaction.Result.ROLLED_BACK
+                    ? "§c[邮箱] 领取失败，奖励已回滚，可稍后重试" : "§c[邮箱] 领取存档失败，未发放奖励"));
         }
-        return true;
+        return false;
     }
 
     static MailJson findClaimable(List<MailJson> list, String mailId) {
@@ -238,7 +472,10 @@ public final class MailService {
             return null;
         }
         for (MailJson m : list) {
-            if (m == null || m.claimed || LocalMailboxStore.isExpired(m)) {
+            // A mail carrying an in-flight marker is mid-claim: never hand it out twice.
+            // (Mailboxes are reconciled on load, so this is defence in depth for a list
+            // that was obtained without going through loadReconciled.)
+            if (m == null || m.claimed || hasClaimingMarker(m) || LocalMailboxStore.isExpired(m)) {
                 continue;
             }
             if (mailId.equals(m.id)) {

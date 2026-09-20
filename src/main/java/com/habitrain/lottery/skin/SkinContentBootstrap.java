@@ -72,6 +72,17 @@ public final class SkinContentBootstrap {
         HabiSkinApi.reRegisterAll();
     }
 
+    /**
+     * Runs every third-party {@code habitrain_lottery:skin_registrar} entrypoint.
+     *
+     * <p><b>Audit S-04: a broken skin provider must not take the lottery offline.</b> This
+     * runs from {@code HabiLotteryMod.onInitialize()}, so letting a registrar's throwable
+     * escape would abort the whole mod (lottery + mailbox + titles) with an error that
+     * points at the lottery instead of at the failing provider. Each failure is therefore
+     * logged at ERROR with its mod id and throwable, the registrar is skipped, and the
+     * remaining registrars still run; a final WARN lists every skipped mod id so the
+     * degradation is impossible to miss.
+     */
     private static synchronized void loadExternalEntrypoints() {
         if (externalEntrypointsLoaded) {
             return;
@@ -82,14 +93,25 @@ public final class SkinContentBootstrap {
                 .stream()
                 .sorted(Comparator.comparing(container -> container.getProvider().getMetadata().getId()))
                 .toList();
+        List<String> skippedProviders = new java.util.ArrayList<>();
         for (EntrypointContainer<SkinRegistrar> container : containers) {
             String provider = container.getProvider().getMetadata().getId();
             try {
                 container.getEntrypoint().registerSkins();
                 HabiLotteryMod.LOGGER.info("Loaded skin API registrations from {}", provider);
             } catch (Throwable t) {
-                throw new IllegalStateException("Skin API registrar failed for mod " + provider, t);
+                skippedProviders.add(provider);
+                HabiLotteryMod.LOGGER.error(
+                        "Skin API registrar failed for mod {} — skipping that provider, "
+                                + "continuing with the remaining registrars",
+                        provider, t);
             }
+        }
+        if (!skippedProviders.isEmpty()) {
+            HabiLotteryMod.LOGGER.warn(
+                    "Skipped {} broken skin API registrar(s): {} — the lottery, mailbox and titles "
+                            + "still started, but skins registered by those mod(s) are missing",
+                    skippedProviders.size(), String.join(", ", skippedProviders));
         }
     }
 

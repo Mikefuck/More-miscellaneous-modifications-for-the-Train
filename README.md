@@ -177,14 +177,15 @@ SRE 原局内菜单的抽卡入口在大厅被注释掉了。本 mod 提供：
 | 地图轮换 | 请用 **哈比列车核心** Mod Menu → **地图设置**（需 OP / `habitrain_core`）。本 mod 不再提供大厅跳转 fallback |
 | 邮箱 | `{world}/habitrain_lottery/mail/players/`；OP `/hlt mail` 或 Mod Menu「邮箱」撰写 |
 
-**邮件奖励类型：** 抽数、金币、四种阵营卡（`killer` / `civilian` / `neutral` / `neutral_for_killer`）以及独立自选卡（`SELF_SELECT_CARD`）。在线、离线和全服收件模式均支持两类卡牌附件。  
-**卡牌本地权威：** `{world}/habitrain_lottery/backpack/players/`；四种阵营卡保存在 `cards`，自选卡保存在独立的 `selfSelectCards`。
+**邮件奖励类型：** 抽数、金币、四种阵营卡（`killer` / `civilian` / `neutral` / `neutral_for_killer`）、独立自选卡（`SELF_SELECT_CARD`）以及突破上限卡（`LIMIT_BREAK_CARD`）。在线、离线和全服收件模式均支持三类卡牌附件。  
+**卡牌本地权威：** `{world}/habitrain_lottery/backpack/players/`；四种阵营卡保存在 `cards`，自选卡与突破上限卡分别保存在独立的 `selfSelectCards` / `limitBreakCards`。
 
-**自选卡与阵营卡：** 背包提供独立入口，自选角色每次消耗 1 张自选卡，不消耗任何阵营卡；阵营卡只用于对应阵营的随机职业。两类卡分别计算每日使用次数（各 4 次），同一玩家下一局只能预约一个卡牌效果。Mod Menu 玩家资产支持分别查询、增减和设定两类余额。每日登录仍只发四种阵营卡各 1 张，不自动发自选卡。详见[1.0.4 审查修复说明](自选卡拆分审查修复说明-1.0.4.md)。
+**自选卡与阵营卡：** 背包提供独立入口，自选角色每次消耗 1 张自选卡，不消耗任何阵营卡；阵营卡只用于对应阵营的随机职业；突破上限卡每次消耗 1 张，使今日阵营卡可用次数 +1。阵营卡与自选卡分别计算每日使用次数（各 4 次），同一玩家下一局只能预约一个卡牌效果。Mod Menu 玩家资产支持分别查询、增减和设定各类余额。每日登录仍只发四种阵营卡各 1 张，不自动发自选卡。
 
 ### 相关命令
 
 - `/hlt mail` — OP 打开发信界面
+- `/hlt mailbox` — 打开自己的本地邮箱（无需 OP；审核 B-26 补记）
 - `/hlt coin <player> <amount>` — OP 调整金币
 - `/hlt grant <player> <amount>` — OP 调整抽数（原有）
 
@@ -201,4 +202,17 @@ SRE 原局内菜单的抽卡入口在大厅被注释掉了。本 mod 提供：
 gradlew.bat clean build
 ```
 
-产物：`build/libs/habitrain_lottery-1.0.1.jar`，并自动复制到 `../临时/`。
+产物：`build/libs/habitrain_lottery-1.1.12.jar`，并自动复制到 `../临时/`。
+
+## 依赖版本（审核 B-02）
+
+- `fabric.mod.json` 的 `depends` 已钉死版本：`starrailexpress` 为 `~4.3.0`、
+  `habitrain_core` 为 `>=2.0.19`。旧写法是 `"*"`，于是「核心改了/删了类而下游不知道」
+  这种漂移无法被发现。
+- `habitrain_core >= 2.0.19` 是硬需求：本模组不再越层引用核心实现层
+  （`game.sre.EliminatedRestAreaService`），改为调用核心公开层
+  `api.MatchRestStateApi`（休息区）与 `api.role.v2.RoleVisibilityApi`（角色可见性）。
+  （这两个公开 API 自 core 2.0.12 起提供，2.0.19 为当前构建与验证基线。）
+  绑定更老的核心时抽奖 / 邮件 / 用卡门禁会 **fail-closed**（保守拒绝）并打出 ERROR 日志，
+  而不是像旧版那样静默放行。
+- 服务端菜单门控同理：核心门控桥接未装配时按「已阻断」处理（`CoreSpi.isMenuGateInstalled()`）。

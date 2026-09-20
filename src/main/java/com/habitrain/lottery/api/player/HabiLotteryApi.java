@@ -188,24 +188,22 @@ public final class HabiLotteryApi {
         return server == null ? 0 : PlayerLotteryStore.get().addCoinsToOnline(server, delta);
     }
 
-    /** Sets every online player's 金币 to {@code amount}; returns the number touched. */
+    /**
+     * Sets every online player's 金币 to {@code amount}.
+     *
+     * <p><b>审核 B-20</b>：本方法过去自己循环 {@code setCoinNum + flush} 并丢弃 flush 返回值，
+     * 然后把循环次数当成成功人数返回——磁盘满 / 世界只读时会虚报成功人数。
+     * 现在委派给 {@link PlayerLotteryStore#setCoinsToOnline}（逐人快照 + 失败回滚），
+     * <b>返回值是真正写入成功的人数</b>。
+     *
+     * @return 真正写入成功的玩家数（失败的玩家已回滚，未被计入）
+     */
     public static int setCoinsToOnline(int amount) {
         MinecraftServer server = HabiLotteryMod.getServer();
         if (server == null || !WorldLotteryPaths.ready()) {
             return 0;
         }
-        PlayerLotteryStore store = PlayerLotteryStore.get();
-        int count = 0;
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            if (player == null || store.isLoadFailed(player.getUUID())) {
-                continue;
-            }
-            store.setCoinNum(player.getUUID(), amount);
-            store.flush(player.getUUID());
-            EconomyMirror.syncChanceAndCoins(player, store.getOrLoad(player));
-            count++;
-        }
-        return count;
+        return PlayerLotteryStore.get().setCoinsToOnline(server, amount);
     }
 
     /** Clears every online player's 金币; returns the number touched. */

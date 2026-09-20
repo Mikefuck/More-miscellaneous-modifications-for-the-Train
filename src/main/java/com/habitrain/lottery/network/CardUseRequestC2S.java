@@ -7,9 +7,12 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 
 /**
- * Client → server: a faction-card row was clicked in the backpack GUI. The server
- * answers with {@link CardUseMenuS2C} to open the use menu, or falls back to the
- * plain direct-use path when the menu is unavailable.
+ * Client → server: a card row was clicked in the backpack GUI.
+ *
+ * <p>{@code questKey} is either {@code "inventory"} (refresh only, no screen is opened) or one of
+ * the card keys. The server answers with {@link CardUseMenuS2C}. There is deliberately
+ * <b>no</b> fallback to a direct-use path: the server never consumes a card on a request, it only
+ * reports state — consumption happens on {@link CardUseConfirmC2S}.</p>
  */
 public record CardUseRequestC2S(String questKey) implements CustomPacketPayload {
 

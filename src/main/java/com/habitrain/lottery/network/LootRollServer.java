@@ -134,25 +134,58 @@ public final class LootRollServer {
         }
         store.beginDeferredFlush();
         PlayerLotteryData snap = store.getOrLoad(uuid).copy();
+        Pair<Integer, Integer> result = null;
+        boolean rollFailed = false;
         try {
             store.addLootChance(uuid, -cost);
-            Pair<Integer, Integer> result = pool.rollOnce(player);
-            boolean valid = LootRollTransaction.isValidRoll(result == null ? null : result.first);
-            if (!valid) {
-                refundAttemptIfNeeded(player, snap, false);
-                return;
+            result = pool.rollOnce(player);
+            if (LootRollTransaction.isValidRoll(result == null ? null : result.first)) {
+                LotteryHistoryStore.get().append(
+                        uuid, poolId, result.first, "", "chance_delta", 0, store.getLootChance(uuid));
             }
-            LotteryHistoryStore.get().append(
-                    uuid, poolId, result.first, "", "chance_delta", 0, store.getLootChance(uuid));
-            sendEconomyRefresh(player);
-            ServerPlayNetworking.send(player, new LootResultS2CPacket(poolId, result.first, result.second));
         } catch (Exception e) {
-            refundAttemptIfNeeded(player, snap, false);
+            rollFailed = true;
             HabiLotteryMod.LOGGER.warn("loot single roll failed: {}", e.toString());
         } finally {
             store.endDeferredFlush();
-            store.flush(uuid);
         }
+
+        if (rollFailed) {
+            // 审核 B-04：异常路径也必须先落盘再决定是否/如何通知玩家。
+            if (!restoreEconomySnapshot(player, snap)) {
+                player.sendSystemMessage(Component.literal(
+                        "§c[抽奖] 存档写入失败，本次抽奖未完成；若重启后数据异常请联系管理员"));
+                return;
+            }
+            player.sendSystemMessage(Component.literal("§c[抽奖] 本次抽奖失败，抽数已退回"));
+            return;
+        }
+
+        boolean validRoll = LootRollTransaction.isValidRoll(result == null ? null : result.first);
+        if (!validRoll) {
+            refundAttemptIfNeeded(player, snap, false);
+            return;
+        }
+
+        // 审核 B-04：**先落盘、后发货**。旧实现在这里就把结果发给了客户端，
+        // 而 flush 的返回值被丢弃——磁盘满 / 世界只读时玩家看到奖励却什么也没持久化，
+        // 重启后整笔凭空消失。现在 flush 失败即回滚内存并明确告知玩家失败。
+        if (!store.flush(uuid)) {
+            PlayerLotteryData after = store.getOrLoad(uuid);
+            boolean awarded = LootRollTransaction.awardPersisted(snap, after);
+            if (!awarded) {
+                refundAttemptIfNeeded(player, snap, true, awarded);
+            }
+            HabiLotteryMod.LOGGER.error(
+                    "loot single roll: flush failed for {} (pool {}) — reward withheld", uuid, poolId);
+            player.sendSystemMessage(Component.literal(
+                    "§c[抽奖] 存档写入失败，本次抽奖未生效"
+                            + (awarded ? "（奖励已尝试落盘，请重启后核对）" : "，抽数已退回")));
+            return;
+        }
+
+        sendEconomyRefresh(player);
+        ServerPlayNetworking.send(player, new LootResultS2CPacket(poolId, result.first, result.second));
     }
 
     private static void handleMulti(ServerPlayer player, int poolId, int requested) {
@@ -185,46 +218,91 @@ public final class LootRollServer {
         }
         store.beginDeferredFlush();
         PlayerLotteryData batchSnap = store.getOrLoad(uuid).copy();
-        store.addLootChance(uuid, -affordableRolls * cost);
         List<int[]> results = new ArrayList<>();
+        int refundedRolls = 0;
+        boolean rollFailed = false;
         try {
+            store.addLootChance(uuid, -affordableRolls * cost);
             for (int i = 0; i < affordableRolls; i++) {
                 Pair<Integer, Integer> result = pool.rollOnce(player);
                 if (LootRollTransaction.isValidRoll(result == null ? null : result.first)) {
                     results.add(new int[]{result.first, result.second});
                 } else {
-                    store.addLootChance(uuid, cost);
+                    // 无效结果立即退还该次抽数（内存），落盘在 endDeferredFlush 之后统一做。
+                    refundedRolls++;
                 }
             }
-            sendEconomyRefresh(player);
+            if (refundedRolls > 0) {
+                store.addLootChance(uuid, refundedRolls * cost);
+            }
             if (!results.isEmpty()) {
                 int chanceAfter = store.getLootChance(uuid);
                 for (int[] row : results) {
                     LotteryHistoryStore.get().append(
                             uuid, poolId, row[0], "", "chance_delta", 0, chanceAfter);
                 }
-                ServerPlayNetworking.send(player, new LootMultiResultS2CPacket(poolId, results));
             }
         } catch (Exception e) {
-            restoreEconomySnapshot(player, batchSnap);
+            rollFailed = true;
             HabiLotteryMod.LOGGER.warn("loot multi roll failed: {}", e.toString());
         } finally {
             store.endDeferredFlush();
-            store.flush(uuid);
+        }
+
+        if (rollFailed) {
+            // 审核 B-04：回滚自身的 flush 也必须检查——回滚失败会让磁盘领先内存。
+            if (!restoreEconomySnapshot(player, batchSnap)) {
+                player.sendSystemMessage(Component.literal(
+                        "§c[抽奖] 存档写入失败，本次连抽未完成；若重启后数据异常请联系管理员"));
+                return;
+            }
+            player.sendSystemMessage(Component.literal("§c[抽奖] 本次连抽失败，抽数已退回"));
+            return;
+        }
+
+        // 审核 B-04：先落盘、后发货。旧实现把结果先发给客户端、丢弃 flush 结果，
+        // 于是「客户端看到奖励、磁盘上什么都没有」，重启后整笔消失。
+        if (!store.flush(uuid)) {
+            PlayerLotteryData after = store.getOrLoad(uuid);
+            boolean awarded = LootRollTransaction.awardPersisted(batchSnap, after);
+            if (!awarded) {
+                restoreEconomySnapshot(player, batchSnap);
+            }
+            HabiLotteryMod.LOGGER.error(
+                    "loot multi roll: flush failed for {} (pool {}, {} rolls) — result withheld",
+                    uuid, poolId, results.size());
+            player.sendSystemMessage(Component.literal(
+                    "§c[抽奖] 存档写入失败，本次连抽未生效"
+                            + (awarded ? "（奖励已尝试落盘，请重启后核对）" : "，抽数已退回")));
+            return;
+        }
+
+        sendEconomyRefresh(player);
+        if (!results.isEmpty()) {
+            ServerPlayNetworking.send(player, new LootMultiResultS2CPacket(poolId, results));
         }
     }
 
     /**
      * Refund the pre-debit only when the attempt did not persist a skin/coin award.
      * Successful or already-flushed awards keep the debit.
+     *
+     * <p>审核 B-04：本方法过去既不检查 {@code restoreEconomySnapshot} 内部的 flush，
+     * 也不返回结果，调用方无从判断回滚是否真的落地。现在返回「回滚后的状态是否已持久化」。
      */
-    private static void refundAttemptIfNeeded(ServerPlayer player, PlayerLotteryData snap, boolean validRoll) {
+    private static boolean refundAttemptIfNeeded(ServerPlayer player, PlayerLotteryData snap, boolean validRoll) {
         PlayerLotteryData after = PlayerLotteryStore.get().getOrLoad(player.getUUID());
         boolean awarded = LootRollTransaction.awardPersisted(snap, after);
+        return refundAttemptIfNeeded(player, snap, validRoll, awarded);
+    }
+
+    /** 审核 B-04：{@code awarded} 已由调用方算好时不要重复扫描快照。 */
+    private static boolean refundAttemptIfNeeded(ServerPlayer player, PlayerLotteryData snap,
+                                                 boolean validRoll, boolean awarded) {
         if (!LootRollTransaction.shouldRefundChance(validRoll, awarded)) {
-            return;
+            return true;
         }
-        restoreEconomySnapshot(player, snap);
+        return restoreEconomySnapshot(player, snap);
     }
 
     private static LotteryManager.LotteryPool resolveEnabledPool(int poolId) {
@@ -252,9 +330,19 @@ public final class LootRollServer {
         return false;
     }
 
-    private static void restoreEconomySnapshot(ServerPlayer player, PlayerLotteryData snap) {
+    /**
+     * 把内存状态回滚到 {@code snap} 并落盘。
+     *
+     * <p><b>审核 B-04</b>：本方法过去在收尾处调用 {@code store.flush(uuid)} 却丢弃返回值。
+     * 回滚本身也可能写盘失败——那时<b>磁盘会领先内存</b>（下次启动会把「已回滚但没写成功」
+     * 的旧状态读回来），调用方必须知道这一点才能给玩家正确的提示，因此现在返回
+     * 「回滚后的状态是否已成功持久化」。
+     *
+     * @return {@code true} 表示回滚后的状态已确定落盘（或本来无需写盘）
+     */
+    private static boolean restoreEconomySnapshot(ServerPlayer player, PlayerLotteryData snap) {
         if (player == null || snap == null) {
-            return;
+            return true;
         }
         UUID uuid = player.getUUID();
         PlayerLotteryStore store = PlayerLotteryStore.get();
@@ -291,7 +379,12 @@ public final class LootRollServer {
                     PlayerEconomyManager.lockSkinForItemType(player, extra[0], extra[1]));
         }
         EconomyMirror.syncChanceAndCoins(player, store.getOrLoad(uuid));
-        store.flush(uuid);
+        boolean ok = store.flush(uuid);
+        if (!ok) {
+            HabiLotteryMod.LOGGER.error(
+                    "loot roll rollback: flush failed for {} — on-disk state may be ahead of memory", uuid);
+        }
+        return ok;
     }
 
     /** Sends current coin/draw values so an open LootInfoScreen re-renders accurately. */

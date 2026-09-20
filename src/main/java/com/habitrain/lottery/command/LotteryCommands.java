@@ -112,8 +112,18 @@ public final class LotteryCommands {
                                         .executes(ctx -> {
                                             ServerPlayer p = EntityArgument.getPlayer(ctx, "player");
                                             int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                                            // 审核 B-19：管理写路径必须检查 flush 结果，否则
+                                            // 磁盘满 / 世界只读时会向管理员虚报成功。
+                                            com.habitrain.lottery.storage.PlayerLotteryData snap =
+                                                    PlayerLotteryStore.get().getOrLoad(p.getUUID()).copy();
+                                            boolean wasDirty = PlayerLotteryStore.get().isDirty(p.getUUID());
                                             PlayerLotteryStore.get().update(p, d -> d.coinNum = Math.max(0, d.coinNum + amount));
-                                            PlayerLotteryStore.get().flush(p.getUUID());
+                                            if (!PlayerLotteryStore.get().flush(p.getUUID())) {
+                                                PlayerLotteryStore.get().restoreSnapshot(p.getUUID(), snap, wasDirty);
+                                                ctx.getSource().sendFailure(Component.literal(
+                                                        "§c写入失败：金币未变更（存档不可写），请检查磁盘/世界目录权限"));
+                                                return 0;
+                                            }
                                             ctx.getSource().sendSuccess(() -> Component.literal(
                                                     "已给 " + p.getGameProfile().getName() + " 调整金币 " + amount), true);
                                             return 1;

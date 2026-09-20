@@ -25,6 +25,7 @@ import org.agmas.noellesroles.packet.Loot.LootDataRefreshS2CPacket;
 import org.agmas.noellesroles.packet.Loot.LootMultiResultS2CPacket;
 import org.agmas.noellesroles.packet.Loot.LootResultS2CPacket;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
 /**
@@ -37,6 +38,13 @@ public final class LotteryClientNetwork {
 
     private static BiConsumer<PoolConfigModels.Root, ThemeConfig> clientSnapshotApplier;
 
+    /**
+     * Guards the one-time registration of the lottery's own receivers.
+     * {@link #ensureRegistered()} still re-asserts the SRE loot receivers on every
+     * call, because those are the ones another mod can overwrite.
+     */
+    private static final AtomicBoolean REGISTERED = new AtomicBoolean(false);
+
     private LotteryClientNetwork() {
     }
 
@@ -44,7 +52,50 @@ public final class LotteryClientNetwork {
         clientSnapshotApplier = applier;
     }
 
+    /**
+     * Idempotent client receiver registration. Safe to call any number of times,
+     * from any thread, and it never throws.
+     *
+     * <p>Fabric Loader does not order client entrypoints by the dependency graph, so
+     * this mod's client entrypoint can run <em>before</em>
+     * {@code noellesroles}/{@code starrailexpress} registers its empty loot stub
+     * receivers. In that case the one-shot registration below would be overwritten
+     * by SRE afterwards (last write wins) and the gacha result screens would never
+     * open. The first call therefore registers everything once (guarded by
+     * {@link #REGISTERED}), and <b>every</b> call re-asserts the SRE loot receivers
+     * with unregister + register so the lottery always wins the last-write race —
+     * including when this is re-invoked from {@code CLIENT_STARTED} and from the
+     * first client tick by {@code HabiLotteryClient}.
+     */
+    public static void ensureRegistered() {
+        if (REGISTERED.compareAndSet(false, true)) {
+            try {
+                registerCommonReceivers();
+                HabiLotteryMod.LOGGER.debug("habitrain_lottery client receivers registered");
+            } catch (Throwable t) {
+                // Allow a later call to finish registration instead of leaving the
+                // client permanently half-wired.
+                REGISTERED.set(false);
+                HabiLotteryMod.LOGGER.warn("Client receiver registration failed, will retry: {}", t.toString());
+            }
+        }
+        try {
+            registerLootClient();
+        } catch (Throwable t) {
+            HabiLotteryMod.LOGGER.warn("Failed re-asserting SRE loot receivers: {}", t.toString());
+        }
+    }
+
+    /**
+     * Backwards-compatible alias for {@link #ensureRegistered()}. Kept so callers
+     * that used to register unconditionally cannot double-register the lottery's own
+     * receivers.
+     */
     public static void registerClient() {
+        ensureRegistered();
+    }
+
+    private static void registerCommonReceivers() {
         ClientPlayNetworking.registerGlobalReceiver(com.habitrain.lottery.network.OpenCoinExchangeS2C.TYPE,
                 (payload, context) -> context.client().execute(() -> {
                     Minecraft mc = context.client();
@@ -187,13 +238,13 @@ public final class LotteryClientNetwork {
                 }
             });
         });
-
-        registerLootClient();
     }
 
     /**
      * Re-enables the SRE gacha result screens (upstream left the client receivers empty).
-     * SRE registered empty stubs first, so unregister before re-registering.
+     * SRE registered empty stubs first, so unregister before re-registering — and this
+     * must be re-runnable, because SRE's own client entrypoint may run after ours and
+     * would otherwise put its empty stubs back on top.
      */
     private static void registerLootClient() {
         ClientPlayNetworking.unregisterGlobalReceiver(LootResultS2CPacket.ID.id());

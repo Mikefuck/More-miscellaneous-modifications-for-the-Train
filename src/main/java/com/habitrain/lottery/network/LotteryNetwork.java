@@ -1,5 +1,6 @@
 package com.habitrain.lottery.network;
 
+import com.habitrain.core.network.C2SRateLimiter;
 import com.habitrain.lottery.card.CardUseService;
 
 import com.google.gson.Gson;
@@ -311,7 +312,7 @@ public final class LotteryNetwork {
         }
         int streak = Math.max(0, data.consecutiveLoginDays);
         int reward = com.habitrain.lottery.grant.LoginRewardService.rewardForStreak(streak);
-        ServerPlayNetworking.send(player, new LoginStateS2C(
+        sendIfSupported(player, new LoginStateS2C(
                 epoch,
                 date.getYear(),
                 date.getMonthValue(),
@@ -320,6 +321,34 @@ public final class LotteryNetwork {
                 reward,
                 mask
         ));
+    }
+
+    /**
+     * 审核 N-05：S2C 发送统一加 {@code canSend} 守卫。
+     *
+     * <p>旧实现全部直接 {@code ServerPlayNetworking.send(...)}。因为 {@code depends} 是硬依赖，
+     * 原版客户端进不了服，所以目前只是潜在问题；但通过代理 / 未安装本模组客户端的
+     * 边缘场景下会在服务端抛异常，而<b>客户端</b>侧早已普遍使用 {@code canSendPlay()}（不对称）。
+     *
+     * <p>本方法在客户端不支持该 payload 时静默跳过并记 debug 日志，绝不抛出。
+     */
+    public static boolean sendIfSupported(ServerPlayer player, CustomPacketPayload payload) {
+        if (player == null || payload == null) {
+            return false;
+        }
+        try {
+            if (!ServerPlayNetworking.canSend(player, payload.type())) {
+                HabiLotteryMod.LOGGER.debug(
+                        "skip S2C {} to {}: client cannot receive it",
+                        payload.type().id(), player.getGameProfile().getName());
+                return false;
+            }
+            ServerPlayNetworking.send(player, payload);
+            return true;
+        } catch (Throwable t) {
+            HabiLotteryMod.LOGGER.warn("S2C {} failed: {}", payload.type().id(), t.toString());
+            return false;
+        }
     }
 
     public static void sendOpenLootUi(ServerPlayer player) {
@@ -336,15 +365,15 @@ public final class LotteryNetwork {
         } catch (Throwable t) {
             HabiLotteryMod.LOGGER.warn("Failed reading economy for open loot UI: {}", t.toString());
         }
-        ServerPlayNetworking.send(player, new OpenLootUiS2C(coins, draws));
+        sendIfSupported(player, new OpenLootUiS2C(coins, draws));
     }
 
     public static void sendOpenMailCompose(ServerPlayer player) {
-        ServerPlayNetworking.send(player, OpenMailComposeS2C.INSTANCE);
+        sendIfSupported(player, OpenMailComposeS2C.INSTANCE);
     }
 
     public static void sendOpenMailbox(ServerPlayer player) {
-        ServerPlayNetworking.send(player, OpenMailboxS2C.INSTANCE);
+        sendIfSupported(player, OpenMailboxS2C.INSTANCE);
         sendMailboxList(player);
     }
 
@@ -353,7 +382,7 @@ public final class LotteryNetwork {
             return;
         }
         String json = GSON.toJson(MailService.list(player));
-        ServerPlayNetworking.send(player, new MailboxListS2C(json));
+        sendIfSupported(player, new MailboxListS2C(json));
     }
 
     public static boolean isOp(ServerPlayer player) {
@@ -370,12 +399,49 @@ public final class LotteryNetwork {
         return MenuGateServerBridge.isBlocked(player, player == null ? null : player.server);
     }
 
+    /**
+     * Per-player C2S cooldown. Delegates to habitrain_core's shared
+     * {@link C2SRateLimiter} — there is exactly one limiter table in the JVM, so a
+     * flood on a lottery channel also counts against the core's own channels and
+     * vice versa.
+     *
+     * @return {@code true} when the slot is free (the old local copy's semantics)
+     */
+    public static boolean tryAcquire(UUID playerId, String channel, long cooldownMs) {
+        return C2SRateLimiter.tryAcquire(playerId, channel, cooldownMs);
+    }
+
     /** @return {@code true} if the packet should be ignored (cooldown not elapsed). */
     public static boolean rateLimited(ServerPlayer player, String channel, long cooldownMs) {
         if (player == null) {
             return true;
         }
-        return !LotteryC2SRateLimiter.tryAcquire(player.getUUID(), channel, cooldownMs);
+        return !tryAcquire(player.getUUID(), channel, cooldownMs);
+    }
+
+    /**
+     * Clears the shared limiter slots of one player so a reconnect does not inherit
+     * the previous session's stamps.
+     *
+     * <p><b>Wiring note for {@code HabiLotteryMod}:</b> this must be called from the
+     * {@code ServerPlayConnectionEvents.DISCONNECT} handler
+     * ({@code LotteryNetwork.clearRateLimits(handler.player.getUUID())}). The
+     * disconnect handler lives in {@code HabiLotteryMod} and is owned by the lead,
+     * so it is not edited here; without that call the limiter keeps a disconnected
+     * player's last stamp forever.
+     *
+     * <p>Null-safe: a {@code null} uuid clears nothing and never throws.
+     */
+    public static void clearRateLimits(UUID playerId) {
+        if (playerId == null) {
+            return;
+        }
+        try {
+            C2SRateLimiter.clear(playerId);
+        } catch (Throwable t) {
+            // Cleanup must never fail a disconnect path.
+            HabiLotteryMod.LOGGER.debug("Failed clearing C2S rate limits for {}: {}", playerId, t.toString());
+        }
     }
 
     private static void handleSave(ServerPlayer player, String json) {
@@ -531,7 +597,13 @@ public final class LotteryNetwork {
                 ServerPlayNetworking.send(player, new AdminActionResultS2C(result.message(), false));
                 return;
             }
-            String msg = "已将玩家 " + type.questKey + " 角色卡设为 " + result.newCount();
+            // ADD 改的是增量，不能回显成「设为」——那会把 +3 说成设成 3，误导管理员。
+            String cardName = Component.translatable(
+                    "screen.habitrain_lottery.config.cards." + type.questKey).getString();
+            String msg = operation == PlayerCardAdminModels.CardOperation.ADD
+                    ? "已将玩家 " + cardName + " 角色卡" + (payload.value() > 0 ? "增加 " : "减少 ")
+                            + Math.abs(payload.value()) + " 张（现为 " + result.newCount() + "）"
+                    : "已将玩家 " + cardName + " 角色卡设为 " + result.newCount();
             ServerPlayNetworking.send(player, new AdminActionResultS2C(msg, false));
             handlePlayerList(player);
             CardUseService.handleRequest(player.server.getPlayerList().getPlayer(target), CardUseService.INVENTORY_KEY);
@@ -573,8 +645,17 @@ public final class LotteryNetwork {
                 }
                 case "add_one" -> {
                     UUID id = UUID.fromString(target);
+                    // 审核 B-19：先快照，flush 失败必须回滚并如实报告失败（不要虚报成功）。
+                    com.habitrain.lottery.storage.PlayerLotteryData snap =
+                            PlayerLotteryStore.get().getOrLoad(id).copy();
+                    boolean wasDirty = PlayerLotteryStore.get().isDirty(id);
                     PlayerLotteryStore.get().addLootChance(id, value);
-                    PlayerLotteryStore.get().flush(id);
+                    if (!PlayerLotteryStore.get().flush(id)) {
+                        PlayerLotteryStore.get().restoreSnapshot(id, snap, wasDirty);
+                        ServerPlayNetworking.send(player, new AdminActionResultS2C(
+                                "写入失败：抽数未变更（存档不可写）", false));
+                        return;
+                    }
                     ServerPlayer online = player.server.getPlayerList().getPlayer(id);
                     if (online != null) {
                         EconomyMirror.syncChanceAndCoins(online, PlayerLotteryStore.get().getOrLoad(online));
@@ -583,8 +664,16 @@ public final class LotteryNetwork {
                 }
                 case "set_one" -> {
                     UUID id = UUID.fromString(target);
+                    com.habitrain.lottery.storage.PlayerLotteryData snap =
+                            PlayerLotteryStore.get().getOrLoad(id).copy();
+                    boolean wasDirty = PlayerLotteryStore.get().isDirty(id);
                     PlayerLotteryStore.get().setLootChance(id, value);
-                    PlayerLotteryStore.get().flush(id);
+                    if (!PlayerLotteryStore.get().flush(id)) {
+                        PlayerLotteryStore.get().restoreSnapshot(id, snap, wasDirty);
+                        ServerPlayNetworking.send(player, new AdminActionResultS2C(
+                                "写入失败：抽数未变更（存档不可写）", false));
+                        return;
+                    }
                     ServerPlayer online = player.server.getPlayerList().getPlayer(id);
                     if (online != null) {
                         EconomyMirror.syncChanceAndCoins(online, PlayerLotteryStore.get().getOrLoad(online));

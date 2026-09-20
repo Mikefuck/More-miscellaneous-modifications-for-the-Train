@@ -3,50 +3,26 @@ package com.habitrain.lottery.client.gui.config;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** State that must survive Screen widget-tree rebuilds on the player-assets page. */
+/**
+ * State that must survive Screen widget-tree rebuilds on the player-assets page.
+ *
+ * <p>Only fields the page actually reads back live here. The screen object itself survives a
+ * resize, so its own {@code playerSearchQuery} / {@code selectedPlayerUuid} /
+ * {@code playerCardsPage} fields already persist across rebuilds; mirroring them here produced
+ * two sources of truth that silently drifted apart. Search / selection / detail-tab state was
+ * therefore removed from this class (and from its test).</p>
+ */
 public final class PlayerAssetsViewState {
-    public enum DetailPage {
-        BASE,
-        CARDS
-    }
-
     public enum NarrowPage {
         LIST,
         DETAIL
     }
 
-    private String search = "";
-    private String selectedUuid = "";
-    private DetailPage detailPage = DetailPage.BASE;
     private NarrowPage narrowPage = NarrowPage.LIST;
     private String cardDraftPlayerUuid = "";
     private int cardScroll;
     private final Map<String, String> cardStepDrafts = new LinkedHashMap<>();
     private final Map<String, String> cardSetDrafts = new LinkedHashMap<>();
-
-    public String search() {
-        return search;
-    }
-
-    public void setSearch(String search) {
-        this.search = search == null ? "" : search;
-    }
-
-    public String selectedUuid() {
-        return selectedUuid;
-    }
-
-    public void setSelectedUuid(String selectedUuid) {
-        this.selectedUuid = selectedUuid == null ? "" : selectedUuid;
-    }
-
-    public DetailPage detailPage() {
-        return detailPage;
-    }
-
-    public void setDetailPage(DetailPage detailPage) {
-        this.detailPage = detailPage == null ? DetailPage.BASE : detailPage;
-    }
 
     public NarrowPage narrowPage() {
         return narrowPage;

@@ -107,6 +107,12 @@ class SelfSelectCardStoreTest {
         var cards = LocalBackpackStore.defaultCards();
         cards.put("killer", 4);
         assertTrue(LocalBackpackStore.save(id, cards));
+        // 「保护写入」语义统一后，非 SRE 内存来源的写入（save/mutate/addCards）不再自行清掉标志：
+        // 文件本来是 missing，写进去的阵营卡表只是伪造的全零 + 1 项，清掉标志会让进服用 0 覆盖内存。
+        assertTrue(LocalBackpackStore.loadResult(id).factionCardsPendingJoin());
+        // 只有进服 overlay 之后的权威写入（内容直接来自 SRE 内存）才清零。
+        assertTrue(LocalBackpackStore.saveFromEnumMap(id,
+                java.util.Map.of(io.wifi.starrailexpress.progression.ProgressionState.FactionCardType.KILLER, 4)));
         assertFalse(LocalBackpackStore.loadResult(id).factionCardsPendingJoin());
         assertTrue(PlayerCardAdminService.mutateLimitBreak(id, CardOperation.ADD, 3).ok());
         assertTrue(PlayerCardAdminService.mutateLimitBreak(id, CardOperation.ADD, -1).ok());

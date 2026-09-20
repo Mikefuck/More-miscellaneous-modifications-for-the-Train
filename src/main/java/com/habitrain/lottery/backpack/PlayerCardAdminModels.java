@@ -34,7 +34,10 @@ public final class PlayerCardAdminModels {
     public record CardSnapshot(CardStoreStatus status, Map<String, Integer> cards) {
         public CardSnapshot {
             status = status == null ? CardStoreStatus.MISSING : status;
-            cards = cards == null ? Map.of() : Map.copyOf(cards);
+            // Map.copyOf 不保证迭代顺序，会把 orderedCards() 排好的「乘客 → 独立 → 中立偏杀手
+            // → 杀手 → 自选 → 突破上限」打乱。用不可变 LinkedHashMap 保住稳定顺序。
+            cards = cards == null ? Map.of()
+                    : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(cards));
         }
     }
 

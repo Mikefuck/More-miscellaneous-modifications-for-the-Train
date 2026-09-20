@@ -41,9 +41,11 @@ public class CardUseMenuScreen extends Screen {
     private static final String[] FACTION_LABELS = {
             "killer", "civilian", "neutral", "neutral_for_killer"
     };
-    private static final String[] FACTION_NAMES = {
-            "杀手阵营卡", "平民阵营卡", "中立阵营卡", "杀手中立阵营卡"
-    };
+
+    /** 本页所有文案统一走 lang；卡名与背包 / 配置端共用 {@code config.cards.*} 键。 */
+    private static final String LANG_PREFIX = "screen.habitrain_lottery.";
+    private static final String CARD_USE_PREFIX = LANG_PREFIX + "card_use.";
+    private static final String CARD_NAME_PREFIX = LANG_PREFIX + "config.cards.";
 
     /** questKey 白名单：只允许小写字母与下划线，避免服务端可控字符串拼出越界路径。 */
     private static final Pattern SAFE_CARD_ID = Pattern.compile("[a-z_]{1,32}");
@@ -69,7 +71,7 @@ public class CardUseMenuScreen extends Screen {
     private boolean selectionSubmitted;
 
     public CardUseMenuScreen(Screen parent) {
-        super(Component.literal("职业卡使用"));
+        super(Component.translatable(CARD_USE_PREFIX + "title"));
         this.parent = parent;
     }
 
@@ -109,16 +111,17 @@ public class CardUseMenuScreen extends Screen {
                 optionW,
                 optionH,
                 ACCENT_DIRECT,
-                "直接使用",
-                "消耗 1 张阵营卡，随机获得该阵营职业",
-                "消耗 1 张",
+                Component.translatable(CARD_USE_PREFIX + "direct"),
+                Component.translatable(CARD_USE_PREFIX + "direct_hint"),
+                Component.translatable(CARD_USE_PREFIX + "cost_one"),
                 false);
         addRenderableWidget(directOption);
         // Faction cards only activate their own faction. Exact-role selection has its own backpack entry.
         directOption.active = LotteryNetwork.ClientLotteryState.cardBalances.getOrDefault(questKey(), 0) > 0
                 && LotteryNetwork.ClientLotteryState.cardUseRemainingUses > 0;
 
-        addRenderableWidget(Button.builder(Component.literal("返回背包"), button -> onClose())
+        addRenderableWidget(Button.builder(Component.translatable(CARD_USE_PREFIX + "back"),
+                        button -> onClose())
                 .bounds(panelX + panelW / 2 - 52, panelY + panelH - 27, 104, 20)
                 .build());
     }
@@ -128,14 +131,15 @@ public class CardUseMenuScreen extends Screen {
         return key == null ? "" : key;
     }
 
-    private String factionName() {
+    /** 卡名与背包 / 配置端共用 {@code config.cards.*}，同一张卡不会出现两个名字。 */
+    private Component factionName() {
         String key = questKey();
-        for (int i = 0; i < FACTION_LABELS.length; i++) {
-            if (FACTION_LABELS[i].equalsIgnoreCase(key)) {
-                return FACTION_NAMES[i];
+        for (String label : FACTION_LABELS) {
+            if (label.equalsIgnoreCase(key)) {
+                return Component.translatable(CARD_NAME_PREFIX + label);
             }
         }
-        return "职业卡";
+        return Component.translatable(CARD_USE_PREFIX + "fallback_card");
     }
 
     /**
@@ -207,7 +211,15 @@ public class CardUseMenuScreen extends Screen {
         lastFrameMillis = now;
         renderBackground(graphics, mouseX, mouseY, partialTick);
         drawPanel(graphics);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        // 1.21 的 Screen#render 内部必定再调一次 renderBackground（走的是本类的覆写）。
+        // 第二次背景 alpha 高达 240/255，会把刚画好的面板底、金边、标题与页脚按
+        // 0.059 的权重压掉，几乎全部不可见；这里用守卫屏蔽嵌套的那一次。
+        suppressNestedBackground = true;
+        try {
+            super.render(graphics, mouseX, mouseY, partialTick);
+        } finally {
+            suppressNestedBackground = false;
+        }
     }
 
     private void drawPanel(GuiGraphics graphics) {
@@ -223,27 +235,35 @@ public class CardUseMenuScreen extends Screen {
         graphics.fill(iconX + 6, iconY + 6, iconX + 20, iconY + 20, ACCENT_SELF);
         graphics.fill(iconX + 9, iconY + 3, iconX + 17, iconY + 23, ACCENT_SELF);
 
-        graphics.drawString(font, Component.literal("职业卡使用"), panelX + 54, panelY + 13, TEXT, false);
+        graphics.drawString(font, Component.translatable(CARD_USE_PREFIX + "title"),
+                panelX + 54, panelY + 13, TEXT, false);
         graphics.drawString(font,
-                Component.literal(factionName() + "  ·  今日剩余 "
-                        + Math.max(0, LotteryNetwork.ClientLotteryState.cardUseRemainingUses) + " 次"),
+                Component.translatable(CARD_USE_PREFIX + "subtitle", factionName(),
+                        Math.max(0, LotteryNetwork.ClientLotteryState.cardUseRemainingUses)),
                 panelX + 54, panelY + 29, MUTED, false);
         graphics.fill(panelX + 18, panelY + 52, panelX + panelW - 18, panelY + 53, 0x448B6914);
 
-        graphics.drawString(font, Component.literal("使用阵营卡"),
+        graphics.drawString(font, Component.translatable(CARD_USE_PREFIX + "section"),
                 panelX + 18, panelY + 65, GOLD, false);
-        graphics.drawString(font, Component.literal("卡牌效果将在下一局角色分配时生效"),
-                panelX + panelW - 18 - font.width("卡牌效果将在下一局角色分配时生效"),
+        Component effectHint = Component.translatable(CARD_USE_PREFIX + "effect_hint");
+        graphics.drawString(font, effectHint,
+                panelX + panelW - 18 - font.width(effectHint),
                 panelY + 65, MUTED, false);
 
         graphics.fill(panelX + 18, panelY + panelH - 40, panelX + panelW - 18,
                 panelY + panelH - 39, 0x332E5A66);
-        graphics.drawCenteredString(font, Component.literal("Esc 返回 · 点击卡牌确认"),
+        graphics.drawCenteredString(font, Component.translatable(CARD_USE_PREFIX + "keys"),
                 panelX + panelW / 2, panelY + panelH - 37, MUTED);
     }
 
+    /** 嵌套调用守卫：见 {@link #render}。 */
+    private boolean suppressNestedBackground;
+
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (suppressNestedBackground) {
+            return;
+        }
         graphics.fillGradient(0, 0, width, height, BG_TOP, BG_BOTTOM);
         graphics.fillGradient(0, 0, width, 58, 0xAA000000, 0x00000000);
 
@@ -293,22 +313,23 @@ public class CardUseMenuScreen extends Screen {
 
     private final class OptionCardWidget extends AbstractWidget {
         private final int accent;
-        private final String heading;
-        private final String description;
-        private final String cost;
+        private final Component heading;
+        private final Component description;
+        private final Component cost;
         private final boolean selfSelect;
         private float hoverAnimation;
 
         private OptionCardWidget(int x, int y, int width, int height, int accent,
-                                 String heading, String description, String cost,
+                                 Component heading, Component description, Component cost,
                                  boolean selfSelect) {
-            super(x, y, width, height, Component.literal(heading));
+            super(x, y, width, height, heading);
             this.accent = accent;
             this.heading = heading;
             this.description = description;
             this.cost = cost;
             this.selfSelect = selfSelect;
-            setTooltip(Tooltip.create(Component.literal(heading + "\n" + description)));
+            setTooltip(Tooltip.create(Component.empty()
+                    .append(heading).append("\n").append(description)));
         }
 
         @Override
@@ -357,8 +378,8 @@ public class CardUseMenuScreen extends Screen {
             }
 
             int textX = iconX + iconSize + 12;
-            graphics.drawString(font, Component.literal(heading), textX, y + 9, TEXT, false);
-            graphics.drawString(font, Component.literal(description), textX, y + 25, MUTED, false);
+            graphics.drawString(font, heading, textX, y + 9, TEXT, false);
+            graphics.drawString(font, description, textX, y + 25, MUTED, false);
 
             int chipW = font.width(cost) + 14;
             int chipX = x + w - chipW - 24;
@@ -366,7 +387,7 @@ public class CardUseMenuScreen extends Screen {
             graphics.fill(chipX, chipY, chipX + chipW, chipY + 18,
                     withAlpha(accent, hovered ? 0xAA : 0x66));
             graphics.renderOutline(chipX, chipY, chipW, 18, 0x669F8AAB);
-            graphics.drawCenteredString(font, Component.literal(cost), chipX + chipW / 2,
+            graphics.drawCenteredString(font, cost, chipX + chipW / 2,
                     chipY + 5, TEXT);
             graphics.drawString(font, Component.literal("›"), x + w - 15, y + h / 2 - 5,
                     hovered ? GOLD : MUTED, false);
@@ -389,7 +410,7 @@ public class CardUseMenuScreen extends Screen {
         @Override
         protected void updateWidgetNarration(NarrationElementOutput output) {
             output.add(NarratedElementType.TITLE, getMessage());
-            output.add(NarratedElementType.HINT, Component.literal(description));
+            output.add(NarratedElementType.HINT, description);
         }
     }
 

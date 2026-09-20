@@ -16,7 +16,6 @@ import com.habitrain.lottery.storage.WorldLotteryPaths;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;

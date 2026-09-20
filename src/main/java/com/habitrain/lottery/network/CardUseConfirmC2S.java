@@ -9,9 +9,13 @@ import net.minecraft.resources.ResourceLocation;
 /**
  * Client → server: the player picked an option in the card use menu.
  *
- * @param questKey card type quest key (killer/civilian/neutral/neutral_for_killer)
+ * @param questKey card type quest key (killer/civilian/neutral/neutral_for_killer), or
+ *                 {@code self_select} for an exact-role pick, or {@code limit_break} for the
+ *                 bonus-daily-use card
  * @param mode     "direct" → consume one card via the upstream path;
- *                 "self" → consume five matching-faction cards and force the exact role
+ *                 "self" → consume {@code CardUseService.SELF_SELECT_COST} (= 1) self-select card
+ *                 and force the exact role;
+ *                 "bonus" → consume one limit-break card for one extra faction-card use today
  * @param roleId   role identifier chosen for {@code mode="self"}; empty otherwise
  */
 public record CardUseConfirmC2S(String questKey, String mode, String roleId) implements CustomPacketPayload {

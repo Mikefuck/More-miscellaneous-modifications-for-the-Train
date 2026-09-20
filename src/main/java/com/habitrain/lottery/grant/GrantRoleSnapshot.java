@@ -21,8 +21,27 @@ public final class GrantRoleSnapshot {
     }
 
     /**
-     * Assigned match-role identity. Never returns {@code EffectiveRole.role()}
-     * (archived snapshots strip it; live handles can be overlay-mutated).
+     * Assigned match-role identity — <b>identity / no-op pass-through（审核 B-21）</b>。
+     *
+     * <p><b>本方法不做任何 remap：方法体就是 {@code return raw;}。</b>
+     * 旧 javadoc 声称它「解析成当前生效角色」，与实际行为不符（审核 B-21）；
+     * 这里把文档改成事实：它只是一个恒等透传，保留公开签名是为了
+     * {@link GrantEventHooks} 等调用点稳定，而不是因为这里存在解析逻辑。
+     * <b>不要</b>因为文档而把它改成真的去查 catalog——发奖链路依赖它是恒等且无副作用的。</p>
+     *
+     * <p><b>为什么透传 {@code raw} 在发奖链路里是安全的：</b>调用方
+     * （{@code GrantEventHooks.classifyWinFaction}）只把返回值用作
+     * <b>catalog 查询键与兜底 flags 来源</b>：阵营归属优先走冻结的
+     * {@link EffectiveRoleProfile}（{@link #endedProfile(SRERole)}，取自
+     * {@code RoleCatalogApi.lastEndedSnapshot()}），并且明确<b>不</b>从 live handle 读
+     * {@code isKiller}/{@code isKillerTeam}（见 {@link WinFactionRules#fromProfile}），
+     * 因此 overlay 之后的变更不会经由这个句柄影响发奖结果。</p>
+     *
+     * <p><b>需要 live handle / 生效角色 / 可见性的消费方不要在这里加逻辑</b>，
+     * 请走 v2 {@code RoleCatalogApi}（快照与解析）与 {@code RoleVisibilityApi}
+     * （{@code com.habitrain.core.api.role.v2}）。真正读 live handle 的例子是客户端
+     * {@code client/gui/RoleSelectScreen#resolveRoleDisplayName}（审核提到的
+     * {@code RoleSelectScreen:1475}），那是纯 UI 显示路径，与发奖无关。</p>
      */
     public static SRERole remap(SRERole raw) {
         return raw;

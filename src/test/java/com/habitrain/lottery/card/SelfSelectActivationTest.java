@@ -4,6 +4,7 @@ import com.habitrain.lottery.backpack.ActiveCardForces;
 import com.habitrain.lottery.backpack.DailySelfSelectService;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
 import com.habitrain.lottery.grant.SelfSelectRoleHook;
+import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.MetaFeaturePaths;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
@@ -78,7 +79,13 @@ class SelfSelectActivationTest {
         assertTrue(LocalBackpackStore.setSelfSelectCards(id, 2));
         assertTrue(CardUseService.consumeSelfSelect(id, ResourceLocation.parse("test:neutral")));
         Path file = MetaFeaturePaths.backpackPlayer(id);
-        Path blocked = file.resolveSibling(file.getFileName() + ".tmp");
+        Path blocked = AtomicJsonFiles.bakPath(file);
+        // 审核 S-01：临时文件名现在是唯一的（<name>.<jvm>-<seq>.tmp），
+        // 过去靠「在 <file>.tmp 上创建目录」来强制写失败的做法已经失效。
+        // 改为阻塞 .bak：这些写入都是 backup=true，且目标文件已存在，
+        // AtomicJsonFiles 在 .bak 复制失败时会明确拒绝替换主文件（并删掉临时文件）。
+        // 注意 .bak 可能已被上一步写入创建，必须先删掉再建目录。
+        Files.deleteIfExists(blocked);
         Files.createDirectory(blocked);
         Files.writeString(blocked.resolve("blocker"), "prevent atomic write");
         SelfSelectRoleHook.finishSelections();
@@ -97,7 +104,8 @@ class SelfSelectActivationTest {
         assertTrue(LocalBackpackStore.setSelfSelectCards(id, 2));
         assertTrue(CardUseService.consumeSelfSelect(id, ResourceLocation.parse("test:neutral")));
         Path file = WorldLotteryPaths.playerFile(id);
-        Path blocked = file.resolveSibling(file.getFileName() + ".tmp");
+        // 审核 S-01：见上一条注释——改为阻塞 .bak 来强制写失败。
+        Path blocked = AtomicJsonFiles.bakPath(file);
         Files.createDirectory(blocked);
         Files.writeString(blocked.resolve("blocker"), "prevent atomic write");
         SelfSelectRoleHook.finishSelections();

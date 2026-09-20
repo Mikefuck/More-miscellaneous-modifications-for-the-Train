@@ -76,10 +76,26 @@ public final class CoinToDrawService {
             return 0;
         }
         int cost = (int) totalCost;
-        PlayerLotteryStore.get().update(player.getUUID(), d -> {
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        // 审核 B-03：扣币 + 加抽数前先做快照，flush 失败必须回滚。
+        // 旧实现在这里直接把 flush 的返回值丢掉，于是磁盘满 / 世界只读时
+        // 扣币与加抽数只存在于内存里，<b>却已经向玩家提示兑换成功</b>，重启后整笔静默消失。
+        // 这是全模组唯一一条「先告知成功再静默丢失」的高危路径。
+        com.habitrain.lottery.storage.PlayerLotteryData snapshot = store.getOrLoad(player.getUUID()).copy();
+        boolean wasDirty = store.isDirty(player.getUUID());
+        store.update(player.getUUID(), d -> {
             d.coinNum -= cost;
             d.lootChance += amount;
         });
+        if (!store.flush(player.getUUID())) {
+            store.restoreSnapshot(player.getUUID(), snapshot, wasDirty);
+            HabiLotteryMod.LOGGER.error(
+                    "coin2lottery: flush failed for {} (amount {}, cost {}) — exchange rolled back",
+                    player.getUUID(), amount, cost);
+            player.sendSystemMessage(Component.literal(
+                    "§c[抽奖] 存档写入失败，兑换未生效（金币与抽数均未变化），请稍后重试"));
+            return 0;
+        }
         try {
             LotteryHistoryStore.get().append(
                     player.getUUID(),
@@ -93,9 +109,8 @@ public final class CoinToDrawService {
         } catch (Throwable t) {
             HabiLotteryMod.LOGGER.debug("history append failed: {}", t.toString());
         }
-        PlayerLotteryStore.get().flush(player.getUUID());
         EconomyMirror.syncChanceAndCoins(player, PlayerLotteryStore.get().getOrLoad(player));
-        ServerPlayNetworking.send(player, new LootDataRefreshS2CPacket(
+        com.habitrain.lottery.network.LotteryNetwork.sendIfSupported(player, new LootDataRefreshS2CPacket(
                 PlayerLotteryStore.get().getCoinNum(player.getUUID()),
                 PlayerLotteryStore.get().getLootChance(player.getUUID())));
         player.sendSystemMessage(Component.literal(

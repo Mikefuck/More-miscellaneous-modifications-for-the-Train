@@ -17,7 +17,6 @@ import com.habitrain.core.api.role.v2.RoleForceApi;
 import com.habitrain.core.api.role.v2.RoleKey;
 import com.habitrain.core.api.role.v2.RoleQuery;
 import com.habitrain.lottery.network.CardUseMenuS2C;
-import com.habitrain.core.game.sre.EliminatedRestAreaService;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import io.wifi.starrailexpress.api.SRERole;
 import io.wifi.starrailexpress.backpack.BackpackManager;
@@ -54,6 +53,12 @@ public final class CardUseService {
         public String name;   // translation key (announcement.star.role.<path>) or display name
         public int color;
         public String bound;  // bound role id path, or "" when no occupation binding
+        /**
+         * Already reserved by another player's self-select in this lobby. The client greys
+         * these out so a player never picks a role the server would reject in
+         * {@link #doSelfSelect}.
+         */
+        public boolean taken;
 
         RoleCandidate(SRERole role) {
             this.id = role.identifier().toString();
@@ -93,7 +98,15 @@ public final class CardUseService {
             DailyFactionCardService.hasReachedLimit(player); // Normalize the faction quota day.
             List<RoleCandidate> candidates = new ArrayList<>();
             if (self) {
-                for (SRERole role : listCandidates(FactionCardType.NONE)) candidates.add(new RoleCandidate(role));
+                // 标记已被本局其他玩家占用的职业：客户端据此置灰，避免玩家点到一个
+                // 服务端必然拒绝的角色（只能靠聊天栏报错逐个试错）。
+                java.util.Set<ResourceLocation> reserved = SelfSelectForces.reservedRoles();
+                for (SRERole role : listCandidates(FactionCardType.NONE)) {
+                    RoleCandidate candidate = new RoleCandidate(role);
+                    candidate.taken = reserved.contains(
+                            SelfSelectForces.canonicalize(role.identifier()));
+                    candidates.add(candidate);
+                }
             }
             int factionRemaining = DailyFactionCardService.remaining(player);
             java.util.Map<String, Integer> balances = new java.util.LinkedHashMap<>(
@@ -372,11 +385,7 @@ public final class CardUseService {
             spectator = player.isSpectator();
         } catch (Throwable ignored) {
         }
-        boolean resting = false;
-        try {
-            resting = EliminatedRestAreaService.isResting(player);
-        } catch (Throwable ignored) {
-        }
+        boolean resting = com.habitrain.lottery.bridge.RestAreaStateBridge.isResting(player);
         boolean dead = false;
         try {
             dead = !player.isAlive();

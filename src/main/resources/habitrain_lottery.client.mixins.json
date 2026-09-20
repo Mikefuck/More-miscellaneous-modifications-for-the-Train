@@ -1,5 +1,5 @@
 {
-    "required": true,
+    "required": false,
     "package": "com.habitrain.lottery.mixin.client",
     "plugin": "com.habitrain.lottery.mixin.HabiLotteryMixinPlugin",
     "compatibilityLevel": "JAVA_21",

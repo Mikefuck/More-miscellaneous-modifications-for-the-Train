@@ -4,19 +4,25 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/**
+ * Covers exactly the state {@link PlayerAssetsViewState} owns.
+ *
+ * <p>It deliberately does <b>not</b> assert search / selected-uuid / detail-tab round-trips any
+ * more: those fields existed only here, were written by the screen and never read back, and the
+ * old test therefore proved nothing about the page's real behaviour.</p>
+ */
 class PlayerAssetsViewStateTest {
     @Test
-    void keepsSelectionSearchAndCardPageAcrossRebuilds() {
+    void keepsNarrowPageAcrossRebuilds() {
         PlayerAssetsViewState state = new PlayerAssetsViewState();
-        state.setSearch("Mike");
-        state.setSelectedUuid("11111111-1111-1111-1111-111111111111");
-        state.setDetailPage(PlayerAssetsViewState.DetailPage.CARDS);
-        state.setNarrowPage(PlayerAssetsViewState.NarrowPage.DETAIL);
+        assertEquals(PlayerAssetsViewState.NarrowPage.LIST, state.narrowPage());
 
-        assertEquals("Mike", state.search());
-        assertEquals("11111111-1111-1111-1111-111111111111", state.selectedUuid());
-        assertEquals(PlayerAssetsViewState.DetailPage.CARDS, state.detailPage());
+        state.setNarrowPage(PlayerAssetsViewState.NarrowPage.DETAIL);
         assertEquals(PlayerAssetsViewState.NarrowPage.DETAIL, state.narrowPage());
+
+        // null 归一化为 LIST，控件树重建时不会因为一次空赋值丢掉页面状态。
+        state.setNarrowPage(null);
+        assertEquals(PlayerAssetsViewState.NarrowPage.LIST, state.narrowPage());
     }
 
     @Test

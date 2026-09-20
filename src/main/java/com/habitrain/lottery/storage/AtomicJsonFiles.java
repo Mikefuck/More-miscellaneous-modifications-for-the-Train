@@ -23,10 +23,19 @@ import java.util.Objects;
 /**
  * Same-directory atomic replace for world/config JSON (and other small files).
  *
- * <p>Write path: sibling {@code .tmp} → optional fsync → copy live file to {@code .bak}
+ * <p>Write path: a <b>uniquely named</b> sibling temp file in the same directory
+ * ({@code <name>.<jvm-tag>-<seq>.tmp}) → optional fsync → copy live file to {@code .bak}
  * (abort replace if that copy fails) → {@code ATOMIC_MOVE} with {@code REPLACE_EXISTING}
  * fallback. Callers must treat a {@code false} return as failure and must not clear dirty
  * flags or announce success.
+ *
+ * <p><b>Audit S-01.</b> The temp name used to be the fixed {@code <target>.tmp}. Two
+ * server processes sharing one game directory therefore interleaved their writes into
+ * that single file and could move a half-written mixture over the live file. The name is
+ * now unique per JVM and per write (a random per-JVM tag plus a monotonic sequence),
+ * allocated with {@code CREATE_NEW} so a name can never be reused by another process's
+ * in-flight write. Temp files still live in the target's own directory so
+ * {@code ATOMIC_MOVE} stays atomic, and a temp file that was not moved is always deleted.
  *
  * <p>Read path: parse primary; on failure quarantine to {@code .corrupt-<ts>} and try
  * {@code .bak}. Missing primary still tries {@code .bak}. Both unreadable → {@code CORRUPT}
@@ -34,6 +43,22 @@ import java.util.Objects;
  */
 public final class AtomicJsonFiles {
     private static final Logger LOGGER = LoggerFactory.getLogger("habitrain_lottery|AtomicJsonFiles");
+
+    /**
+     * Random per-JVM token mixed into every temp file name (audit S-01). Two server
+     * processes on the same directory draw different tokens, and {@code CREATE_NEW}
+     * turns the remaining (astronomically unlikely) collision into a retry instead of
+     * two writers sharing one temp file.
+     */
+    private static final String TEMP_TAG =
+            java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+    /** Monotonic per-JVM counter so concurrent writers in one JVM never share a temp name. */
+    private static final java.util.concurrent.atomic.AtomicLong TEMP_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** Attempts allowed when a randomly named temp file already exists. */
+    private static final int TEMP_NAME_ATTEMPTS = 4;
 
     private AtomicJsonFiles() {
     }
@@ -161,14 +186,16 @@ public final class AtomicJsonFiles {
 
     private static boolean write(Path target, IoConsumer consumer, boolean fsync, boolean backup) {
         Path parent = target.toAbsolutePath().getParent();
-        Path tmp = target.resolveSibling(target.getFileName().toString() + ".tmp");
+        Path tmp = null;
+        boolean moved = false;
         try {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            Files.deleteIfExists(tmp);
+            // Audit S-01: never a fixed `<target>.tmp` — see the class javadoc.
+            tmp = createUniqueTemp(target);
             try (OutputStream out = Files.newOutputStream(tmp,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
                 consumer.accept(out);
                 out.flush();
             }
@@ -186,7 +213,6 @@ public final class AtomicJsonFiles {
                     Files.copy(target, bak, StandardCopyOption.REPLACE_EXISTING);
                 } catch (Exception e) {
                     LOGGER.error("Refusing to replace {} because .bak copy failed", target, e);
-                    Files.deleteIfExists(tmp);
                     return false;
                 }
             }
@@ -195,15 +221,42 @@ public final class AtomicJsonFiles {
             } catch (AtomicMoveNotSupportedException e) {
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
             }
+            moved = true;
             return true;
         } catch (Exception e) {
             LOGGER.error("Atomic write failed for {}", target, e);
-            try {
-                Files.deleteIfExists(tmp);
-            } catch (IOException ignored) {
-            }
             return false;
+        } finally {
+            // The temp file only ever disappears through the move that publishes it.
+            if (!moved && tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                }
+            }
         }
+    }
+
+    /**
+     * Reserves a fresh, empty sibling temp file next to {@code target} with
+     * {@code CREATE_NEW}, so the returned path is owned by this writer and can never be
+     * shared with another process or thread (audit S-01). Same directory as the target,
+     * which is what keeps the final {@code ATOMIC_MOVE} atomic.
+     */
+    private static Path createUniqueTemp(Path target) throws IOException {
+        String name = target.getFileName().toString();
+        IOException lastCollision = null;
+        for (int attempt = 0; attempt < TEMP_NAME_ATTEMPTS; attempt++) {
+            Path candidate = target.resolveSibling(
+                    name + "." + TEMP_TAG + "-" + TEMP_SEQUENCE.incrementAndGet() + ".tmp");
+            try {
+                Files.createFile(candidate);
+                return candidate;
+            } catch (java.nio.file.FileAlreadyExistsException collision) {
+                lastCollision = collision;
+            }
+        }
+        throw new IOException("Could not allocate a unique temporary file next to " + target, lastCollision);
     }
 
     @FunctionalInterface

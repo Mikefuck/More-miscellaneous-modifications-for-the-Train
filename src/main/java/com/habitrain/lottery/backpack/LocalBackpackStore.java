@@ -29,7 +29,12 @@ public final class LocalBackpackStore {
         public Map<String, Integer> cards = new HashMap<>();
         public int selfSelectCards = 0;
         public int limitBreakCards = 0;
-        /** A protection write happened before the first JOIN card overlay. Merge SRE balances add-only. */
+        /**
+         * A protection write happened before the first JOIN card overlay: {@code cards} is not
+         * known to match SRE memory yet, so JOIN must merge add-only instead of overwriting.
+         * Set by every non-SRE write whose source file was missing (or already pending) and
+         * cleared only by {@link #saveFromEnumMap} — see {@link #pendingJoinAfterWrite}.
+         */
         public boolean factionCardsPendingJoin;
     }
 
@@ -169,7 +174,37 @@ public final class LocalBackpackStore {
                 load.value().factionCardsPendingJoin, null);
     }
 
+    /**
+     * 统一的「保护写入」语义。
+     *
+     * <p>{@code factionCardsPendingJoin} 表示 JSON 里的 {@code cards} 还没有和 SRE 内存核对过，
+     * 因此下一次进服必须用 {@code max(JSON, SRE)} 做只增合并（{@code BackpackJoinService.overlay}），
+     * 而不是用 JSON 覆盖 SRE 内存。判定规则只有一条：<b>写入内容直接来自 SRE 内存时清零；
+     * 否则沿用「本来就是 missing / 本来就为 true」。</b></p>
+     *
+     * <p>老实现里 {@link #save} 无条件清零，于是「文件缺失时把伪造的全零表写进 JSON」会让下一次
+     * 进服用 0 覆盖玩家真实的阵营卡；而 {@code changeSelfSelectCards} / {@code changeLimitBreakCards}
+     * 用的是另一套规则，同一份标志出现两种语义。</p>
+     *
+     * @param fromSreMemory 写入的 {@code cards} 直接来自 {@code BackpackManager.getCards(...)}，
+     *                      即进服 overlay 之后的权威内存状态
+     */
+    private static boolean pendingJoinAfterWrite(LoadResult existing, boolean fromSreMemory) {
+        if (fromSreMemory) {
+            return false;
+        }
+        return existing == null || existing.isMissing() || existing.factionCardsPendingJoin();
+    }
+
     public static boolean save(UUID uuid, Map<String, Integer> cards) {
+        return save(uuid, cards, false);
+    }
+
+    /**
+     * @param fromSreMemory 见 {@link #pendingJoinAfterWrite}；只有
+     *                      {@link #saveFromEnumMap} 会传 {@code true}
+     */
+    static boolean save(UUID uuid, Map<String, Integer> cards, boolean fromSreMemory) {
         if (!WorldLotteryPaths.ready() || uuid == null) {
             return false;
         }
@@ -179,8 +214,12 @@ public final class LocalBackpackStore {
         if (existing.corrupt()) return false;
         root.selfSelectCards = existing.ok() ? existing.selfSelectCards() : 0;
         root.limitBreakCards = existing.ok() ? existing.limitBreakCards() : 0;
-        root.factionCardsPendingJoin = false;
-        return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), root, GSON, false);
+        root.factionCardsPendingJoin = pendingJoinAfterWrite(existing, fromSreMemory);
+        // Audit B-13: the backup flag must be passed explicitly (as
+        // PlayerLotteryStore.saveTo does). Relying on it — or disabling it — is what
+        // made the .bak fallback unable to engage: without a .bak a corrupt card file
+        // can only be quarantined, so every faction-card balance is lost for good.
+        return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), root, GSON, false, true);
     }
 
     public static int selfSelectCards(UUID uuid) {
@@ -214,8 +253,9 @@ public final class LocalBackpackStore {
         root.cards = load.ok() ? new HashMap<>(load.cards()) : defaultCards();
         root.selfSelectCards = load.selfSelectCards();
         root.limitBreakCards = (int) target;
-        root.factionCardsPendingJoin = load.isMissing() || load.factionCardsPendingJoin();
-        return AtomicJsonFiles.writeJson(path, root, GSON, false);
+        root.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
+        // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
+        return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
     }
 
     public static boolean addSelfSelectCards(UUID uuid, int amount) {
@@ -239,8 +279,9 @@ public final class LocalBackpackStore {
         if (target < 0 || target > Integer.MAX_VALUE) return false;
         root.selfSelectCards = (int) target;
         root.limitBreakCards = load.limitBreakCards();
-        root.factionCardsPendingJoin = load.isMissing() || load.factionCardsPendingJoin();
-        return AtomicJsonFiles.writeJson(path, root, GSON, false);
+        root.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
+        // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
+        return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
     }
 
     public static boolean saveTo(Path path, Map<String, Integer> cards) {
@@ -253,8 +294,9 @@ public final class LocalBackpackStore {
         if (existing.corrupt()) return false;
         root.selfSelectCards = existing.selfSelectCards();
         root.limitBreakCards = existing.limitBreakCards();
-        root.factionCardsPendingJoin = false;
-        return AtomicJsonFiles.writeJson(path, root, GSON, false);
+        root.factionCardsPendingJoin = pendingJoinAfterWrite(existing, false);
+        // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
+        return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
     }
 
     /**
@@ -294,7 +336,9 @@ public final class LocalBackpackStore {
                 }
             }
         }
-        return save(uuid, map);
+        // 这是唯一的「权威写入」：内容直接来自 SRE 内存（进服 overlay 之后或在线玩家操作），
+        // 因此可以安全地清掉保护写入标志。
+        return save(uuid, map, true);
     }
 
     /**

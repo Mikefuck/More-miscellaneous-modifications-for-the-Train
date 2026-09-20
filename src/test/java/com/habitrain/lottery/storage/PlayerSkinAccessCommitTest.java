@@ -84,8 +84,13 @@ class PlayerSkinAccessCommitTest {
         assertTrue(store.commitSkinAccess(id, "bat", "anvil", true));
         assertTrue(store.commitEquipped(id, "bat", "anvil").committed());
         store.update(id, data -> data.coinNum = 91);
-        // Block only this test account's atomic temporary file.
-        Path blocked = WorldLotteryPaths.playerFile(id).resolveSibling(id + ".json.tmp");
+        // Block only this test account's atomic backup path.
+        // 审核 S-01：临时文件名现在是唯一的（<name>.<jvm>-<seq>.tmp），
+        // 过去阻塞 <id>.json.tmp 的做法不再能强制写失败；改为阻塞 .bak——
+        // 这些写入 backup=true 且目标文件已存在，.bak 复制失败会明确拒绝替换主文件。
+        // 上面的写入已经生成过 .bak，必须先删掉再建目录。
+        Path blocked = AtomicJsonFiles.bakPath(WorldLotteryPaths.playerFile(id));
+        Files.deleteIfExists(blocked);
         Files.createDirectories(blocked);
         Files.writeString(blocked.resolve("occupied"), "force write failure");
         assertFalse(store.commitSkinAccess(id, "bat", "anvil", false));
@@ -101,7 +106,9 @@ class PlayerSkinAccessCommitTest {
     void failedUnlockRestoresCleanState() throws Exception {
         store.update(id, data -> data.coinNum = 30);
         assertTrue(store.flush(id));
-        Path blocked = WorldLotteryPaths.playerFile(id).resolveSibling(id + ".json.tmp");
+        // 审核 S-01：见上一条注释——改为阻塞 .bak 来强制写失败（上面的 flush 已生成过 .bak）。
+        Path blocked = AtomicJsonFiles.bakPath(WorldLotteryPaths.playerFile(id));
+        Files.deleteIfExists(blocked);
         Files.createDirectories(blocked);
         Files.writeString(blocked.resolve("occupied"), "force write failure");
         assertFalse(store.commitSkinAccess(id, "bat", "anvil", true));

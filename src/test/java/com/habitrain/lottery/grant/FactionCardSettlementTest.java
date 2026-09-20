@@ -72,7 +72,10 @@ class FactionCardSettlementTest {
         assertTrue(LocalBackpackStore.save(id, LocalBackpackStore.defaultCards()));
         ActiveCardForces.record(id, FactionCardType.NEUTRAL_FOR_KILLER);
         Path file = MetaFeaturePaths.backpackPlayer(id);
-        Path blocked = file.resolveSibling(file.getFileName() + ".tmp");
+        // 审核 S-01：临时文件名现在是唯一的（<name>.<jvm>-<seq>.tmp），
+        // 过去阻塞 <file>.tmp 的做法已不能强制写失败；改为阻塞 .bak
+        //（backup=true 且目标已存在时，.bak 复制失败会拒绝替换主文件）。
+        Path blocked = com.habitrain.lottery.storage.AtomicJsonFiles.bakPath(file);
         Files.createDirectory(blocked);
         Path blocker = Files.writeString(blocked.resolve("blocker"), "prevent atomic write");
         CardForceGuaranteeHook.settleCard(id, 2);

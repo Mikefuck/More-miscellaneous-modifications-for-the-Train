@@ -17,15 +17,26 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  * {@code initializeCardTracking} keeps its upstream caps (call sites there are
  * intentionally not redirected).
  *
- * <p>require=1 (json {@code required:true}): miss = boot fail, not a silent
- * collapse of type 3 → 2.
+ * <p><b>Failure policy: non-fatal.</b> {@code require = 0} together with
+ * {@code "required": false} in {@code habitrain_lottery.mixins.json} means this
+ * redirect no longer holds the game hostage. If upstream renames
+ * {@code normalizeCardType} or the {@code startNextRound} /
+ * {@code roleMatchesFaction} call sites move, the mixin logs an error (via
+ * {@link HabiLotteryMixinPlugin}) and is skipped: the mode then degrades to
+ * upstream behaviour — type 3 is collapsed into type 2 again — instead of
+ * preventing startup. That degradation is silent to players, so a release build
+ * must be re-verified against a new SRE version.
  */
 @Mixin(value = LightningDraftState.class, remap = false)
 public abstract class RoleRotationLightningCardMixin {
 
     /**
-     * miss = boot fail. Do not set require=0: a renamed {@code normalizeCardType}
-     * must fail startup rather than collapse type 3 → 2.
+     * Redirects {@code normalizeCardType} to identity at the two call sites that
+     * pre-assign forced-faction candidates.
+     *
+     * <p>{@code require = 0}: a renamed {@code normalizeCardType} must not fail
+     * startup. It is reported as an error and skipped, and the draft falls back to
+     * upstream's type collapsing.
      */
     @Redirect(
             method = {
@@ -36,7 +47,7 @@ public abstract class RoleRotationLightningCardMixin {
                     value = "INVOKE",
                     target = "Lio/wifi/starrailexpress/game/modes/funny/rotation/LightningDraftState;normalizeCardType(I)I"
             ),
-            require = 1
+            require = 0
     )
     private static int habi$identityNormalizeCardType(int rawType) {
         return rawType;
