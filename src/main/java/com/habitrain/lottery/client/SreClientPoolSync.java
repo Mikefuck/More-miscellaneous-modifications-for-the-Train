@@ -2,7 +2,6 @@ package com.habitrain.lottery.client;
 
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.config.PoolConfigModels;
-import com.habitrain.lottery.skin.SkinPoolInjector;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
@@ -27,7 +26,7 @@ public final class SreClientPoolSync {
 
     public static void applyFromConfig(PoolConfigModels.Root root) {
         try {
-            root = SkinPoolInjector.withRegisteredSkins(root);
+            // Already resolved on the server; never reindex using a client catalog.
             // Cover art must track pool content, not the post-sort PoolID slot.
             PoolCoverLookup.rebuild(root);
             LotteryManager manager = LotteryManager.getInstance();

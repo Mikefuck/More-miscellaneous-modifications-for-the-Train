@@ -1,111 +1,52 @@
 package com.habitrain.lottery.bridge;
 
-import com.habitrain.lottery.HabiLotteryMod;
+import com.habitrain.lottery.api.skin.HabiSkinApi;
+import com.habitrain.lottery.api.skin.SkinEffects;
+import com.habitrain.lottery.api.skin.SkinItems;
+import com.habitrain.lottery.skin.SkinComponents;
+import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
-import io.wifi.starrailexpress.content.item.SkinableItem;
-import io.wifi.starrailexpress.index.SREDataComponentTypes;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
-
-import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
 
-/**
- * Applies equipped skins onto existing ItemStacks in the player inventory so
- * in-match rendering updates immediately after equip (not only on new items).
- */
 public final class InventorySkinApplier {
-    private InventorySkinApplier() {
-    }
-
+    private InventorySkinApplier() {}
     public static int applyAllEquipped(ServerPlayer player, Map<String, String> equipped) {
-        if (player == null) {
-            return 0;
-        }
-        Map<String, String> map = equipped == null ? Map.of() : equipped;
-        Set<String> types = new LinkedHashSet<>();
-        for (String key : map.keySet()) {
-            if (key != null && !key.isBlank()) {
-                types.add(SkinTypeKeys.canonical(key));
-            }
-        }
-        try {
-            Inventory inv = player.getInventory();
-            for (int i = 0; i < inv.getContainerSize(); i++) {
-                ItemStack stack = inv.getItem(i);
-                if (stack.isEmpty() || !(stack.getItem() instanceof SkinableItem skinable)) {
-                    continue;
-                }
-                String itemType = skinable.getItemSkinType();
-                if (itemType != null && !itemType.isBlank()) {
-                    types.add(SkinTypeKeys.canonical(itemType));
-                }
-            }
-        } catch (Exception ignored) {
-        }
+        return apply(player, null);
+    }
+    public static int applyEquippedToInventory(ServerPlayer player, String type, String skin) {
+        return apply(player, SkinTypeKeys.canonical(type));
+    }
+    private static int apply(ServerPlayer player, String onlyType) {
+        if (player == null) return 0;
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        if (!store.isTakeoverActive() || store.isLoadFailed(player.getUUID())) return 0;
         int changed = 0;
-        for (String canonical : types) {
-            if (canonical == null || canonical.isBlank() || "default".equals(canonical)) {
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            String type = SkinItems.typeOf(stack);
+            if (type == null) {
+                if (stack.has(SkinComponents.SKIN)) { stack.remove(SkinComponents.SKIN); changed++; }
                 continue;
             }
-            String skin = "default";
-            for (Map.Entry<String, String> e : map.entrySet()) {
-                if (e.getKey() == null) {
-                    continue;
-                }
-                if (SkinTypeKeys.canonical(e.getKey()).equals(canonical)
-                        && e.getValue() != null && !e.getValue().isBlank()) {
-                    skin = e.getValue();
-                    break;
-                }
+            if (onlyType != null && !onlyType.equals(type)) continue;
+            String skin = store.getEquipped(player.getUUID(), type);
+            // SkinEffects#restrictToItems may narrow a skin type to a subset of its items
+            // (a grenade skin that only belongs on the plain grenade, for instance), so a
+            // restriction is as authoritative as "unlocked": a stack of an excluded item
+            // gets the component removed just like an unowned skin would.
+            boolean usable = HabiSkinApi.find(type, skin).isPresent()
+                    && store.isSkinUnlocked(player.getUUID(), type, skin)
+                    && SkinEffects.allowsItem(type, skin, stack.getItem());
+            String wanted = usable ? type + "/" + skin : null;
+            if (!Objects.equals(stack.get(SkinComponents.SKIN), wanted)) {
+                if (wanted == null) stack.remove(SkinComponents.SKIN); else stack.set(SkinComponents.SKIN, wanted);
+                changed++;
             }
-            changed += applyEquippedToInventory(player, canonical, skin);
         }
-        return changed;
-    }
-
-    public static int applyEquippedToInventory(ServerPlayer player, String type, String skin) {
-        if (player == null || type == null) {
-            return 0;
-        }
-        String want = (skin == null || skin.isBlank()) ? "default" : skin;
-        String canonical = SkinTypeKeys.canonical(type);
-        int changed = 0;
-        try {
-            Inventory inv = player.getInventory();
-            for (int i = 0; i < inv.getContainerSize(); i++) {
-                ItemStack stack = inv.getItem(i);
-                if (stack.isEmpty()) {
-                    continue;
-                }
-                if (!(stack.getItem() instanceof SkinableItem skinable)) {
-                    continue;
-                }
-                String itemType = skinable.getItemSkinType();
-                if (itemType == null) {
-                    continue;
-                }
-                if (!SkinTypeKeys.canonical(itemType).equals(canonical)
-                        && !SkinTypeKeys.writeKeys(itemType).contains(canonical)
-                        && !SkinTypeKeys.writeKeys(type).contains(SkinTypeKeys.canonical(itemType))) {
-                    continue;
-                }
-                String cur = stack.get(SREDataComponentTypes.SKIN);
-                if (!want.equals(cur)) {
-                    stack.set(SREDataComponentTypes.SKIN, want);
-                    changed++;
-                }
-            }
-            if (changed > 0) {
-                player.containerMenu.broadcastChanges();
-            }
-            HabiLotteryMod.LOGGER.info("Applied skin {}/{} to {} stacks in inventory of {}",
-                    canonical, want, changed, player.getGameProfile().getName());
-        } catch (Exception e) {
-            HabiLotteryMod.LOGGER.warn("applyEquippedToInventory failed: {}", e.toString());
-        }
+        if (changed > 0) player.containerMenu.broadcastChanges();
         return changed;
     }
 }

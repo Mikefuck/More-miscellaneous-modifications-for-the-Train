@@ -45,14 +45,13 @@ public final class HabiLotteryMod implements ModInitializer {
 
         ModBlocks.register();
         SkinContentBootstrap.registerAll();
-        // 审核 N-03：SRE 的 SkinsNetworkSyncInitializer 在<b>它自己的</b> SERVER_STARTED
-        // 里就读并缓存 itemSkinSyncServerEnabled（静态 isEnabled），而本模组的
-        // SERVER_STARTED 监听器注册得更晚、因此执行更晚——首启那次写入对它无效。
-        // 模组初始化阶段一定早于任何 SERVER_STARTED 分发，所以在这里补一次；
-        // 两个入口都是幂等的，SERVER_STARTED 里那次保留作为兜底。
-        com.habitrain.lottery.bridge.SreSkinConfigBridge.ensureServerFlags();
+        com.habitrain.lottery.skin.SkinComponents.register();
+        com.habitrain.lottery.skin.SkinNetwork.register();
         LotteryNetwork.registerServer();
         SkinStateCoordinator.registerLifecycle();
+        // Skin effects API v1: thrown-projectile skin inheritance, impact dispatch and the
+        // delayed-action queue behind SkinImpactContext#schedule.
+        com.habitrain.lottery.bridge.SkinEffectRuntime.register();
 
         ServerLifecycleEvents.SERVER_STARTED.register(s -> {
             server = s;
@@ -73,7 +72,6 @@ public final class HabiLotteryMod implements ModInitializer {
                 if (!LotteryManagerBridge.applyWorldPools(s)) {
                     LOGGER.error("Failed applying in-memory lottery pools to SRE shadow file");
                 }
-                com.habitrain.lottery.bridge.SreSkinConfigBridge.ensureServerFlags();
                 PlayerLotteryStore.get().onServerStarted(s);
                 LOGGER.info("World lottery root: {}", WorldLotteryPaths.root());
             } catch (Throwable e) {
@@ -144,6 +142,8 @@ public final class HabiLotteryMod implements ModInitializer {
             // 内存随时间无限增长。核心的对应实现是在 DISCONNECT 里清理的。
             if (handler.player != null) {
                 LotteryNetwork.clearRateLimits(handler.player.getUUID());
+                // 皮肤镜像按玩家缓存背包指纹，也要随之释放，否则离线玩家的条目会一直留在内存里。
+                com.habitrain.lottery.bridge.SkinStateCoordinator.forget(handler.player.getUUID());
             }
         });
 

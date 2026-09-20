@@ -1,13 +1,12 @@
 package com.habitrain.lottery.api.player;
 
-import com.habitrain.lottery.bridge.EconomyMirror;
 import com.habitrain.lottery.bridge.SkinStateCoordinator;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
 import com.habitrain.lottery.api.skin.SkinDefinition;
-import io.wifi.starrailexpress.util.ItemSkinManager;
+import com.habitrain.lottery.api.skin.HabiSkinApi;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
@@ -24,7 +23,7 @@ import java.util.UUID;
  * new skin definitions, this facade edits a player's saved skin state. Unlock
  * and lock changes are persisted through the same transactional commit the
  * in-game {@code /hlt skins} command uses, so the world JSON stays
- * authoritative and online SRE/CCA mirrors are refreshed automatically.</p>
+ * authoritative and online skin state mirrors are refreshed automatically.</p>
  *
  * <p>Server thread only.</p>
  */
@@ -35,7 +34,7 @@ public final class HabiSkinPlayerApi {
     private HabiSkinPlayerApi() {
     }
 
-    /** True when {@code type/id} exists in the SRE registry (or is {@code default}). */
+    /** True when {@code type/id} exists in the local registry (or is {@code default}). */
     public static boolean isRegistered(String type, String skin) {
         String canonical = canonicalType(type);
         if (canonical == null) {
@@ -46,7 +45,7 @@ public final class HabiSkinPlayerApi {
             return true;
         }
         try {
-            Map<String, ?> skins = ItemSkinManager.getSkins(canonical);
+            Map<String, ?> skins = HabiSkinApi.getSkins(canonical);
             return skins != null && skins.containsKey(id);
         } catch (Throwable ignored) {
             return false;
@@ -156,7 +155,7 @@ public final class HabiSkinPlayerApi {
     }
 
     /**
-     * Equips an owned skin. Online players get SRE/CCA and inventory updated
+     * Equips an owned skin. Online players get skin state and inventory updated
      * immediately; offline players get the durable world JSON updated.
      */
     public static HabiAssetResult equip(UUID uuid, String type, String skin) {
@@ -171,6 +170,7 @@ public final class HabiSkinPlayerApi {
             return HabiAssetResult.fail(HabiFailure.UNKNOWN_SKIN_TYPE);
         }
         String id = PlayerLotteryStore.normalizeEquippedSkin(skin);
+        if (!isRegistered(canonical, id)) return HabiAssetResult.fail(HabiFailure.UNKNOWN_SKIN);
         PlayerLotteryStore store = PlayerLotteryStore.get();
         if (store.isLoadFailed(uuid)) {
             return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
@@ -237,7 +237,7 @@ public final class HabiSkinPlayerApi {
         }
         ServerPlayer online = HabiLotteryApi.online(uuid);
         if (online != null) {
-            EconomyMirror.syncSkinAccess(online, store.getOrLoad(uuid), canonical, id, unlocked);
+            com.habitrain.lottery.skin.SkinNetwork.syncAccess(online, store.getOrLoad(uuid), canonical, id, unlocked);
         }
         return HabiAssetResult.success();
     }

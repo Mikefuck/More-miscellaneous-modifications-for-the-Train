@@ -1,0 +1,29 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "trainmurdermystery:revolver",
+      "required": false
+    },
+    {
+      "id": "trainmurdermystery:standard_revolver",
+      "required": false
+    },
+    {
+      "id": "wathe:revolver",
+      "required": false
+    },
+    {
+      "id": "wathe:standard_revolver",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:revolver",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:standard_revolver",
+      "required": false
+    }
+  ]
+}

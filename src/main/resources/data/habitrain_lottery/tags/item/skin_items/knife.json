@@ -1,0 +1,17 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "trainmurdermystery:knife",
+      "required": false
+    },
+    {
+      "id": "wathe:knife",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:knife",
+      "required": false
+    }
+  ]
+}

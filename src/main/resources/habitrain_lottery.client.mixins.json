@@ -5,14 +5,14 @@
     "compatibilityLevel": "JAVA_21",
     "client": [
         "LootBatchButtonsMixin",
-        "LootBatchTitleMixin",
         "LotteryThemeMixin",
         "LootInfoCoverMixin",
         "MapIntroduceEmptyMixin",
         "ClientPlayerTitlePrefixMixin",
         "BackpackScreenMixin",
         "LoginCalendarBlockClientMixin",
-        "SkinModelLocationMixin"
+        "IndependentSkinRendererMixin",
+        "SkinScreenTakeoverMixin"
     ],
     "injectors": {
         "defaultRequire": 1

@@ -59,6 +59,7 @@ public record MailComposeC2SPayload(
         public static final int FACTION_CARD = 2;
         public static final int SELF_SELECT_CARD = 3;
         public static final int LIMIT_BREAK_CARD = 4;
+        public static final int SKIN = 5;
     }
 
     private static void write(RegistryFriendlyByteBuf buf, MailComposeC2SPayload value) {
@@ -118,6 +119,7 @@ public record MailComposeC2SPayload(
                 continue;
             }
             switch (r.kind) {
+                case RewardEntry.SKIN -> list.add(MailReward.skinEntry(r.factionType));
                 case RewardEntry.DRAWS -> list.add(MailReward.draws(r.amount));
                 case RewardEntry.COINS -> list.add(MailReward.coins(r.amount));
                 case RewardEntry.FACTION_CARD -> list.add(MailReward.factionCard(
@@ -151,7 +153,17 @@ public record MailComposeC2SPayload(
             player.sendSystemMessage(Component.literal("§c[邮箱] 标题不能为空"));
             return;
         }
-        MailDraft draft = payload.toDraft();
+        MailDraft draft;
+        try {
+            draft = payload.toDraft();
+            for (MailReward reward : draft.rewards()) {
+                if (reward.kind() == MailReward.Kind.SKIN && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty())
+                    throw new IllegalArgumentException("未注册的皮肤 " + reward.factionType());
+            }
+        } catch (IllegalArgumentException invalid) {
+            player.sendSystemMessage(Component.literal("§c[邮箱] 附件无效：" + invalid.getMessage()));
+            return;
+        }
         // 全员发放模式默认带 30 天限时：未填写（0）时兜底为 30 天，填写了其它正数则尊重管理员设置。
         if (payload.targetMode == MODE_ALL_PLAYERS && payload.expiresDays() <= 0) {
             draft = new MailDraft(draft.sender(), draft.title(), draft.content(),

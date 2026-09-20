@@ -23,14 +23,52 @@ class SkinDefinitionTest {
     }
 
     @Test
-    void rejectsUnsafeIdsUnsupportedTypesAndHatLotteryPlacement() {
+    void rejectsUnsafeIdsAndSupportsHatLotteryPlacement() {
         assertThrows(IllegalArgumentException.class,
                 () -> SkinDefinition.builder("knife", "example:bad", 0).build());
         assertThrows(IllegalArgumentException.class,
                 () -> SkinDefinition.builder("unknown", "valid", 0).build());
         assertThrows(IllegalArgumentException.class,
                 () -> SkinDefinition.builder("knife", "default", 0).build());
-        assertThrows(IllegalArgumentException.class,
-                () -> SkinDefinition.builder("hat", "crown", 0).includeInDefaultPools().build());
+        assertEquals(2, SkinDefinition.builder("hat", "crown", 0).includeInDefaultPools().build().lotteryPlacements().size());
+    }
+
+    /** Audit F-04: the v1 default model namespace stays reachable for un-recompiled extensions. */
+    @Test
+    void defaultModelUsesCurrentNamespaceAndStillExposesTheV1Fallback() {
+        SkinDefinition definition = SkinDefinition.builder("bat", "example_star_bat", 0).build();
+
+        assertTrue(definition.usesDefaultModel());
+        assertEquals(ResourceLocation.parse("habitrain_lottery:item/skins/bat/example_star_bat"),
+                definition.model(false));
+        assertEquals(ResourceLocation.parse("starrailexpress:bat/example_star_bat"),
+                definition.legacyModel(false));
+        assertEquals(ResourceLocation.parse("starrailexpress:bat/example_star_bat_in_hand"),
+                definition.legacyModel(true));
+    }
+
+    @Test
+    void explicitModelHasNoLegacyFallback() {
+        SkinDefinition definition = SkinDefinition.builder("knife", "example_crystal", 0)
+                .model("example", "item/skins/knife/crystal")
+                .build();
+
+        assertFalse(definition.usesDefaultModel());
+        assertEquals(ResourceLocation.parse("example:item/skins/knife/crystal"), definition.model(false));
+        assertNull(definition.legacyModel(false));
+        assertNull(definition.legacyModel(true));
+    }
+
+    /** Audit F-10: registration, lookup and mail all share one id normaliser. */
+    @Test
+    void sharedIdNormaliserTrimsFoldsCaseAndRejectsUnsafeValues() {
+        assertEquals("crystal_blade", SkinDefinition.normalizeSkinId(" Crystal_Blade "));
+        assertNull(SkinDefinition.normalizeSkinId(null));
+        assertNull(SkinDefinition.normalizeSkinId("   "));
+        assertThrows(IllegalArgumentException.class, () -> SkinDefinition.normalizeSkinId("default"));
+        assertThrows(IllegalArgumentException.class, () -> SkinDefinition.normalizeSkinId("coin"));
+        assertThrows(IllegalArgumentException.class, () -> SkinDefinition.normalizeSkinId("example:bad"));
+        assertThrows(IllegalArgumentException.class, () -> SkinDefinition.normalizeSkinId("a".repeat(49)));
+        assertEquals("a".repeat(48), SkinDefinition.normalizeSkinId("a".repeat(48)));
     }
 }

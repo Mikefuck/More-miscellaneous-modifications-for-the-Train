@@ -138,7 +138,7 @@ public final class LootRollServer {
         boolean rollFailed = false;
         try {
             store.addLootChance(uuid, -cost);
-            result = pool.rollOnce(player);
+            result = com.habitrain.lottery.bridge.SkinLotteryBridge.roll(pool, player);
             if (LootRollTransaction.isValidRoll(result == null ? null : result.first)) {
                 LotteryHistoryStore.get().append(
                         uuid, poolId, result.first, "", "chance_delta", 0, store.getLootChance(uuid));
@@ -224,7 +224,7 @@ public final class LootRollServer {
         try {
             store.addLootChance(uuid, -affordableRolls * cost);
             for (int i = 0; i < affordableRolls; i++) {
-                Pair<Integer, Integer> result = pool.rollOnce(player);
+                Pair<Integer, Integer> result = com.habitrain.lottery.bridge.SkinLotteryBridge.roll(pool, player);
                 if (LootRollTransaction.isValidRoll(result == null ? null : result.first)) {
                     results.add(new int[]{result.first, result.second});
                 } else {
@@ -318,7 +318,7 @@ public final class LootRollServer {
     }
 
     private static boolean isEnabledPool(int poolId) {
-        PoolConfigModels.Root root = LotteryConfigService.get().getPools();
+        PoolConfigModels.Root root = com.habitrain.lottery.skin.SkinPoolInjector.withRegisteredSkins(LotteryConfigService.get().getPools());
         if (root == null || root.Pools == null) {
             return false;
         }
@@ -373,11 +373,6 @@ public final class LootRollServer {
                 snap.unlocked.forEach((k, v) -> d.unlocked.put(k, v == null ? new HashMap<>() : new HashMap<>(v)));
             }
         });
-        for (String[] extra : extras) {
-            EconomyMirror.lockCca(player, extra[0], extra[1]);
-            EconomyMirror.runSuppressed(() ->
-                    PlayerEconomyManager.lockSkinForItemType(player, extra[0], extra[1]));
-        }
         EconomyMirror.syncChanceAndCoins(player, store.getOrLoad(uuid));
         boolean ok = store.flush(uuid);
         if (!ok) {
@@ -389,6 +384,7 @@ public final class LootRollServer {
 
     /** Sends current coin/draw values so an open LootInfoScreen re-renders accurately. */
     private static void sendEconomyRefresh(ServerPlayer player) {
+        com.habitrain.lottery.skin.SkinNetwork.sync(player);
         try {
             ServerPlayNetworking.send(player, new LootDataRefreshS2CPacket(
                     PlayerEconomyManager.getCoinNum(player),

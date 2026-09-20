@@ -20,7 +20,6 @@ import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import org.agmas.noellesroles.client.screen.LootInfoScreen;
-import org.agmas.noellesroles.client.screen.LootScreen;
 import org.agmas.noellesroles.packet.Loot.LootDataRefreshS2CPacket;
 import org.agmas.noellesroles.packet.Loot.LootMultiResultS2CPacket;
 import org.agmas.noellesroles.packet.Loot.LootResultS2CPacket;
@@ -121,7 +120,8 @@ public final class LotteryClientNetwork {
                     LotteryConfigService.get().importAllJson(payload.json());
                     if (clientSnapshotApplier != null) {
                         clientSnapshotApplier.accept(
-                                LotteryConfigService.get().getPools(),
+                                GSON.fromJson(com.google.gson.JsonParser.parseString(payload.json()).getAsJsonObject()
+                                        .get("runtimePools"), PoolConfigModels.Root.class),
                                 LotteryConfigService.get().getTheme());
                     }
                     LotteryNetwork.ClientLotteryState.op = LotteryNetwork.ClientLotteryState.pendingOp;
@@ -255,7 +255,7 @@ public final class LotteryClientNetwork {
                     if (mc.player != null && mc.screen != null) {
                         // Server already sent final coin/draw values via LootDataRefreshS2CPacket,
                         // so no local decrement needed — just show the result screen.
-                        mc.setScreen(new LootScreen(payload.poolID(), payload.quality(), payload.ansID(), mc.screen));
+                        mc.setScreen(new PagedLootMultiScreen(payload.poolID(), java.util.List.of(new int[]{payload.quality(), payload.ansID()}), mc.screen));
                     }
                 } catch (Throwable t) {
                     HabiLotteryMod.LOGGER.warn("Failed showing loot result screen: {}", t.toString());

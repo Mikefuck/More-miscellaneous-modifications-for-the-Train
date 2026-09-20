@@ -74,7 +74,7 @@ modImplementation files("libs/habitrain_lottery-1.1.6.jar")
 | `INVALID_VALUE` | 数值超出该资产的允许范围。 |
 | `UNKNOWN_CARD_TYPE` | 未知角色卡类型。 |
 | `UNKNOWN_SKIN_TYPE` | 皮肤类型不是 knife / revolver / bat / grenade / hat。 |
-| `UNKNOWN_SKIN` | 该皮肤没有在 SRE 注册。 |
+| `UNKNOWN_SKIN` | 该皮肤没有在本模组独立目录注册。 |
 | `SKIN_NOT_UNLOCKED` | 玩家尚未拥有该皮肤，不能装备/撤销。 |
 | `CORRUPT_STORAGE` | 玩家 JSON 损坏，拒绝覆盖。 |
 | `WRITE_FAILED` | 写入失败；内存值已回滚。 |
@@ -89,7 +89,7 @@ modImplementation files("libs/habitrain_lottery-1.1.6.jar")
 
 成功返回代表 **权威世界 JSON 已落盘**。如果落盘失败，内存中的值会被恢复到调用前的快照后再返回 `WRITE_FAILED`，所以扩展模组不会看到“界面成功、重启丢失”的假成功。
 
-如果目标玩家 **在线**，成功修改后会自动同步 SRE 的实时经济 / SRE+CCA 皮肤镜像 / 称号显示，无需调用方额外发包。
+如果目标玩家 **在线**，成功修改后会自动同步 SRE 的实时经济 / 本模组皮肤协议 / 称号显示，无需调用方额外发包。
 
 ### 2.6 在线 / 离线
 
@@ -215,7 +215,7 @@ modImplementation files("libs/habitrain_lottery-1.1.6.jar")
 
 | 方法 | 说明 |
 | --- | --- |
-| `boolean isRegistered(String type, String skin)` | 该 `type/id` 是否已在 SRE 注册（`default` 恒为 true）。 |
+| `boolean isRegistered(String type, String skin)` | 该 `type/id` 是否已在本模组独立目录注册（`default` 恒为 true）。 |
 | `boolean isUnlocked(UUID, String type, String skin)` | 玩家是否拥有该皮肤。`default` 恒为 true。 |
 | `List<String> unlocked(UUID, String type)` | 某类型已拥有皮肤 id（升序，不含 default）。 |
 | `Map<String, List<String>> unlockedAll(UUID)` | 全部类型 → 已拥有皮肤。 |
@@ -229,8 +229,8 @@ modImplementation files("libs/habitrain_lottery-1.1.6.jar")
 
 语义要点：
 
-- `unlock` / `lock` 走的是和 `/hlt skins unlock|lock` 完全相同的 **事务提交**（`PlayerLotteryStore.commitSkinAccess`），世界 JSON 是唯一权威；成功后在线玩家会立刻收到 SRE/CCA 同步。
-- `equip` 对在线玩家调用 `SkinStateCoordinator`，会同步 SRE、CCA 并应用到背包里的物品；对离线玩家只写世界 JSON，玩家上线时按权威存档重建。`equip` 失败时在线路径会向玩家发一条失败提示。
+- `unlock` / `lock` 走的是和 `/hlt skins unlock|lock` 完全相同的 **事务提交**（`PlayerLotteryStore.commitSkinAccess`），世界 JSON 是唯一权威；成功后在线玩家会立刻收到本模组皮肤状态同步。
+- `equip` 对在线玩家调用 `SkinStateCoordinator`，会同步本模组皮肤状态并应用到背包里的物品；对离线玩家只写世界 JSON，玩家上线时按权威存档重建。`equip` 失败时在线路径会向玩家发一条失败提示。
 - 修改皮肤状态前应确保 `HabiLotteryApi.isReady()`。
 
 ---
@@ -440,3 +440,5 @@ if (touched == 0) {
   "facade": "com.habitrain.lottery.api.player.HabiLotteryApi"
 }
 ```
+
+皮肤附件：`HabiMailApi.skin(type, id)`，要求服务器安装相应 API v2 皮肤扩展，领取时解锁。

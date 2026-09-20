@@ -1,29 +1,27 @@
 package com.habitrain.lottery.mixin;
 
-import com.habitrain.lottery.grant.LotteryGrantService;
-import net.minecraft.world.entity.player.Player;
+import com.habitrain.lottery.api.skin.SkinItems;
+import com.habitrain.lottery.skin.SkinLotteryRewards;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
+import org.agmas.noellesroles.utils.Pair;
+import org.agmas.noellesroles.utils.lottery.LotteryManager;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * Scales only the duplicate-skin coin grant inside {@code LotteryPool.rollOnce}.
- * ordinal 0 = pure coin card (648 * pct * 1.1); ordinal 1 = duplicate skin (648 * pct).
- */
-@Mixin(targets = "org.agmas.noellesroles.utils.lottery.LotteryManager$LotteryPool", remap = false)
+/** Lottery adapter: no upstream skin registry, item classes or skin rewards. */
+@Mixin(value = LotteryManager.LotteryPool.class, remap = false)
 public class LotteryPoolMixin {
-
-    @Redirect(
-            method = "rollOnce",
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lio/wifi/starrailexpress/util/ItemSkinManager;addCoinNum(Lnet/minecraft/world/entity/player/Player;Ljava/lang/Integer;)V",
-                    ordinal = 1
-            )
-    )
-    private void habi$scaleDuplicateCoin(Player player, Integer amount) {
-        int base = amount == null ? 0 : amount;
-        int scaled = LotteryGrantService.applyDuplicateCoin(base);
-        io.wifi.starrailexpress.util.ItemSkinManager.addCoinNum(player, scaled);
+    @Inject(method = "rollOnce", at = @At("HEAD"), cancellable = true)
+    private void habi$localReward(ServerPlayer player, CallbackInfoReturnable<Pair<Integer, Integer>> cir) {
+        cir.setReturnValue(com.habitrain.lottery.bridge.SkinLotteryBridge.roll(
+                (LotteryManager.LotteryPool) (Object) this, player));
+    }
+    @Inject(method = "getSkinItemStack", at = @At("HEAD"), cancellable = true)
+    private static void habi$localPreview(String entry, CallbackInfoReturnable<ItemStack> cir) {
+        ItemStack preview = SkinItems.preview(entry);
+        cir.setReturnValue(preview.isEmpty() ? null : preview);
     }
 }

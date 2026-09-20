@@ -561,6 +561,11 @@ public final class MailService {
         if (rewards == null || rewards.isEmpty()) {
             return;
         }
+        for (MailReward reward : rewards) {
+            if (reward != null && reward.kind() == MailReward.Kind.SKIN
+                    && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty())
+                throw new IllegalArgumentException("Skin provider unavailable: " + reward.factionType());
+        }
         UUID uuid = player.getUUID();
         int drawDelta = 0;
         int coinDelta = 0;
@@ -571,6 +576,14 @@ public final class MailService {
                 continue;
             }
             switch (r.kind()) {
+                case SKIN -> {
+                    var reward = MailReward.skinEntry(r.factionType());
+                    var skin = com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType())
+                            .orElseThrow(() -> new IllegalArgumentException("Skin provider unavailable: " + reward.factionType()));
+                    if (!PlayerLotteryStore.get().commitSkinAccess(uuid, skin.type(), skin.id(), true))
+                        throw new IllegalStateException("Skin reward could not be persisted");
+                    messages.add(Component.literal("§a[邮箱] 已解锁皮肤 " + reward.factionType()));
+                }
                 case DRAWS -> {
                     drawDelta += r.amount();
                     messages.add(Component.literal(
@@ -625,6 +638,7 @@ public final class MailService {
         if (!cards.isEmpty() && !LocalBackpackStore.saveFromEnumMap(uuid, BackpackManager.getCards(player))) {
             throw new IllegalStateException("Faction-card reward could not be persisted");
         }
+        com.habitrain.lottery.skin.SkinNetwork.sync(player);
         for (Component msg : messages) {
             player.sendSystemMessage(msg);
         }
@@ -639,7 +653,7 @@ public final class MailService {
         Map<FactionCardType, Integer> cards = new EnumMap<>(FactionCardType.class);
         cards.putAll(BackpackManager.getCards(player));
         return new RewardSnapshot(data.lootChance, data.coinNum, cards,
-                backpack.selfSelectCards(), backpack.limitBreakCards());
+                backpack.selfSelectCards(), backpack.limitBreakCards(), data.copy());
     }
 
     private static boolean restoreRewards(ServerPlayer player, RewardSnapshot snap) {
@@ -659,11 +673,14 @@ public final class MailService {
             PlayerLotteryStore.get().update(uuid, data -> {
                 data.lootChance = Math.max(0, snap.lootChance);
                 data.coinNum = Math.max(0, snap.coinNum);
+                data.unlocked = snap.skins.copy().unlocked;
+                data.equipped = snap.skins.copy().equipped;
             });
             if (PlayerLotteryStore.get().isLoadFailed(uuid) || !PlayerLotteryStore.get().flush(uuid)) {
                 throw new IllegalStateException("Mail economy rollback could not be persisted");
             }
             EconomyMirror.syncChanceAndCoins(player, PlayerLotteryStore.get().getOrLoad(player));
+            com.habitrain.lottery.bridge.SkinStateCoordinator.reassertPlayer(player, "mail_rollback");
         }, () -> {
             Map<FactionCardType, Integer> now = BackpackManager.getCards(player);
             for (FactionCardType type : FactionCardType.values()) {
@@ -703,6 +720,6 @@ public final class MailService {
     }
 
     private record RewardSnapshot(int lootChance, int coinNum, Map<FactionCardType, Integer> cards,
-                                  int selfSelectCards, int limitBreakCards) {
+                                  int selfSelectCards, int limitBreakCards, PlayerLotteryData skins) {
     }
 }

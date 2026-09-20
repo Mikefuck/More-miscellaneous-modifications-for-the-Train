@@ -10,7 +10,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Immutable definition of one SRE weapon skin. */
+/** Immutable definition of one independent item skin. */
 public record SkinDefinition(
         String type,
         String id,
@@ -19,6 +19,10 @@ public record SkinDefinition(
         List<LotteryPlacement> lotteryPlacements) {
 
     public static final Set<String> SUPPORTED_TYPES = Set.of("knife", "revolver", "bat", "grenade", "hat");
+    /** Namespace used when a definition does not pin an explicit model. */
+    public static final String DEFAULT_MODEL_NAMESPACE = "habitrain_lottery";
+    /** Namespace v1 of this API used for the same default model; kept for migration only. */
+    public static final String LEGACY_MODEL_NAMESPACE = "starrailexpress";
     private static final Pattern SKIN_ID = Pattern.compile("[a-z0-9_.-]+");
 
     public SkinDefinition {
@@ -28,9 +32,7 @@ public record SkinDefinition(
         lotteryPlacements = lotteryPlacements == null
                 ? List.of()
                 : List.copyOf(new LinkedHashSet<>(lotteryPlacements));
-        if ("hat".equals(type) && !lotteryPlacements.isEmpty()) {
-            throw new IllegalArgumentException("Hat skins cannot be placed in SRE weapon lottery pools");
-        }
+
     }
 
     public static Builder builder(String type, String id, int color) {
@@ -43,12 +45,40 @@ public record SkinDefinition(
         return poolPrefix + "/" + id;
     }
 
-    /** Resolves the model used by SRE's general skin model loader. */
+    /**
+     * Resolves the model used by the independent model loader.
+     *
+     * <p>When no model was supplied, the base id is
+     * {@code habitrain_lottery:item/skins/<type>/<id>}. Version 1 of this API used
+     * {@code starrailexpress:<type>/<id>} instead, and v2 keeps that id available
+     * through {@link #legacyModel(boolean)} so an extension that has not been
+     * recompiled yet still resolves its old resource pack assets.</p>
+     */
     public ResourceLocation model(boolean inHand) {
         if (!inHand) {
             return model;
         }
         return model.withPath(model.getPath() + "_in_hand");
+    }
+
+    /**
+     * The same model expressed in the v1 {@code starrailexpress} namespace, or
+     * {@code null} when this definition pinned an explicit model (in which case the
+     * extension already controls its own paths and there is no legacy id to try).
+     */
+    public ResourceLocation legacyModel(boolean inHand) {
+        if (!usesDefaultModel()) {
+            return null;
+        }
+        ResourceLocation legacy = ResourceLocation.fromNamespaceAndPath(
+                LEGACY_MODEL_NAMESPACE, type + "/" + id);
+        return inHand ? legacy.withPath(legacy.getPath() + "_in_hand") : legacy;
+    }
+
+    /** True when {@link #model} is the API default rather than an explicit override. */
+    public boolean usesDefaultModel() {
+        return DEFAULT_MODEL_NAMESPACE.equals(model.getNamespace())
+                && ("item/skins/" + type + "/" + id).equals(model.getPath());
     }
 
     static String normalizeType(String raw, boolean allowAll) {
@@ -70,13 +100,31 @@ public record SkinDefinition(
     }
 
     private static String normalizeId(String raw) {
-        if (raw == null || raw.isBlank()) {
+        String id = normalizeSkinId(raw);
+        if (id == null) {
             throw new IllegalArgumentException("Skin id must not be blank");
         }
+        return id;
+    }
+
+    /**
+     * The single normalisation every entry point shares: {@code trim + lower case},
+     * then the catalogue id rules. Mail attachments and player equipment used to
+     * validate the raw string instead, so a value that registered fine could throw
+     * only when it was first mailed; routing all of them through here keeps
+     * registration, unlock and mail attachments consistent.
+     *
+     * @return the canonical id, or {@code null} when {@code raw} is blank
+     * @throws IllegalArgumentException when the id is reserved or malformed
+     */
+    public static String normalizeSkinId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
         String id = raw.trim().toLowerCase(Locale.ROOT);
-        if (!SKIN_ID.matcher(id).matches()) {
+        if (id.length() > 48 || !SKIN_ID.matcher(id).matches()) {
             throw new IllegalArgumentException(
-                    "Skin id must match [a-z0-9_.-]+ and cannot contain a namespace or slash: " + raw);
+                    "Skin id must match [a-z0-9_.-]{1,48} and cannot contain a namespace or slash: " + raw);
         }
         if ("default".equals(id) || "coin".equals(id)) {
             throw new IllegalArgumentException("Reserved skin id: " + id);
@@ -106,12 +154,18 @@ public record SkinDefinition(
             this.id = normalizeId(id);
             this.color = color;
             this.model = ResourceLocation.fromNamespaceAndPath(
-                    "starrailexpress", "item/skins/" + this.type + "/" + this.id);
+                    DEFAULT_MODEL_NAMESPACE, "item/skins/" + this.type + "/" + this.id);
         }
 
         /**
          * Sets the base item-model id. The in-hand model is resolved by appending
          * {@code _in_hand} to this path.
+         *
+         * <p>Extensions are expected to point this at their own namespace, e.g.
+         * {@code .model("example", "item/skins/knife/crystal")}. Leaving it unset
+         * resolves to {@code habitrain_lottery:item/skins/<type>/<id>}, which this
+         * mod ships no assets for, so the wardrobe reports the skin as missing
+         * instead of silently rendering a purple-and-black model.</p>
          */
         public Builder model(ResourceLocation model) {
             this.model = Objects.requireNonNull(model, "model");

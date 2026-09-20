@@ -25,8 +25,11 @@ public class MailComposeScreen extends Screen {
     private static final int PAGE_CONTENT = 0;
     private static final int PAGE_RECIPIENTS = 1;
     private static final int PAGE_REWARDS = 2;
+    private static final int PAGE_SKIN = 3;
+    private EditBox skinBox;
+    private String skinEntry = "";
 
-    private static final String[] PAGE_LABELS = {"1  写邮件", "2  选收件人", "3  加附件"};
+    private static final String[] PAGE_LABELS = {"1 写邮件", "2 收件人", "3 附件", "4 皮肤"};
     private static final String[] FACTIONS = {"killer", "civilian", "neutral", "neutral_for_killer"};
     private static final String[] FACTION_LABELS = {"杀手", "平民", "中立", "杀手中立"};
 
@@ -90,6 +93,14 @@ public class MailComposeScreen extends Screen {
         switch (page) {
             case PAGE_RECIPIENTS -> buildRecipientsPage();
             case PAGE_REWARDS -> buildRewardsPage();
+            case PAGE_SKIN -> {
+                skinBox = new EditBox(font, contentX, contentTop + 24, contentWidth, 20, Component.literal("皮肤附件 type/id"));
+                skinBox.setMaxLength(64); skinBox.setValue(skinEntry);
+                skinBox.setHint(Component.literal("例如 knife/my_skin（留空不附加）"));
+                skinBox.setResponder(value -> skinEntry = value.trim());
+                addRenderableWidget(skinBox);
+                skinBox.setTooltip(Tooltip.create(Component.literal("填写新皮肤组件已注册的 type/id；领取后解锁，重复领取不叠加")));
+            }
             default -> buildContentPage();
         }
 
@@ -116,7 +127,7 @@ public class MailComposeScreen extends Screen {
     private void buildStepButtons() {
         int gap = 4;
         int navY = panelY + 30;
-        int baseWidth = Math.max(1, (contentWidth - gap * 2) / PAGE_LABELS.length);
+        int baseWidth = Math.max(1, (contentWidth - gap * (PAGE_LABELS.length - 1)) / PAGE_LABELS.length);
         int x = contentX;
         for (int i = 0; i < PAGE_LABELS.length; i++) {
             int buttonWidth = i == PAGE_LABELS.length - 1
@@ -419,6 +430,7 @@ public class MailComposeScreen extends Screen {
         if (limitBreakCards != 0) {
             built.add(new RewardEntry(RewardEntry.LIMIT_BREAK_CARD, limitBreakCards, ""));
         }
+        if (!skinEntry.isBlank()) built.add(new RewardEntry(RewardEntry.SKIN, 1, skinEntry));
         return built;
     }
 
@@ -496,6 +508,7 @@ public class MailComposeScreen extends Screen {
         List<String> parts = new ArrayList<>();
         for (RewardEntry reward : rewards) {
             switch (reward.kind()) {
+                case RewardEntry.SKIN -> parts.add("皮肤 " + reward.factionType());
                 case RewardEntry.DRAWS -> parts.add("抽数 " + reward.amount());
                 case RewardEntry.COINS -> parts.add("金币 " + reward.amount());
                 case RewardEntry.FACTION_CARD ->
@@ -593,6 +606,11 @@ public class MailComposeScreen extends Screen {
             return;
         }
 
+        if (page == PAGE_SKIN) {
+            graphics.drawString(font, "皮肤附件（type/id）", contentX, contentTop + 10, TEXT, false);
+            graphics.drawString(font, font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth), contentX, contentTop + 60, BRASS, false);
+            return;
+        }
         graphics.drawString(font, "基础奖励", contentX, contentTop, MUTED, false);
         graphics.drawString(font, "抽数附件", drawsBox.getX(), drawsBox.getY() - 10, MUTED, false);
         graphics.drawString(font, "金币", goldBox.getX(), goldBox.getY() - 10, MUTED, false);

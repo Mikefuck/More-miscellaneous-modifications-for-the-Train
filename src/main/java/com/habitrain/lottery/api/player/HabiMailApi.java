@@ -126,6 +126,8 @@ public final class HabiMailApi {
     }
 
     /** {@code LIMIT_BREAK_CARD} reward. */
+    public static MailReward skin(String type, String id) { return MailReward.skin(type, id); }
+
     public static MailReward limitBreakCard(int amount) {
         return MailReward.limitBreakCard(MailComposeLimits.clampRewardAmount(amount));
     }

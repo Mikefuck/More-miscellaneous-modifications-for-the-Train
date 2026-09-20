@@ -299,6 +299,7 @@ public class MailboxScreen extends Screen {
                 continue;
             }
             switch (r.kind()) {
+                case SKIN -> parts.add("皮肤 " + r.factionType());
                 case DRAWS -> parts.add("抽数 " + r.amount());
                 case COINS -> parts.add("金币 " + r.amount());
                 case SELF_SELECT_CARD -> parts.add("自选卡 x" + r.amount());

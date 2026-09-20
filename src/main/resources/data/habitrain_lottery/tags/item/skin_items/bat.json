@@ -1,0 +1,17 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "trainmurdermystery:bat",
+      "required": false
+    },
+    {
+      "id": "wathe:bat",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:bat",
+      "required": false
+    }
+  ]
+}

@@ -1414,9 +1414,9 @@ public class LotteryConfigRootScreen extends Screen {
 
     // ---------------- skins ----------------
     private void buildSkinsTab(int y, int h) {
-        addTab(Button.builder(Component.literal("重新注册皮肤"), b -> {
-            SkinContentBootstrap.reRegister();
-            status = "已重新注册: " + SkinContentBootstrap.getRegisteredCount();
+        addTab(Button.builder(Component.literal("打开皮肤衣柜"), b -> {
+            net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+                    new com.habitrain.lottery.skin.SkinNetwork.Request("", ""));
         }).bounds(pageLeft(), y, 120, 20).build());
     }
 
@@ -2174,7 +2174,7 @@ public class LotteryConfigRootScreen extends Screen {
         } else if (selectedTab == TAB_SKINS) {
             int yy = contentY + 28;
             g.drawString(font, "已注册皮肤: " + SkinContentBootstrap.getRegisteredCount(), pageLeft(), yy, 0xFFFFFFFF, false);
-            g.drawString(font, "列表: data/habitrain_lottery/defaults/skins.json", pageLeft(), yy + 14, 0xFF8A92A0, false);
+            g.drawString(font, "皮肤由扩展模组提供，本模组不内置皮肤", pageLeft(), yy + 14, 0xFF8A92A0, false);
             g.drawString(font, "命令: /hlt skins  |  /hlt open", pageLeft(), yy + 28, 0xFF8A92A0, false);
         } else if (selectedTab == TAB_MAIL) {
             int yy = contentY + 28;

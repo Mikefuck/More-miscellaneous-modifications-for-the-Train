@@ -27,6 +27,7 @@ public final class MailCommandsCodec {
                 continue;
             }
             switch (r.kind()) {
+                case SKIN -> out.add(PREFIX + "SKIN:" + MailReward.skinEntry(r.factionType()).factionType());
                 case DRAWS -> out.add(PREFIX + "DRAWS:" + r.amount());
                 case COINS -> out.add(PREFIX + "COINS:" + r.amount());
                 case FACTION_CARD -> {
@@ -58,6 +59,7 @@ public final class MailCommandsCodec {
             }
             try {
                 switch (parts[0].toUpperCase(Locale.ROOT)) {
+                    case "SKIN" -> out.add(MailReward.skinEntry(parts[1]));
                     case "DRAWS" -> out.add(MailReward.draws(Integer.parseInt(parts[1])));
                     case "COINS" -> out.add(MailReward.coins(Integer.parseInt(parts[1])));
                     case "FACTION_CARD" -> {
@@ -70,7 +72,7 @@ public final class MailCommandsCodec {
                     default -> {
                     }
                 }
-            } catch (NumberFormatException ignored) {
+            } catch (IllegalArgumentException ignored) {
             }
         }
         return out;

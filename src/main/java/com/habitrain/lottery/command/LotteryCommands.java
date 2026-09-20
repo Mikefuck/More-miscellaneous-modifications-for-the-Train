@@ -13,7 +13,7 @@ import com.habitrain.lottery.storage.MigrationService;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
-import io.wifi.starrailexpress.util.ItemSkinManager;
+import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -169,32 +169,43 @@ public final class LotteryCommands {
                                     return 1;
                                 })))
                 .then(Commands.literal("skins")
-                        .requires(LotteryCommands::adminRequires)
                         .then(buildSkinAccess("unlock", true))
                         .then(buildSkinAccess("lock", false))
                         .executes(ctx -> {
-                            ctx.getSource().sendSuccess(() -> Component.literal(
-                                    "已注册皮肤数: " + SkinContentBootstrap.getRegisteredCount()), false);
+                            com.habitrain.lottery.skin.SkinNetwork.open(ctx.getSource().getPlayerOrException());
                             return 1;
                         })
                         .then(Commands.literal("reregister")
+                                .requires(LotteryCommands::adminRequires)
                                 .executes(ctx -> {
-                                    SkinContentBootstrap.reRegister();
-                                    ctx.getSource().sendSuccess(() -> Component.literal(
-                                            "重新注册完成: " + SkinContentBootstrap.getRegisteredCount()), true);
-                                    return 1;
+                                    int total = SkinContentBootstrap.reRegister();
+                                    var skipped = SkinContentBootstrap.getSkippedProviders();
+                                    if (skipped.isEmpty()) {
+                                        ctx.getSource().sendSuccess(() -> Component.literal(
+                                                "重新注册完成，皮肤目录共 " + total + " 项；"
+                                                        + "客户端需刷新资源（F3+T）后生效"), true);
+                                        return 1;
+                                    }
+                                    // Never report a success count when a provider was rolled back.
+                                    ctx.getSource().sendFailure(Component.literal(
+                                            "重新注册部分失败：目录共 " + total + " 项，"
+                                                    + skipped.size() + " 个扩展被回滚并跳过（"
+                                                    + String.join(", ", skipped)
+                                                    + "），详见服务器日志"));
+                                    return 0;
                                 })));
     }
 
     private static LiteralArgumentBuilder<CommandSourceStack> buildSkinAccess(String name, boolean unlocked) {
         return Commands.literal(name)
+                .requires(LotteryCommands::adminRequires)
                 .then(Commands.argument("players", EntityArgument.players())
                         .then(Commands.argument("type", StringArgumentType.word())
                                 .suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
-                                        ItemSkinManager.getSkins().keySet().stream().sorted(), builder))
+                                        HabiSkinApi.types().stream().sorted(), builder))
                                 .then(Commands.argument("skin", StringArgumentType.word())
                                         .suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
-                                                ItemSkinManager.getSkins(SkinTypeKeys.canonical(
+                                                HabiSkinApi.getSkins(SkinTypeKeys.canonical(
                                                         StringArgumentType.getString(ctx, "type")))
                                                         .keySet().stream().filter(id -> !"default".equals(id)).sorted(), builder))
                                         .executes(ctx -> changeSkinAccess(ctx, unlocked)))));
@@ -209,7 +220,7 @@ public final class LotteryCommands {
             source.sendFailure(Component.literal("默认皮肤始终可用，无需解锁，也不能撤销解锁"));
             return 0;
         }
-        if (!ItemSkinManager.getSkins(type).containsKey(skin)) {
+        if (!HabiSkinApi.getSkins(type).containsKey(skin)) {
             source.sendFailure(Component.literal("未注册的皮肤：" + type + "/" + skin + "，请使用 Tab 补全"));
             return 0;
         }
@@ -225,7 +236,7 @@ public final class LotteryCommands {
                 source.sendFailure(Component.literal(playerName + " 的皮肤保存失败，未修改解锁状态"));
                 continue;
             }
-            boolean synced = EconomyMirror.syncSkinAccess(player, store.getOrLoad(player), type, skin, unlocked);
+            boolean synced = com.habitrain.lottery.skin.SkinNetwork.syncAccess(player, store.getOrLoad(player), type, skin, unlocked);
             count++;
             source.sendSuccess(() -> Component.literal("已为 " + playerName
                     + (unlocked ? " 解锁皮肤 " : " 撤销皮肤解锁 ") + type + "/" + skin), true);

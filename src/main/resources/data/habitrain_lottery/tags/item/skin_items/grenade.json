@@ -1,0 +1,41 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "trainmurdermystery:grenade",
+      "required": false
+    },
+    {
+      "id": "trainmurdermystery:sticky_grenade",
+      "required": false
+    },
+    {
+      "id": "trainmurdermystery:timed_grenade",
+      "required": false
+    },
+    {
+      "id": "wathe:grenade",
+      "required": false
+    },
+    {
+      "id": "wathe:sticky_grenade",
+      "required": false
+    },
+    {
+      "id": "wathe:timed_grenade",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:grenade",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:sticky_grenade",
+      "required": false
+    },
+    {
+      "id": "starrailexpress:timed_grenade",
+      "required": false
+    }
+  ]
+}

@@ -15,6 +15,9 @@ public final class HabiLotteryClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        SkinClient.register();
+        // Skin effects API v1, client half: flight trails for skinned projectiles.
+        SkinTrailTicker.register();
         LootThemeHooks.initClient();
         LoginCalendarWorldRender.register();
         // Keep common network code free of client-only class refs (dedicated server safe).

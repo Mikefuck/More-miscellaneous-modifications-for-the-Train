@@ -10,8 +10,6 @@
         "SrePlayerSkinsMysqlMixin",
         "LotteryManagerMixin",
         "LotteryPoolMixin",
-        "SkinFromStringMixin",
-        "SkinableItemMixin",
         "MatchRecordStoreMixin",
         "MatchRecordServiceMixin",
         "BackpackManagerMixin",
@@ -23,7 +21,8 @@
         "NameTagInventoryPersistMixin",
         "NameTagGenerateLiteralMixin",
         "NameTagSyncVisibilityMixin",
-        "ServerPlayerTabTitleMixin"
+        "ServerPlayerTabTitleMixin",
+        "GrenadeImpactEffectMixin"
     ],
     "injectors": {
         "defaultRequire": 1

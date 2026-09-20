@@ -1,177 +1,104 @@
 package com.habitrain.lottery.bridge;
 
-import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.storage.PlayerLotteryData;
+import com.habitrain.lottery.api.player.HabiSkinPlayerApi;
+import com.habitrain.lottery.skin.SkinNetwork;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
-import io.wifi.starrailexpress.event.OnGameEnd;
-import io.wifi.starrailexpress.event.OnGameStarted;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
 
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Single orchestration point for durable skin selection and lifecycle repair.
- * World JSON is authoritative; PEM, CCA, client caches and ItemStack components
- * are projections that are always rebuilt from it.
- */
+/** World JSON is authoritative. Vanilla inventory networking transports equipped models. */
 public final class SkinStateCoordinator {
     private static final AtomicBoolean REGISTERED = new AtomicBoolean();
-    private static final Queue<ScheduledBatch> PENDING = new ConcurrentLinkedQueue<>();
-
-    private SkinStateCoordinator() {
-    }
-
+    /**
+     * Per-player fingerprint of the last inventory the mirror inspected. The scan only
+     * runs when the fingerprint changes, so a full 41-slot sweep no longer happens
+     * unconditionally for every player on every tick; any item change still triggers a
+     * sweep on the next tick, which is the invariant the mirror exists to enforce.
+     */
+    private static final Map<UUID, Long> LAST_INVENTORY = new HashMap<>();
+    private SkinStateCoordinator() {}
     public static void registerLifecycle() {
-        if (!REGISTERED.compareAndSet(false, true)) {
-            return;
-        }
-        OnGameStarted.EVENT.register(level -> {
-            MinecraftServer server = level.getServer();
-            reassertAll(server, "match_start");
-            schedule(server, "match_start_next_tick", 1);
-            schedule(server, "match_start_delayed", 5);
+        if (!REGISTERED.compareAndSet(false, true)) return;
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                if (!inventoryChanged(player)) continue;
+                InventorySkinApplier.applyAllEquipped(player, null);
+            }
         });
-        // OnGameEnd fires before SRE clears every player's inventory. Queue the
-        // repair for END_SERVER_TICK, after resetPlayerAfterGame has returned.
-        OnGameEnd.EVENT.register((level, game) -> {
-            MinecraftServer server = level.getServer();
-            schedule(server, "match_end", 1);
-            schedule(server, "match_end_delayed", 5);
-        });
-        ServerTickEvents.END_SERVER_TICK.register(SkinStateCoordinator::onEndServerTick);
     }
 
-    public static CommitOutcome commitEquipped(ServerPlayer player, String rawType, String rawSkin) {
-        if (player == null) {
-            return CommitOutcome.failed("missing_player", "default", "default", null);
+    /** True when the player's inventory differs from the last observed one. */
+    private static boolean inventoryChanged(ServerPlayer player) {
+        if (player == null) return false;
+        long fingerprint = fingerprint(player);
+        Long previous = LAST_INVENTORY.put(player.getUUID(), fingerprint);
+        return previous == null || previous != fingerprint;
+    }
+
+    /**
+     * Order-sensitive hash over item identities and skin components. Two slots swapping
+     * their contents must count as a change, hence the positional mix.
+     */
+    private static long fingerprint(ServerPlayer player) {
+        long hash = 1125899906842597L;
+        int size = player.getInventory().getContainerSize();
+        hash = hash * 31 + size;
+        for (int i = 0; i < size; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            hash = hash * 31 + i;
+            if (stack == null || stack.isEmpty()) continue;
+            hash = hash * 31 + Objects.hashCode(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()));
+            hash = hash * 31 + stack.getCount();
+            hash = hash * 31 + Objects.hashCode(stack.get(com.habitrain.lottery.skin.SkinComponents.SKIN));
         }
-        PlayerLotteryStore store = PlayerLotteryStore.get();
+        return hash;
+    }
+
+    /** Drops the cached fingerprint, e.g. on disconnect, so the next tick rescans. */
+    public static void forget(UUID player) {
+        if (player != null) LAST_INVENTORY.remove(player);
+    }
+
+    public static void forgetAll() { LAST_INVENTORY.clear(); }
+    public static CommitOutcome commitEquipped(ServerPlayer player, String rawType, String rawSkin) {
+        if (player == null) return new CommitOutcome(false, "missing_player", "", "", "", 0);
+        var store = PlayerLotteryStore.get();
         String type = SkinTypeKeys.canonical(rawType);
         String skin = PlayerLotteryStore.normalizeEquippedSkin(rawSkin);
         String previous = store.getEquipped(player.getUUID(), type);
-        boolean unlocked = store.isSkinUnlocked(player.getUUID(), type, skin);
-
-        HabiLotteryMod.LOGGER.info(
-                "SKIN_EQUIP_REQUEST player={} type={} canonical={} skin={} unlockedInWorld={} worldBefore={}",
-                player.getUUID(), rawType, type, skin, unlocked, previous);
-
-        if (!unlocked) {
-            reassertPlayer(player, "equip_rejected_locked");
-            player.sendSystemMessage(Component.literal("§c[皮肤] 切换失败：该皮肤尚未解锁"));
-            HabiLotteryMod.LOGGER.warn(
-                    "SKIN_EQUIP_ROLLBACK player={} type={} requested={} restored={} reason=locked",
-                    player.getUUID(), type, skin, previous);
-            return CommitOutcome.failed("locked", type, skin, previous);
-        }
-
-        PlayerLotteryStore.EquippedCommitResult persisted =
-                store.commitEquipped(player.getUUID(), type, skin);
-        if (!persisted.committed()) {
-            reassertPlayer(player, "equip_rollback_" + persisted.failure());
-            player.sendSystemMessage(Component.literal("§c[皮肤] 切换保存失败，已恢复之前的皮肤"));
-            HabiLotteryMod.LOGGER.error(
-                    "SKIN_EQUIP_ROLLBACK player={} type={} requested={} restored={} reason={}",
-                    player.getUUID(), type, skin, persisted.previous(), persisted.failure());
-            return CommitOutcome.failed(persisted.failure(), type, skin, persisted.previous());
-        }
-
-        EconomyMirror.syncEquippedSkin(player, type, skin);
-        int changedStacks = InventorySkinApplier.applyEquippedToInventory(player, type, skin);
-        String worldAfter = store.getEquipped(player.getUUID(), type);
-        HabiLotteryMod.LOGGER.info(
-                "SKIN_EQUIP_COMMIT player={} type={} world={} changedStacks={} durable=true",
-                player.getUUID(), type, worldAfter, changedStacks);
-        return CommitOutcome.committed(type, skin, persisted.previous(), changedStacks);
+        if (!store.isTakeoverActive() || store.isLoadFailed(player.getUUID()))
+            return new CommitOutcome(false, "not_ready", type, skin, previous, 0);
+        if (!HabiSkinPlayerApi.isRegistered(type, skin))
+            return new CommitOutcome(false, "unknown_skin", type, skin, previous, 0);
+        if (!store.isSkinUnlocked(player.getUUID(), type, skin))
+            return new CommitOutcome(false, "locked", type, skin, previous, 0);
+        var result = store.commitEquipped(player.getUUID(), type, skin);
+        if (!result.committed()) return new CommitOutcome(false, result.failure(), type, skin, previous, 0);
+        int changed = InventorySkinApplier.applyEquippedToInventory(player, type, skin);
+        SkinNetwork.sync(player);
+        return new CommitOutcome(true, "", type, skin, previous, changed);
     }
-
     public static ReassertOutcome reassertPlayer(ServerPlayer player, String reason) {
-        if (player == null) {
-            return new ReassertOutcome(false, 0);
-        }
-        PlayerLotteryStore store = PlayerLotteryStore.get();
-        if (!store.isTakeoverActive() || store.isLoadFailed(player.getUUID())) {
-            return new ReassertOutcome(false, 0);
-        }
-        PlayerLotteryData data = store.getOrLoad(player);
-        boolean mirrored = EconomyMirror.pushToSre(player, data, false);
-        int changed = InventorySkinApplier.applyAllEquipped(player, data.equipped);
-        HabiLotteryMod.LOGGER.info(
-                "SKIN_REASSERT player={} reason={} mirrored={} changedStacks={} equippedTypes={}",
-                player.getUUID(), reason, mirrored, changed,
-                data.equipped == null ? 0 : data.equipped.size());
-        return new ReassertOutcome(mirrored, changed);
+        if (player == null) return new ReassertOutcome(false, 0);
+        int changed = InventorySkinApplier.applyAllEquipped(player, null);
+        SkinNetwork.sync(player);
+        return new ReassertOutcome(true, changed);
     }
-
     public static int reassertAll(MinecraftServer server, String reason) {
-        if (server == null || !PlayerLotteryStore.get().isTakeoverActive()) {
-            return 0;
-        }
-        int count = 0;
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            reassertPlayer(player, reason);
-            count++;
-        }
-        return count;
+        if (server == null) return 0;
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) reassertPlayer(player, reason);
+        return server.getPlayerList().getPlayerCount();
     }
-
-    public static void clearPending(MinecraftServer server) {
-        if (server == null) {
-            PENDING.clear();
-            return;
-        }
-        PENDING.removeIf(batch -> batch.server == server);
-    }
-
-    private static void schedule(MinecraftServer server, String reason, int ticks) {
-        if (server != null) {
-            PENDING.add(new ScheduledBatch(server, reason, Math.max(1, ticks)));
-        }
-    }
-
-    private static void onEndServerTick(MinecraftServer server) {
-        int pendingCount = PENDING.size();
-        for (int i = 0; i < pendingCount; i++) {
-            ScheduledBatch batch = PENDING.poll();
-            if (batch == null) {
-                break;
-            }
-            if (batch.server != server) {
-                PENDING.add(batch);
-                continue;
-            }
-            if (batch.ticksRemaining <= 1) {
-                reassertAll(server, batch.reason);
-            } else {
-                PENDING.add(new ScheduledBatch(server, batch.reason, batch.ticksRemaining - 1));
-            }
-        }
-    }
-
-    private record ScheduledBatch(MinecraftServer server, String reason, int ticksRemaining) {
-    }
-
-    public record CommitOutcome(
-            boolean committed,
-            String failure,
-            String type,
-            String skin,
-            String previous,
-            int changedStacks) {
-        static CommitOutcome committed(String type, String skin, String previous, int changedStacks) {
-            return new CommitOutcome(true, "", type, skin, previous, changedStacks);
-        }
-
-        static CommitOutcome failed(String failure, String type, String skin, String previous) {
-            return new CommitOutcome(false, failure, type, skin, previous, 0);
-        }
-    }
-
-    public record ReassertOutcome(boolean mirrored, int changedStacks) {
-    }
+    public static void clearPending(MinecraftServer server) {}
+    public record CommitOutcome(boolean committed, String failure, String type, String skin, String previous, int changedStacks) {}
+    public record ReassertOutcome(boolean mirrored, int changedStacks) {}
 }

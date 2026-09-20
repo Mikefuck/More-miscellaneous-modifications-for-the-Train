@@ -6,7 +6,8 @@ import com.habitrain.lottery.mail.MailDraft;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
 import com.habitrain.lottery.title.LocalTitleStore;
-import io.wifi.starrailexpress.util.ItemSkinManager;
+import com.habitrain.lottery.api.skin.HabiSkinApi;
+import com.habitrain.lottery.api.skin.SkinDefinition;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,8 +30,8 @@ class HabiPlayerApiTest {
         PlayerLotteryStore.get().reset();
         WorldLotteryPaths.clear();
         WorldLotteryPaths.initForTests(temp);
-        if (!ItemSkinManager.getSkins("knife").containsKey(TEST_SKIN)) {
-            ItemSkinManager.registerACustomSkin("knife", TEST_SKIN, 0xFF00FF00);
+        if (!HabiSkinApi.getSkins("knife").containsKey(TEST_SKIN)) {
+            HabiSkinApi.register(SkinDefinition.builder("knife", TEST_SKIN, 0xFF00FF00).build());
         }
     }
 
@@ -131,6 +132,16 @@ class HabiPlayerApiTest {
         assertTrue(HabiSkinPlayerApi.lock(id, "knife", TEST_SKIN).ok());
         assertFalse(HabiSkinPlayerApi.isUnlocked(id, "knife", TEST_SKIN));
         assertEquals("default", HabiSkinPlayerApi.equipped(id, "knife"));
+    }
+
+    @Test
+    void removedProviderCannotBeEquippedEvenWhenLegacyOwnershipRemains() {
+        UUID id = UUID.randomUUID();
+        PlayerLotteryStore.get().unlockSkin(id, "knife", "removed_provider_skin");
+        assertEquals(HabiFailure.UNKNOWN_SKIN,
+                HabiSkinPlayerApi.equip(id, "knife", "removed_provider_skin").failure());
+        assertTrue(HabiSkinPlayerApi.lock(id, "knife", "removed_provider_skin").ok());
+        assertTrue(HabiSkinPlayerApi.clearEquipped(id, "knife").ok());
     }
 
     @Test

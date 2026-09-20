@@ -904,7 +904,10 @@ public final class LotteryNetwork {
         String json = isOp(player) && !gateBlocked(player)
                 ? LotteryConfigService.get().exportAllJson()
                 : LotteryConfigService.get().exportPublicJson();
-        ServerPlayNetworking.send(player, new ConfigSnapshotS2C(json));
+        com.google.gson.JsonObject snapshot = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        snapshot.add("runtimePools", GSON.toJsonTree(com.habitrain.lottery.skin.SkinPoolInjector.withRegisteredSkins(
+                LotteryConfigService.get().getPools())));
+        ServerPlayNetworking.send(player, new ConfigSnapshotS2C(GSON.toJson(snapshot)));
         sendOpStatus(player);
     }
 

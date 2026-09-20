@@ -52,6 +52,57 @@ class SkinPoolInjectorTest {
         assertEquals(List.of("bat/original"), effective.Pools.get(0).QualityListGroup.get(0).ItemList);
     }
 
+    /** F-02: two placements in the same pool must both land, not just the first. */
+    @Test
+    void placesOneSkinInSeveralBandsOfTheSamePool() {
+        PoolConfigModels.Root source = root(pool("grenade", List.of("grenade/original"), List.of("coin")));
+        SkinDefinition definition = SkinDefinition.builder("grenade", "api_two_bands", 0)
+                .addToPool("grenade", 0)
+                .addToPool("grenade", 1)
+                .build();
+
+        PoolConfigModels.Root effective = SkinPoolInjector.copyWithSkins(source, List.of(definition));
+
+        assertEquals(List.of("grenade/original", "grenade/api_two_bands"),
+                effective.Pools.get(0).QualityListGroup.get(0).ItemList);
+        assertEquals(List.of("coin", "grenade/api_two_bands"),
+                effective.Pools.get(0).QualityListGroup.get(1).ItemList);
+    }
+
+    /** F-02 regression: an entry already in band 1 must not block band 0 either. */
+    @Test
+    void doesNotTreatAPresenceInAnotherBandAsADuplicate() {
+        PoolConfigModels.Root source = root(pool("knife", List.of("coin"), List.of("knife/api_blade")));
+        SkinDefinition definition = SkinDefinition.builder("knife", "api_blade", 0)
+                .addToPool("knife", 0)
+                .addToPool("knife", 1)
+                .build();
+
+        PoolConfigModels.Root effective = SkinPoolInjector.copyWithSkins(source, List.of(definition));
+
+        assertEquals(List.of("coin", "knife/api_blade"),
+                effective.Pools.get(0).QualityListGroup.get(0).ItemList);
+        assertEquals(List.of("knife/api_blade"),
+                effective.Pools.get(0).QualityListGroup.get(1).ItemList);
+    }
+
+    /** The same skin declared in 0 and all-0 keeps both, and never double-inserts. */
+    @Test
+    void includeInDefaultPoolsKeepsOneEntryPerTargetBand() {
+        PoolConfigModels.Root source = root(pool("knife", "knife/original"), pool("all", "coin"));
+        SkinDefinition definition = SkinDefinition.builder("knife", "api_blade", 0)
+                .includeInDefaultPools()
+                .includeInDefaultPools()
+                .build();
+
+        PoolConfigModels.Root effective = SkinPoolInjector.copyWithSkins(source, List.of(definition, definition));
+
+        assertEquals(List.of("knife/original", "knife/api_blade"),
+                effective.Pools.get(0).QualityListGroup.get(0).ItemList);
+        assertEquals(List.of("coin", "knife/api_blade"),
+                effective.Pools.get(1).QualityListGroup.get(0).ItemList);
+    }
+
     private static PoolConfigModels.Root root(PoolConfigModels.Pool... pools) {
         PoolConfigModels.Root root = new PoolConfigModels.Root();
         root.Pools.addAll(List.of(pools));
@@ -59,13 +110,20 @@ class SkinPoolInjectorTest {
     }
 
     private static PoolConfigModels.Pool pool(String type, String... items) {
+        return pool(type, List.of(items));
+    }
+
+    @SafeVarargs
+    private static PoolConfigModels.Pool pool(String type, List<String>... bands) {
         PoolConfigModels.Pool pool = new PoolConfigModels.Pool();
         pool.PoolName = type;
         pool.PoolType = type;
-        PoolConfigModels.QualityBand band = new PoolConfigModels.QualityBand();
-        band.Probability = 1.0;
-        band.ItemList.addAll(List.of(items));
-        pool.QualityListGroup.add(band);
+        for (List<String> items : bands) {
+            PoolConfigModels.QualityBand band = new PoolConfigModels.QualityBand();
+            band.Probability = 1.0;
+            band.ItemList.addAll(items);
+            pool.QualityListGroup.add(band);
+        }
         return pool;
     }
 }

@@ -1,0 +1,53 @@
+## 1.1.18
+
+- 新增**皮肤特效 API v1**（见 `docs/skin-effects-api.md`）：`SkinEffects` 门面提供
+  模型动效（`registerAnimation`）、飞行拖尾（`registerTrail`）、命中/爆炸效果（`registerImpact`）
+  三个钩子，外加 `restrictToItems` 把皮肤限制在指定物品上。
+- 特效扩展复用同一个 `habitrain_lottery_skins` 入口点，无需新增注册器；
+  `fabric.mod.json` 新增硬依赖 id `habitrain_lottery_skin_effects`，
+  可用 `"depends": {"habitrain_lottery_skin_effects": "*"}` 声明依赖。
+- 特效 API 版本（`SkinEffects.API_VERSION = 1`）与皮肤 API v2 版本相互独立：
+  未注册任何特效的 v2 扩展行为与 1.1.17 完全一致。
+
+## 1.1.17
+
+依据 `docs/skin-api-audit-1.1.16.md` 修复外接皮肤 API 的全部缺陷。
+
+- **F-01（严重）** 重写「缺失模型」判定：不再与 `ModelManager.getMissingModel()` 比引用
+  （该比较永不成立），改为「取不到模型 或 模型粒子图标是 `minecraft:missingno`」。
+  缺模型的皮肤现在会回退基础模型 → 回退原物品，衣柜把它标为「缺少资源」且不可装备，
+  也不再可能把 `null` 交给原版渲染器导致崩溃；可用性判定改为「基础或手持任一存在」。
+- **F-02** `SkinPoolInjector` 去重改为**按档位**判定：同一皮肤可以同时进入同一奖池的多个品质档
+  （`addToPool(type, 0).addToPool(type, 5)` 不再静默丢弃后面的档位）。
+- **F-03** 扩展注册改为**按 provider 事务化**：registrar 抛异常时回滚它本次已注册的全部条目，
+  不再留下半注册状态；`/hlt skins reregister` 真正重跑入口点，失败时报错而不是打印假的成功数量。
+- **F-04** 为 v1 的 `starrailexpress:<type>/<id>` 默认模型保留回退命名空间，
+  并在资源加载后对烘焙失败的皮肤输出 WARN 诊断。
+- **F-06** 衣柜同时识别上游旧翻译键 `screen.sre.skins.<type>.<id>.name/.desc`，
+  按旧文档写的扩展不再显示原始 ID。
+- **F-07** 读取扩展声明的 `custom."habitrain_lottery:skin_api".version`，
+  版本不匹配或未声明时输出 WARN，不再静默加载。
+- **F-09** `SkinItems.bindItem` 现在同时决定预览底物（API 绑定优先于数据包标签）。
+- **F-10** 邮件皮肤附件与注册共用同一套 ID/类型规范化，首字母大写、带空格或 `gun` 别名不再抛异常。
+- **F-11** 5 个 `TagKey` 提为静态常量；服务端皮肤镜像改为只在该玩家背包内容变化时才全量扫描。
+- `docs/skin-api.md` 升级到 v2 并新增 `docs/skin-api-migration-1.1.0-to-1.1.17.md` 迁移清单。
+
+## 1.1.16
+
+- 衣柜右侧预览改为本地玩家第三人称模型，按住左键拖动可旋转视角，下方按钮可切回 2D 皮肤图标（默认 3D）。
+- 「默认外观」改用该类型真实物品（数据包标签/原版兜底）作为图标，不再显示无意义的纸张。
+- 新增 `SkinItems.defaultItem/defaultStack/styled`，皮肤预览按真实物品渲染，帽子预览戴在头部。
+
+## 1.1.15
+
+- 直接接管上游皮肤页面的所有打开路径，菜单、快捷键和服务端打开指令统一进入独立衣柜。
+- 重制分类卡片、模型预览、名称/ID 搜索、拥有筛选、排序与分页；保留称号及帽子显示设置。
+- 装备等待服务端确认，支持同步重试、缺失资源提示和恢复默认；刷新回包不再重新打开已关闭页面。
+
+## 1.1.14
+
+- 重建独立皮肤目录、原版数据组件、装备同步、模型渲染和衣柜；移除旧皮肤注册/替换桥及内置资源。
+- 抽奖改为新目录发奖，过滤失效旧奖励并由服务器同步稳定索引；默认空池禁用。
+- 邮件增加皮肤附件和失败回滚，API 升至 v2；保留非皮肤功能的 DLC/core 对接。
+- 旧未知皮肤拥有记录保留但不启用，不批量清理玩家资产。
+

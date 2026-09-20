@@ -1,8 +1,16 @@
 # 哈比列车抽奖补齐 (habitrain_lottery)
 
-Fabric 1.21.1 管理/补齐模组：修复旧皮肤包注册、把抽奖相关玩家数据权威存到 **world 根目录**，并通过 Mod Menu（仅 OP）配置奖池、倍率、发次与画面主题。
+Fabric 1.21.1 管理/补齐模组：提供独立皮肤组件、把抽奖相关玩家数据权威存到 **world 根目录**，并通过 Mod Menu（仅 OP）配置奖池、倍率、发次与画面主题。
 
-## 1.1.0 皮肤扩展 API
+## 1.1.15 独立皮肤衣柜
+
+- 直接接管上游菜单、皮肤快捷键及服务端打开皮肤页面的指令，原入口统一打开新衣柜。
+- 六个分类保留武器、帽子与称号；皮肤卡片、模型预览、名称/ID 搜索、拥有状态筛选与排序。
+- 滚轮或 Page Up / Page Down 翻页，Ctrl+F 搜索，Esc 或原皮肤快捷键返回。
+- 装备状态以服务器回执为准；支持缺少资源、同步超时提示与恢复默认。帽子分类保留本地显示范围设置。
+- 客户端与服务端一同升级至 1.1.15。
+
+## 1.1.14 独立皮肤组件 / API v2
 
 - 其他 Fabric 模组可通过 `habitrain_lottery_skins` 入口点和 `HabiSkinApi` 注册皮肤。
 - 支持扩展模组自己的模型命名空间，以及可选的类型池/全随机池运行时注入。
@@ -12,7 +20,7 @@ Fabric 1.21.1 管理/补齐模组：修复旧皮肤包注册、把抽奖相关�
 ## 1.1.6 玩家数据 API
 
 - 其他 Fabric 模组可通过 `com.habitrain.lottery.api.player` 下的 `HabiLotteryApi` / `HabiCardApi` / `HabiSkinPlayerApi` / `HabiTitleApi` / `HabiMailApi` 读写单个玩家的金币、抽数、皮肤解锁与装备、阵营卡/自选卡/突破上限卡、称号，并投递带奖励的邮件。
-- 写入遵循“权威 world JSON 落盘 + 失败回滚”，在线玩家自动同步 SRE/CCA 镜像；只允许在服务端主线程调用；世界未就绪时返回 `NOT_READY` 而不抛异常。
+- 写入遵循“权威 world JSON 落盘 + 失败回滚”，在线玩家自动同步对应资产；皮肤使用本模组独立协议；只允许在服务端主线程调用；世界未就绪时返回 `NOT_READY` 而不抛异常。
 - 完整方法表、数值边界与示例见 [`docs/player-api.md`](docs/player-api.md)。
 
 ## 1.0.6 皮肤连抽
@@ -25,11 +33,11 @@ Fabric 1.21.1 管理/补齐模组：修复旧皮肤包注册、把抽奖相关�
 ## 运行依赖
 
 - Minecraft 1.21.1 / Fabric Loader ≥0.18.1 / Fabric API
-- **starrailexpress**（SRE 4.3.0，皮肤与抽奖引擎）
+- **starrailexpress**（SRE 4.3.0，抽奖界面与非皮肤功能）
 - **habitrain_core**
 - **modmenu**（可选，仅客户端；专用服务器不需要）
 
-不要再单独装 `starrail-express-item-skin-mod`——本 mod 已融合其 320 皮肤与资源，并改为直接调用 `ItemSkinManager.registerACustomSkin`。
+本模组已移除全部内置皮肤及旧替换组件。皮肤由 API v2 扩展提供，不加载旧 skins.json，也不向 SRE 皮肤系统注册。上游皮肤菜单、快捷键与打开指令均进入独立衣柜，也可使用 `/hlt skins`；邮件第 4 页支持填写皮肤附件。
 
 ## 快速开始（只装 JAR）
 
@@ -78,11 +86,13 @@ Fabric 1.21.1 管理/补齐模组：修复旧皮肤包注册、把抽奖相关�
 
 | 池 | 内容 | 概率 |
 |----|------|------|
-| 刀池 | 全部刀皮肤 | 皮肤 **30%** / 金币 **70%** |
-| 枪池 | 全部枪皮肤（配置键 `gun/...`） | 30% / 70% |
-| 棍池 | 全部棍子皮肤 | 30% / 70% |
-| 手雷池 | 全部手雷皮肤 | 30% / 70% |
-| 完全随机 | 全部 320 皮肤 | 皮肤 **50%** / 金币 **50%** |
+| 刀池 | 扩展注册的刀皮肤 | 皮肤 **30%** / 金币 **70%** |
+| 枪池 | 扩展注册的枪皮肤（配置键 `gun/...`） | 30% / 70% |
+| 棍池 | 扩展注册的棍子皮肤 | 30% / 70% |
+| 手雷池 | 扩展注册的手雷皮肤 | 30% / 70% |
+| 完全随机 | 扩展注册的全部皮肤 | 皮肤 **50%** / 金币 **50%** |
+
+- 默认奖励列表为空，无有效奖励的池自动禁用；安装扩展或配置有效奖励后才可抽取。表中概率为预置结构。
 
 - 皮肤**可重复**；重复时固定返还 **60 金币**（`rates.json` → `duplicateCoinFlat: 60`）
 - 每个池有独立封面：`pool_bg0.png` … `pool_bg4.png`
@@ -126,11 +136,11 @@ SRE 原局内菜单的抽卡入口在大厅被注释掉了。本 mod 提供：
 - `/hlt grant <player> <amount>`
 - `/hlt inspect <player>`
 - `/hlt migrate <player>`
-- `/hlt skins` / `/hlt skins reregister`
+- `/hlt skins` — 打开独立衣柜；搜索、装备、恢复默认
 - `/hlt skins unlock <players> <type> <skin>` — 为在线玩家解锁指定皮肤
 - `/hlt skins lock <players> <type> <skin>` — 撤销指定皮肤解锁；若正在装备该皮肤，恢复默认外观
 
-例如 `/hlt skins unlock Mike bat anvil`、`/hlt skins lock Mike bat anvil`。
+例如 `/hlt skins unlock Mike knife example_crystal`；需先安装注册了该 ID 的扩展。
 `players` 支持在线玩家名与 `@a`、`@p` 等玩家选择器；类型和皮肤 ID 支持 Tab 补全，
 `gun` 与 `revolver` 通用。默认皮肤始终可用，不能撤销；未注册的皮肤 ID 会被拒绝。
 重复执行同一指令是安全的，不返还金币、不自动装备新解锁皮肤。
@@ -146,7 +156,7 @@ SRE 原局内菜单的抽卡入口在大厅被注释掉了。本 mod 提供：
 {world}/habitrain_lottery/players/<uuid>.json
 ```
 
-- 进服时从此文件加载，并**整表覆盖**到 SRE 内存/CCA（文件不存在=空皮肤库）
+- 进服加载权威 JSON，使用本模组网络与物品组件同步皮肤（文件不存在=空皮肤库）。
 - **忽略** star 列车（SRE）MySQL / 网络皮肤同步
 - **不再**从 SRE 自动迁移旧数据到 world（避免删了文件夹又被 SQL 写回）
 - 清空皮肤：删除对应 `players/<uuid>.json`（或整个 `players/`），重启后进服即可

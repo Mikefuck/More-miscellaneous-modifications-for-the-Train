@@ -14,7 +14,24 @@ public final class SkinPoolInjector {
     }
 
     public static PoolConfigModels.Root withRegisteredSkins(PoolConfigModels.Root source) {
-        return copyWithSkins(source, HabiSkinApi.registrations());
+        PoolConfigModels.Root copy = copyWithSkins(source, HabiSkinApi.registrations());
+        if (copy == null || copy.Pools == null) return copy;
+        for (var pool : copy.Pools) {
+            if (pool == null || pool.QualityListGroup == null) continue;
+            boolean hasReward = false;
+            for (var band : pool.QualityListGroup) {
+                if (band == null) continue;
+                if (band.ItemList == null) band.ItemList = new ArrayList<>();
+                band.ItemList.removeIf(entry -> !SkinLotteryRewards.isCoin(entry) && HabiSkinApi.fromEntry(entry).isEmpty());
+                if (!band.ItemList.isEmpty()) hasReward = true;
+            }
+            if (!hasReward) { pool.Enable = false; continue; }
+            // Preserve quality indices across the lottery display protocol.
+            for (var band : pool.QualityListGroup) {
+                if (band != null && band.ItemList.isEmpty()) band.ItemList.add("coin");
+            }
+        }
+        return copy;
     }
 
     static PoolConfigModels.Root copyWithSkins(
@@ -32,8 +49,9 @@ public final class SkinPoolInjector {
             }
             String entry = definition.lotteryEntry();
             for (SkinDefinition.LotteryPlacement placement : definition.lotteryPlacements()) {
-                for (PoolConfigModels.Pool pool : copy.Pools) {
-                    if (!matches(pool, placement.poolType()) || contains(pool, entry)) {
+                for (int poolIndex = 0; poolIndex < copy.Pools.size(); poolIndex++) {
+                    PoolConfigModels.Pool pool = copy.Pools.get(poolIndex);
+                    if (!matches(pool, placement.poolType())) {
                         continue;
                     }
                     if (pool.QualityListGroup == null
@@ -47,11 +65,39 @@ public final class SkinPoolInjector {
                     if (band.ItemList == null) {
                         band.ItemList = new ArrayList<>();
                     }
+                    // Dedup is per band, not per pool: one skin may deliberately be
+                    // declared in several quality bands of the same pool
+                    // (.addToPool("knife", 0).addToPool("knife", 5)). Only the target
+                    // band decides whether the entry is already present, and the
+                    // untouched source config is checked too because the copy already
+                    // carries the world's entries.
+                    if (band.ItemList.contains(entry) || sourceHasEntry(source, poolIndex, placement, entry)) {
+                        continue;
+                    }
                     band.ItemList.add(entry);
                 }
             }
         }
         return copy;
+    }
+
+    /** True when the untouched world config already lists {@code entry} in that pool's target band. */
+    private static boolean sourceHasEntry(
+            PoolConfigModels.Root source,
+            int poolIndex,
+            SkinDefinition.LotteryPlacement placement,
+            String entry) {
+        if (source == null || source.Pools == null || poolIndex < 0 || poolIndex >= source.Pools.size()) {
+            return false;
+        }
+        // Pools are deep-copied one-for-one, so the same index denotes the same pool.
+        PoolConfigModels.Pool original = source.Pools.get(poolIndex);
+        if (original == null || original.QualityListGroup == null
+                || placement.qualityBand() >= original.QualityListGroup.size()) {
+            return false;
+        }
+        PoolConfigModels.QualityBand band = original.QualityListGroup.get(placement.qualityBand());
+        return band != null && band.ItemList != null && band.ItemList.contains(entry);
     }
 
     private static boolean matches(PoolConfigModels.Pool pool, String placementType) {
@@ -62,18 +108,6 @@ public final class SkinPoolInjector {
             return "all".equalsIgnoreCase(pool.PoolType.trim());
         }
         return SkinTypeKeys.canonical(pool.PoolType).equals(SkinTypeKeys.canonical(placementType));
-    }
-
-    private static boolean contains(PoolConfigModels.Pool pool, String entry) {
-        if (pool == null || pool.QualityListGroup == null) {
-            return false;
-        }
-        for (PoolConfigModels.QualityBand band : pool.QualityListGroup) {
-            if (band != null && band.ItemList != null && band.ItemList.contains(entry)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static PoolConfigModels.Root deepCopy(PoolConfigModels.Root source) {
