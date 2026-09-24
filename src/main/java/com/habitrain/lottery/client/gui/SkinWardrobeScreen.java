@@ -2,6 +2,7 @@ package com.habitrain.lottery.client.gui;
 
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinItems;
+import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.client.SkinClient;
 import com.habitrain.lottery.client.WardrobeExtras;
 import com.habitrain.lottery.skin.SkinNetwork;
@@ -52,7 +53,7 @@ public final class SkinWardrobeScreen extends Screen {
     private Component notice = text("loading");
 
     private record Entry(String id, Component name, boolean owned, boolean equipped,
-                         boolean available, int color, ItemStack icon) {}
+                         boolean available, int color, ItemStack icon, SkinQuality quality) {}
 
     public SkinWardrobeScreen(Screen parent) { super(text("title")); this.parent = parent; }
     private static Component text(String key, Object... args) {
@@ -179,14 +180,14 @@ public final class SkinWardrobeScreen extends Screen {
         if (titles()) {
             // Upstream only accepts owned title IDs; do not offer an unsupported clear request.
             if (titleEquipped.isBlank()) list.add(new Entry("default", text("no_title"), true, true, true,
-                    BRASS, new ItemStack(Items.NAME_TAG)));
+                    BRASS, new ItemStack(Items.NAME_TAG), null));
             for (String id : knownTitles.stream().filter(s -> s != null && !s.isBlank()).distinct().toList()) {
                 list.add(new Entry(id, Component.translatableWithFallback(id, id), true,
-                        id.equals(titleEquipped), true, BRASS, new ItemStack(Items.NAME_TAG)));
+                        id.equals(titleEquipped), true, BRASS, new ItemStack(Items.NAME_TAG), null));
             }
         } else if (received) {
             boolean hasEquipped = SkinClient.entries().stream().anyMatch(e -> e.type().equals(type()) && e.equipped());
-            list.add(new Entry("default", text("default"), true, !hasEquipped, true, MUTED, defaultIcon()));
+            list.add(new Entry("default", text("default"), true, !hasEquipped, true, MUTED, defaultIcon(), null));
             for (var entry : SkinClient.entries()) {
                 if (!type().equals(entry.type())) continue;
                 var definition = HabiSkinApi.find(entry.type(), entry.id());
@@ -196,8 +197,8 @@ public final class SkinWardrobeScreen extends Screen {
                 boolean available = definition.isPresent() && SkinClient.hasModel(entry.type(), entry.id());
                 list.add(new Entry(entry.id(), skinName(entry.type(), entry.id()),
                         entry.owned(), entry.equipped(), available,
-                        definition.map(d -> 0xFF000000 | d.color()).orElse(MUTED),
-                        SkinItems.preview(entry.type() + "/" + entry.id())));
+                        entry.quality().color(),
+                        SkinItems.preview(entry.type() + "/" + entry.id()), entry.quality()));
             }
         }
         catalog = List.copyOf(list);
@@ -371,8 +372,18 @@ public final class SkinWardrobeScreen extends Screen {
         g.fill(x, y, x + w, y + h, BACK); g.renderOutline(x, y, w, h, LINE);
         Entry entry = selectedEntry();
         if (entry == null) { clippedText(g, text("select"), x + 10, y + 12, w - 20, MUTED); return; }
+        if (entry.quality() != null) {
+            g.fillGradient(x + 1, y + 1, x + w - 1, y + h - 1,
+                    SkinQualityStyle.top(entry.quality(), 0), SkinQualityStyle.bottom(entry.quality()));
+        }
         clippedText(g, entry.name(), x + 10, y + 10, w - 20, INK);
         int artTop = y + 28, artBottom = y + h - 50;
+        if (entry.quality() != null) {
+            clippedText(g, SkinQualityStyle.label(entry.quality()), x + 10, y + 22, w - 20, entry.color());
+            artTop = y + 32;
+            // Keep at least one 16px item visible at the minimum 320x240 GUI size.
+            if (h < 130) artBottom = y + h - 46;
+        }
         // Cabinet rails frame the actual model; no replacement illustration obscures it.
         g.fill(x + 12, artBottom + 1, x + w - 12, artBottom + 2, LINE);
         if (model3d()) {
@@ -419,10 +430,12 @@ public final class SkinWardrobeScreen extends Screen {
     private final class TileButton extends ActionButton {
         private final Entry entry;
         TileButton(int x, int y, Entry entry) {
-            super(x, y, layout.cardWidth(), layout.cardHeight(), entry.name().copy().append(" · ").append(state(entry)),
+            super(x, y, layout.cardWidth(), layout.cardHeight(), entry.name().copy().append(" · ").append(state(entry))
+                            .append(entry.quality() == null ? Component.empty() : Component.literal(" · ").append(SkinQualityStyle.label(entry.quality()))),
                     b -> { selected = entry.id(); updateControls(); });
             this.entry = entry;
             Component tooltip = entry.name().copy().append("\n").append(state(entry)).append("\n" + entry.id());
+            if (entry.quality() != null) tooltip = tooltip.copy().append("\n").append(SkinQualityStyle.label(entry.quality()));
             if (!"title".equals(type())) {
                 Component description = legacySkinDescription(type(), entry.id());
                 if (!description.getString().isEmpty()) tooltip = tooltip.copy().append("\n").append(description);
@@ -433,7 +446,9 @@ public final class SkinWardrobeScreen extends Screen {
         @Override protected void renderWidget(GuiGraphics g, int mouseX, int mouseY, float delta) {
             int x = getX(), y = getY(), w = getWidth(), h = getHeight();
             boolean picked = selected.equals(entry.id());
-            g.fill(x, y, x + w, y + h, picked ? 0xFF304957 : TILE);
+            if (entry.quality() == null) g.fill(x, y, x + w, y + h, picked ? 0xFF304957 : TILE);
+            else g.fillGradient(x, y, x + w, y + h,
+                    SkinQualityStyle.top(entry.quality(), picked || isHovered() ? 1 : 0), SkinQualityStyle.bottom(entry.quality()));
             g.renderOutline(x, y, w, h, isFocused() ? INK : picked ? BRASS : isHovered() ? MINT : LINE);
             g.fill(x + 1, y + 1, x + 3, y + h - 1, entry.color());
             int size = Math.max(16, Math.min(44, h - 40));

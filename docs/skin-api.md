@@ -1,4 +1,4 @@
-# 哈比列车独立皮肤 API v2（1.1.17）
+# 哈比列车独立皮肤 API v2（1.1.26，含品质属性）
 
 > **1.1.18 起的姊妹 API**：模型动效、投掷物拖尾、命中/爆炸特效见
 > [`skin-effects-api.md`](skin-effects-api.md)（皮肤特效 API v1）。
@@ -17,7 +17,7 @@ Minecraft 1.21.1 / Fabric / Java 21。皮肤注册、解锁、装备、网络、
 ```json
 {
   "entrypoints": {"habitrain_lottery_skins": ["com.example.ExampleSkins"]},
-  "depends": {"habitrain_lottery": ">=1.1.14"},
+  "depends": {"habitrain_lottery": ">=1.1.26"},
   "custom": {"habitrain_lottery:skin_api": {"version": 2}}
 }
 ```
@@ -31,6 +31,7 @@ import net.minecraft.resources.ResourceLocation;
 public final class ExampleSkins implements SkinRegistrar {
     @Override public void registerSkins() {
         HabiSkinApi.register(SkinDefinition.builder("knife", "example_crystal", 0xFF55CCFF)
+                .quality(SkinQuality.RED)                      // 由扩展模组决定品质
                 .model("example", "item/skins/knife/crystal")   // 始终显式指定自己的命名空间
                 .includeInDefaultPools()
                 .build());
@@ -52,6 +53,20 @@ public final class ExampleSkins implements SkinRegistrar {
 - `includeInDefaultPools()` 注入同类型与 all 奖池第 0 品质档；`addToPool(type, qualityBand)` 可指定档位，**可对同一奖池多次调用以进入多个档位**（`.addToPool("knife", 0).addToPool("knife", 5)`）。去重按目标档位判定，未配置对应档位时不注入。
 - `HabiSkinApi.getSkins(type)` / `types()` / `fromEntry("type/id")` 可查询当前目录。
 - registrar 的注册是**按扩展事务化**的：若某个入口点在注册到一半时抛异常，它本次已注册的条目会被整体回滚，日志会写明回滚数量，其余扩展照常加载。修好扩展后可执行 `/hlt skins reregister` 重新运行全部入口点（无需重启）；若仍有扩展失败，命令会报错并列出被回滚的扩展名。
+
+## 皮肤品质（1.1.26 起）
+
+`SkinQuality` 提供五档品质：`WHITE`（白）、`BLUE`（蓝）、`PURPLE`（紫）、`GOLD`（金）、`RED`（红）。
+扩展在注册时调用 `.quality(SkinQuality.RED)`，或直接使用
+`SkinDefinition.builder("knife", "example_crystal", SkinQuality.RED)`。
+两端应注册同一品质；衣柜与背包使用**服务端快照里的品质**显示卡片底色、详情与提示文字。
+
+- `definition.quality()`、`HabiSkinApi.quality(type, id)` 查询品质；后者对未知皮肤返回空 Optional。
+- `quality.id()` 是稳定标识 `white/blue/purple/gold/red`，`color()` 为不透明 ARGB 显示色，`translationKey()` 为品质语言键。
+- 旧的 `builder(type, id, int color)` 和五参数 `SkinDefinition` 构造器继续可用，未指定品质默认 `WHITE`。旧颜色保留为扩展主题色，不再决定品质底色。
+- 品质与 `LotteryPlacement.qualityBand` 独立：设置红色品质不会修改抽奖概率、奖池档位、重复奖励或特效颜色。
+- 无需改玩家存档：品质来自注册目录。已拥有皮肤会在下一次页面刷新时显示新的品质；缺失扩展的历史背包条目回退白色。
+- 这是 API v2 的增量扩展，`API_VERSION` 仍为 `2`。调用品质 API 的扩展须声明 `habitrain_lottery >=1.1.26`；客户端和服务端须一起升级至支持品质的新版本（请求/快照频道升级为 `skin_request_v2` / `skin_snapshot_v2` 与 `warehouse_request_v2` / `warehouse_snapshot_v2`，混装旧版时页面报告服务不可用，避免错读数据包）。
 
 ## 物品绑定
 
@@ -101,5 +116,7 @@ HabiMailApi.send(playerUuid, "player", draft);
 ## 验证
 
 `./gradlew build` 包含测试与 `verifyIndependentSkins` 检查，阻止独立目录重新引入上游 Java import，或再次打包旧资源目录。
+
+品质显示可用 `./gradlew.ps1 -I tools/quality-smoke.gradle runClient --gradle-user-home ../.gradle-user-home` 在真实 Minecraft GUI 中检查（先构建相邻的 `皮肤mod`）。该测试使用独立目录 `build/quality-client-run`，验证五档服务端品质、七款红色皮肤、普通与 320×240 GUI 布局，截图输出到其中的 `screenshots/`。测试目录和测试注册不进入发布 JAR。
 
 游戏内验收：双方安装同一测试皮肤扩展，解锁 → 装备 → 第三人称/他人观察 → 丢弃拾取 → 重生 → 重登 → 重复抽奖 → 邮件领取 → 撤销 → 移除扩展后重启。缺失模型回退（衣柜应显示「缺少资源」且不可装备）、锁定皮肤拒绝、空奖池不扣抽数也应检查。

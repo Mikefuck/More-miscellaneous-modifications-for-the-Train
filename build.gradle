@@ -73,6 +73,9 @@ tasks.register("stageTestRuntime", Sync) {
 
 tasks.named("test", Test).configure {
     useJUnitPlatform()
+    def workspaceTestTemp = layout.buildDirectory.dir('test-tmp').get().asFile
+    systemProperty 'java.io.tmpdir', workspaceTestTemp.absolutePath
+    doFirst { workspaceTestTemp.mkdirs() }
     dependsOn(tasks.named("stageTestRuntime"))
     // Gradle's Windows test worker corrupts non-ASCII classpath entries.
     testClassesDirs = files(new File(stagedTestRuntimeDir, "test"))

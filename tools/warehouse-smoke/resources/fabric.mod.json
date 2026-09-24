@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "habitrain_warehouse_smoke",
+  "version": "1.0.0",
+  "name": "Warehouse GUI verification",
+  "environment": "client",
+  "entrypoints": { "client": ["com.habitrain.lottery.test.WarehouseSmoke"] }
+}

@@ -16,7 +16,8 @@ public record SkinDefinition(
         String id,
         int color,
         ResourceLocation model,
-        List<LotteryPlacement> lotteryPlacements) {
+        List<LotteryPlacement> lotteryPlacements,
+        SkinQuality quality) {
 
     public static final Set<String> SUPPORTED_TYPES = Set.of("knife", "revolver", "bat", "grenade", "hat");
     /** Namespace used when a definition does not pin an explicit model. */
@@ -29,14 +30,27 @@ public record SkinDefinition(
         type = normalizeType(type, false);
         id = normalizeId(id);
         model = Objects.requireNonNull(model, "model");
+        quality = Objects.requireNonNull(quality, "quality");
         lotteryPlacements = lotteryPlacements == null
                 ? List.of()
                 : List.copyOf(new LinkedHashSet<>(lotteryPlacements));
 
     }
 
+    /** Binary/source compatibility for extensions compiled before quality metadata existed. */
+    public SkinDefinition(String type, String id, int color, ResourceLocation model,
+                          List<LotteryPlacement> lotteryPlacements) {
+        this(type, id, color, model, lotteryPlacements, SkinQuality.WHITE);
+    }
+
     public static Builder builder(String type, String id, int color) {
         return new Builder(type, id, color);
+    }
+
+    /** Uses the quality color as the optional legacy accent color as well. */
+    public static Builder builder(String type, String id, SkinQuality quality) {
+        Objects.requireNonNull(quality, "quality");
+        return new Builder(type, id, quality.color()).quality(quality);
     }
 
     /** SRE's pool format uses {@code gun/} for the {@code revolver} skin type. */
@@ -147,6 +161,7 @@ public record SkinDefinition(
         private final String id;
         private final int color;
         private ResourceLocation model;
+        private SkinQuality quality = SkinQuality.WHITE;
         private final List<LotteryPlacement> placements = new ArrayList<>();
 
         private Builder(String type, String id, int color) {
@@ -176,6 +191,12 @@ public record SkinDefinition(
             return model(ResourceLocation.fromNamespaceAndPath(namespace, path));
         }
 
+        /** Sets display quality without changing the skin's accent color or lottery placement. */
+        public Builder quality(SkinQuality quality) {
+            this.quality = Objects.requireNonNull(quality, "quality");
+            return this;
+        }
+
         /** Adds the skin to band 0 of its matching type pools and all-random pools. */
         public Builder includeInDefaultPools() {
             placements.add(new LotteryPlacement(type, 0));
@@ -190,7 +211,7 @@ public record SkinDefinition(
         }
 
         public SkinDefinition build() {
-            return new SkinDefinition(type, id, color, model, placements);
+            return new SkinDefinition(type, id, color, model, placements, quality);
         }
     }
 }

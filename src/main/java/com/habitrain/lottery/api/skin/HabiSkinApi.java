@@ -177,6 +177,11 @@ public final class HabiSkinApi {
         return find(type, id).map(definition -> definition.model(inHand));
     }
 
+    /** Provider-declared quality; absent when the skin is not registered. Since 1.1.26. */
+    public static Optional<SkinQuality> quality(String type, String id) {
+        return find(type, id).map(SkinDefinition::quality);
+    }
+
     public static synchronized Map<String, SkinDefinition> getSkins(String type) {
         Map<String, SkinDefinition> result = new LinkedHashMap<>();
         for (SkinDefinition skin : DEFINITIONS.values()) {

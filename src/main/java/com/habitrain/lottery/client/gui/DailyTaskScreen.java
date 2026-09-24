@@ -24,7 +24,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/** Daily tasks with horizontal navigation, a compact overview and full-width actionable rows. */
+/** Daily dispatch board: navigation, explicit status filters and fixed action columns. */
 public final class DailyTaskScreen extends Screen {
 
     // =====================================================================
@@ -38,8 +38,9 @@ public final class DailyTaskScreen extends Screen {
     private static final int TAB_SOURCES = 2;
 
     private static final int FILTER_ALL = 0;
-    private static final int FILTER_CLAIMABLE = 1;
-    private static final int FILTER_DONE = 2;
+    private static final int FILTER_PROGRESS = 1;
+    private static final int FILTER_CLAIMABLE = 2;
+    private static final int FILTER_DONE = 3;
 
     /** 每五秒主动向服务端要一次快照，保证余额与进度不会长时间陈旧。 */
     private static final long REFRESH_MILLIS = 5_000L;
@@ -50,14 +51,14 @@ public final class DailyTaskScreen extends Screen {
 
     /** 六张角色卡：与 {@code HabiCardApi.all} 的键一一对应。 */
     private static final CardInfo[] CARDS = {
-            new CardInfo("civilian", CardUiStyle.ACCENT_CIVILIAN, "\u25C6", KEY + "card.civilian"),
-            new CardInfo("neutral", CardUiStyle.ACCENT_NEUTRAL, "\u25C6", KEY + "card.neutral"),
-            new CardInfo("neutral_for_killer", CardUiStyle.ACCENT_NEUTRAL_FOR_KILLER, "\u2605",
+            new CardInfo("civilian", WarehouseTheme.ACCENT_CIVILIAN, "\u25C6", KEY + "card.civilian"),
+            new CardInfo("neutral", WarehouseTheme.ACCENT_NEUTRAL, "\u25C6", KEY + "card.neutral"),
+            new CardInfo("neutral_for_killer", WarehouseTheme.ACCENT_NEUTRAL_FOR_KILLER, "\u2605",
                     KEY + "card.neutral_for_killer"),
-            new CardInfo("killer", CardUiStyle.ACCENT_KILLER, "\u2716", KEY + "card.killer"),
-            new CardInfo("self_select", CardUiStyle.ACCENT_SELF_SELECT, "\u2726",
+            new CardInfo("killer", WarehouseTheme.ACCENT_KILLER, "\u2716", KEY + "card.killer"),
+            new CardInfo("self_select", WarehouseTheme.ACCENT_SELF_SELECT, "\u2726",
                     KEY + "card.self_select"),
-            new CardInfo("limit_break", CardUiStyle.ACCENT_LIMIT_BREAK, "\u25B2",
+            new CardInfo("limit_break", WarehouseTheme.ACCENT_LIMIT_BREAK, "\u25B2",
                     KEY + "card.limit_break"),
     };
 
@@ -72,7 +73,7 @@ public final class DailyTaskScreen extends Screen {
     };
 
     private static final String[] FILTER_KEYS = {
-            KEY + "filter.all", KEY + "filter.claimable", KEY + "filter.done",
+            KEY + "filter.all", KEY + "filter.progress", KEY + "filter.claimable", KEY + "filter.done",
     };
 
     // =====================================================================
@@ -92,6 +93,7 @@ public final class DailyTaskScreen extends Screen {
 
     private final List<TaskRow> rows = new ArrayList<>();
     private final List<NavTab> navTabs = new ArrayList<>();
+    private final List<StatusFilter> statusFilters = new ArrayList<>();
     private MiniButton closeButton;
     private MiniButton footerAction;
 
@@ -166,6 +168,13 @@ public final class DailyTaskScreen extends Screen {
             addRenderableWidget(widget);
         }
 
+        statusFilters.clear();
+        for (int i=0; i<DailyBoardLayout.FILTERS; i++) {
+            StatusFilter widget = new StatusFilter(i);
+            statusFilters.add(widget);
+            addWidget(widget);
+        }
+
         closeButton = new MiniButton(true, Component.translatable(KEY + "close"), layout.close());
         addRenderableWidget(closeButton);
         if (layout.showFooter()) {
@@ -196,10 +205,6 @@ public final class DailyTaskScreen extends Screen {
             return;
         }
         lastRequestMillis = now;
-        // 清单为空时说明没有模组注册任务，轮询只会白刷快照、白白重建控件树。
-        if (taskCount() == 0) {
-            return;
-        }
         requestSnapshot();
     }
 
@@ -233,6 +238,12 @@ public final class DailyTaskScreen extends Screen {
     }
 
     private void placeWidgets() {
+        for (StatusFilter widget : statusFilters) {
+            BoardRect r = layout.filter(widget.index);
+            widget.setX(r.x()); widget.setY(r.y());
+            widget.setWidth(r.w()); widget.setHeight(r.h());
+            widget.visible = tab == TAB_TASKS;
+        }
         for (NavTab widget : navTabs) {
             BoardRect r = layout.tab(widget.index);
             widget.setX(r.x());
@@ -276,6 +287,7 @@ public final class DailyTaskScreen extends Screen {
             return;
         }
         tab = target;
+        for (StatusFilter widget : statusFilters) widget.visible = tab == TAB_TASKS;
         pageScroll = 0;
         for (TaskRow row : rows) {
             row.visible = tab == TAB_TASKS;
@@ -330,8 +342,16 @@ public final class DailyTaskScreen extends Screen {
 
         float enter = GuiFx.easeOutCubic(GuiFx.progress(nowMillis, openedAt, ENTER_MILLIS));
         DailyBoardTheme.window(g, layout);
+        if (layout.sidebar()) {
+            DailyBoardTheme.text(g, font, Component.translatable(KEY + "dispatch").getString(),
+                    layout.rail().x()+14, layout.rail().y()+20, DailyBoardTheme.NAV_TEXT);
+            DailyBoardTheme.text(g, font, "HABITRAIN", layout.rail().x()+14,
+                    layout.rail().y()+36, 0xFF91A7BB);
+            DailyBoardTheme.text(g, font, "Q / T / C", layout.rail().x()+14,
+                    layout.rail().bottom()-22, 0xFF91A7BB);
+        }
 
-        // 入场只淡入内容：面板外壳固定不动，两页内容不会错位。
+        // Fade content without moving hit targets.
         boolean fade = enter < 0.999F;
         if (fade) {
             RenderSystem.enableBlend();
@@ -370,24 +390,25 @@ public final class DailyTaskScreen extends Screen {
     // ---------------------------------------------------------------------
 
     private void drawOverview(GuiGraphics g) {
-        DailyBoardTheme.softCard(g, layout.summary(), 8, DailyBoardTheme.TEAL_SOFT,
-                DailyBoardTheme.TEAL_SOFT, DailyBoardTheme.TEAL_SOFT);
         BoardRect title = layout.title();
         DailyBoardTheme.textScaled(g, font, Component.translatable(KEY + "title").getString(),
-                title.x(), title.y(), layout.compact() ? 1.15F : 1.4F, DailyBoardTheme.INK);
+                title.x(), title.y(), layout.compact() ? 1.15F : 1.5F, DailyBoardTheme.INK);
         BoardRect clock = layout.clock();
-        DailyBoardTheme.text(g, font, Component.translatable(KEY + "reset.hint", countdown()).getString(),
-                clock.x(), clock.y(), DailyBoardTheme.TEAL);
+        String reset = Component.translatable(KEY + "reset.hint", countdown()).getString();
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, reset, clock.w()),
+                clock.x(), clock.y(), DailyBoardTheme.INK_SOFT);
         String summary = snapshot == null ? leftSubtitle()
                 : Component.translatable(KEY + "overview", claimedCount(), taskCount(), claimableCount()).getString();
         DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, summary, layout.subtitle().w()),
                 layout.subtitle().x(), layout.subtitle().y(), DailyBoardTheme.INK_SOFT);
-        if (!layout.compact()) {
-            String balances = snapshot == null ? "" : Component.translatable(KEY + "balances",
+        if (!layout.compact() && snapshot != null) {
+            String balances = Component.translatable(KEY + "balances",
                     snapshot.draws(), snapshot.coins(), snapshot.cardTotal()).getString();
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, balances, layout.subtitle().w()),
-                    title.x(), layout.subtitle().y()+15, DailyBoardTheme.INK_SOFT);
+                    title.x(), layout.subtitle().y()+16, DailyBoardTheme.MUTED);
         }
+        DailyBoardTheme.hairline(g, layout.summary().x(), layout.summary().right(),
+                layout.summary().bottom()-1, DailyBoardTheme.PAPER_BORDER);
     }
 
     private void drawTasksPage(GuiGraphics g) {
@@ -398,26 +419,25 @@ public final class DailyTaskScreen extends Screen {
     }
 
     private void drawToolbar(GuiGraphics g) {
-        BoardRect toolbar = layout.toolbar();
         for (int i = 0; i < DailyBoardLayout.FILTERS; i++) {
             BoardRect r = layout.filter(i);
-            boolean active = filter == i;
-            boolean hover = hoverFilter == i;
-            int accent = switch (i) {
-                case FILTER_CLAIMABLE -> DailyBoardTheme.AMBER_DEEP;
-                case FILTER_DONE -> DailyBoardTheme.GREEN;
-                default -> DailyBoardTheme.BLUE;
+            boolean selected = filter == i;
+            int count = switch (i) {
+                case FILTER_PROGRESS -> taskCount()-claimedCount()-claimableCount();
+                case FILTER_CLAIMABLE -> claimableCount();
+                case FILTER_DONE -> claimedCount();
+                default -> taskCount();
             };
-            DailyBoardTheme.chip(g, font, r, Component.translatable(FILTER_KEYS[i]).getString(),
-                    active ? GuiFx.mix(DailyBoardTheme.CARD_TOP, accent, 0.16F)
-                            : (hover ? DailyBoardTheme.TEAL_SOFT : DailyBoardTheme.PAPER_TOP),
-                    active ? GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.5F)
-                            : DailyBoardTheme.CARD_LINE,
-                    active ? accent : (hover ? DailyBoardTheme.INK_SOFT : DailyBoardTheme.MUTED));
+            String label = Component.translatable(FILTER_KEYS[i]).getString();
+            if (!layout.compact()) label += "  " + count;
+            DailyBoardTheme.box(g, r, selected ? DailyBoardTheme.NAVY
+                    : hoverFilter == i ? DailyBoardTheme.BLUE_SOFT : DailyBoardTheme.CARD_TOP,
+                    getFocused() == statusFilters.get(i) ? DailyBoardTheme.AMBER_DEEP
+                            : selected ? DailyBoardTheme.NAVY : DailyBoardTheme.CARD_LINE);
+            DailyBoardTheme.textCentered(g, font, Component.literal(DailyBoardTheme.fit(font,label,r.w()-6)),
+                    r.cx(), r.y()+8, selected ? 0xFFFFFFFF : DailyBoardTheme.INK_SOFT);
+            if (selected) g.fill(r.x(),r.bottom()-2,r.right(),r.bottom(),DailyBoardTheme.AMBER_DEEP);
         }
-
-        DailyBoardTheme.hairline(g, toolbar.x(), layout.body().right() - layout.pagePad(),
-                toolbar.bottom() + 3, DailyBoardTheme.CARD_LINE);
     }
 
     private void drawTaskList(GuiGraphics g) {
@@ -459,13 +479,10 @@ public final class DailyTaskScreen extends Screen {
         BoardRect list = layout.list();
         int cx = list.cx();
         int cy = list.cy();
-        if (spinner) {
-            double phase = (nowMillis % 1400L) / 1400.0D;
-            DailyBoardTheme.ring(g, cx, cy - 24, 26, 3, phase, 0.28D, DailyBoardTheme.TRACK,
-                    DailyBoardTheme.AMBER_DEEP);
-        } else {
-            GuiFx.diamond(g, cx, cy - 24, 7, 7, DailyBoardTheme.TRACK);
-            GuiFx.diamondOutline(g, cx, cy - 24, 7, 7, DailyBoardTheme.FAINT);
+        for (int i=0; i<4; i++) {
+            int active = (int)((nowMillis / 220) % 4);
+            g.fill(cx-19+i*10,cy-24,cx-12+i*10,cy-20,
+                    spinner && i == active ? DailyBoardTheme.AMBER_DEEP : DailyBoardTheme.TRACK);
         }
         DailyBoardTheme.textCentered(g, font, Component.translatable(titleKey), cx, cy - 6,
                 DailyBoardTheme.INK_SOFT);
@@ -498,7 +515,7 @@ public final class DailyTaskScreen extends Screen {
                 layout.content().w() - layout.pagePad() * 2, layout.pageHeight());
         String hint = Component.translatable(KEY + "cards.subtitle",
                 snapshot == null ? "--" : snapshot.cardTotal()).getString();
-        DailyBoardTheme.text(g, font, hint, area.x(), area.y(), DailyBoardTheme.MUTED);
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, hint, area.w()), area.x(), area.y(), DailyBoardTheme.MUTED);
 
         int top = area.y() + 13;
         int cols = layout.cardCols();
@@ -531,7 +548,7 @@ public final class DailyTaskScreen extends Screen {
     private void drawCardTile(GuiGraphics g, BoardRect r, CardInfo info, int count) {
         boolean owned = count > 0;
         DailyBoardTheme.card(g, r, 7);
-        GuiFx.roundedBar(g, r.x() + 1, r.y() + 6, r.x() + 4, r.bottom() - 6, 1,
+        GuiFx.roundedBar(g, r.x() + 1, r.y() + 6, r.x() + 4, r.bottom() - 6, 0,
                 GuiFx.fade(info.accent, owned ? 0.95F : 0.35F));
         BoardRect mark = new BoardRect(r.x() + 10, r.y() + 9, 18, 18);
         DailyBoardTheme.softCard(g, mark, 5, GuiFx.mix(DailyBoardTheme.CARD_TOP, info.accent, 0.16F),
@@ -562,7 +579,7 @@ public final class DailyTaskScreen extends Screen {
         BoardRect area = new BoardRect(layout.content().x() + layout.pagePad(), layout.pageTop(),
                 layout.content().w() - layout.pagePad() * 2, layout.pageHeight());
         String hint = Component.translatable(KEY + "sources.hint").getString();
-        DailyBoardTheme.text(g, font, hint, area.x(), area.y(), DailyBoardTheme.MUTED);
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, hint, area.w()), area.x(), area.y(), DailyBoardTheme.MUTED);
 
         int chipTop = area.y() + 13;
         int chipH = layout.chipH();
@@ -604,11 +621,11 @@ public final class DailyTaskScreen extends Screen {
             BoardRect r = new BoardRect(area.x(), y, area.w(), rowH);
             boolean hover = r.contains(mouseX, mouseY);
             int accent = CATEGORIES[sourceCat].accent;
-            DailyBoardTheme.softCard(g, r, 6, hover ? DailyBoardTheme.CARD_TOP : 0xFFF8F4EA,
-                    hover ? DailyBoardTheme.CARD_BOTTOM : 0xFFF3EEE2,
+            DailyBoardTheme.softCard(g, r, 6, DailyBoardTheme.CARD_TOP,
+                    hover ? DailyBoardTheme.CARD_BOTTOM : DailyBoardTheme.CARD_TOP,
                     hover ? GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.4F)
                             : DailyBoardTheme.CARD_LINE);
-            GuiFx.roundedBar(g, r.x() + 1, r.y() + 5, r.x() + 4, r.bottom() - 5, 1,
+            GuiFx.roundedBar(g, r.x() + 1, r.y() + 5, r.x() + 4, r.bottom() - 5, 0,
                     GuiFx.fade(accent, 0.9F));
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, src.title(), r.w() - 24),
                     r.x() + 12, r.y() + 4, DailyBoardTheme.INK);
@@ -692,6 +709,9 @@ public final class DailyTaskScreen extends Screen {
         // 也走同一条领取逻辑（鼠标只认按钮矩形，避免误领）。
         if (keyCode == 257 || keyCode == 32 || keyCode == 335) {
             GuiEventListener focused = getFocused();
+            if (focused instanceof StatusFilter widget && tab == TAB_TASKS) {
+                playClick(); selectFilter(widget.index); return true;
+            }
             if (focused instanceof TaskRow row) {
                 row.activateByKeyboard();
                 return true;
@@ -850,7 +870,8 @@ public final class DailyTaskScreen extends Screen {
         List<DailyTaskSnapshot.TaskRow> out = new ArrayList<>();
         for (DailyTaskSnapshot.TaskRow task : all) {
             boolean claimable = task.progress() >= task.target() && !task.claimed();
-            if (filter == FILTER_CLAIMABLE ? claimable : task.claimed()) {
+            if (filter == FILTER_CLAIMABLE ? claimable : filter == FILTER_PROGRESS
+                    ? !task.claimed() && !claimable : task.claimed()) {
                 out.add(task);
             }
         }
@@ -961,6 +982,20 @@ public final class DailyTaskScreen extends Screen {
     // 控件：左侧导航
     // =====================================================================
 
+    private final class StatusFilter extends AbstractWidget {
+        private final int index;
+        private StatusFilter(int index) {
+            super(0,0,1,1,Component.translatable(FILTER_KEYS[index]));
+            this.index = index;
+        }
+        @Override protected void renderWidget(GuiGraphics g,int x,int y,float delta) { }
+        @Override public void onClick(double x,double y) { selectFilter(index); }
+        @Override protected void updateWidgetNarration(NarrationElementOutput out) {
+            out.add(NarratedElementType.TITLE,getMessage());
+            out.add(NarratedElementType.USAGE,Component.translatable(KEY + "usage.tab"));
+        }
+    }
+
     private final class NavTab extends AbstractWidget {
 
         private final int index;
@@ -976,24 +1011,11 @@ public final class DailyTaskScreen extends Screen {
             BoardRect r = new BoardRect(getX(), getY(), getWidth(), getHeight());
             boolean active = tab == index;
             hoverAnim = GuiFx.approach(hoverAnim, (isHovered || isFocused()) && !active ? 1.0F : 0.0F, frameDelta, 80.0F);
-            int accent = tabAccent(index);
-            int soft = tabSoft(index);
-
-            if (active) {
-                DailyBoardTheme.softCard(g, r, 6, soft, GuiFx.shade(soft, -0.04F),
-                        GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.5F));
-                // 选中态用一条 3px 主色条标出，与示例样本的左侧色条一致
-                GuiFx.roundedBar(g, r.x() + 1, r.y() + 5, r.x() + 4, r.bottom() - 5, 1, accent);
-                DailyBoardTheme.textCentered(g, font, getMessage(), r.cx() + 1, r.y() + (r.h() - 8) / 2,
-                        DailyBoardTheme.INK);
-            } else {
-                DailyBoardTheme.softCard(g, r, 6,
-                        GuiFx.mix(DailyBoardTheme.PAPER_TOP, soft, 0.35F + 0.35F * hoverAnim),
-                        GuiFx.mix(DailyBoardTheme.PAPER_BOTTOM, soft, 0.35F + 0.35F * hoverAnim),
-                        GuiFx.mix(DailyBoardTheme.PAPER_BORDER, accent, 0.15F + 0.25F * hoverAnim));
-                DailyBoardTheme.textCentered(g, font, getMessage(), r.cx() + 1, r.y() + (r.h() - 8) / 2,
-                        GuiFx.mix(DailyBoardTheme.INK_SOFT, accent, hoverAnim));
-            }
+            int fill = active ? DailyBoardTheme.CARD_TOP : (isHovered || isFocused()) ? 0xFF344F68 : DailyBoardTheme.NAVY;
+            DailyBoardTheme.box(g, r, fill, isFocused() ? DailyBoardTheme.AMBER : fill);
+            if (active) g.fill(r.x(),r.y(),r.x()+3,r.bottom(),DailyBoardTheme.AMBER_DEEP);
+            DailyBoardTheme.textCentered(g, font, getMessage(), r.cx(), r.y()+(r.h()-8)/2,
+                    active ? DailyBoardTheme.INK : DailyBoardTheme.NAV_TEXT);
         }
 
         @Override
@@ -1009,21 +1031,9 @@ public final class DailyTaskScreen extends Screen {
         }
     }
 
-    private static int tabAccent(int index) {
-        return switch (index) {
-            case TAB_CARDS -> DailyBoardTheme.VIOLET;
-            case TAB_SOURCES -> DailyBoardTheme.TEAL;
-            default -> DailyBoardTheme.TEAL;
-        };
-    }
 
-    private static int tabSoft(int index) {
-        return switch (index) {
-            case TAB_CARDS -> DailyBoardTheme.VIOLET_SOFT;
-            case TAB_SOURCES -> DailyBoardTheme.TEAL_SOFT;
-            default -> DailyBoardTheme.TEAL_SOFT;
-        };
-    }
+
+
 
     // =====================================================================
     // 控件：关闭 / 脚注按钮
@@ -1046,11 +1056,11 @@ public final class DailyTaskScreen extends Screen {
             hoverAnim = GuiFx.approach(hoverAnim, (isHovered || isFocused()) ? 1.0F : 0.0F, frameDelta, 70.0F);
             if (close) {
                 if (hoverAnim > 0.02F) {
-                    GuiFx.roundRect(g, r.x(), r.y(), r.right(), r.bottom(), 4,
+                    GuiFx.roundRect(g, r.x(), r.y(), r.right(), r.bottom(), 0,
                             GuiFx.alpha(DailyBoardTheme.WARN, (int) (30 * hoverAnim)));
                 }
                 DailyBoardTheme.textCentered(g, font, Component.literal("\u2716"), r.cx(), r.cy() - 4,
-                        GuiFx.mix(DailyBoardTheme.MUTED, DailyBoardTheme.WARN, hoverAnim));
+                        GuiFx.mix(layout.sidebar() ? DailyBoardTheme.MUTED : DailyBoardTheme.NAV_TEXT, DailyBoardTheme.WARN, hoverAnim));
                 return;
             }
             DailyBoardTheme.button(g, font, r, getMessage(), 0xFFF0F5F4,
@@ -1080,7 +1090,7 @@ public final class DailyTaskScreen extends Screen {
     // =====================================================================
 
     /**
-     * 一行任务：状态方块 → 任务名 → 说明 → 奖励胶囊 → 领取按钮，奖励独占一行，进度位于底部。
+     * 任务信息与操作列分开；状态条、奖励文字和进度各自固定位置。
      *
      * <p>整行是控件（Tab 焦点、旁白、Enter 触发都可用），但只有右侧按钮矩形会真正领取；
      * 点行内其它位置不产生任何不可撤销的操作。</p>
@@ -1118,8 +1128,8 @@ public final class DailyTaskScreen extends Screen {
         }
 
         private BoardRect claimButton() {
-            int w = layout.compact() ? 50 : 58;
-            int h = layout.compact() ? 17 : 19;
+            int w = layout.compact() ? 58 : 76;
+            int h = 24;
             // 按钮在「去掉底部进度带」的高度里居中
             return new BoardRect(getX() + getWidth() - 8 - w, getY() + (getHeight() - 4 - h) / 2, w, h);
         }
@@ -1158,58 +1168,33 @@ public final class DailyTaskScreen extends Screen {
             pressAnim = GuiFx.approach(pressAnim, 0.0F, frameDelta, 90.0F);
 
             int accent = state.accent;
-            int top = state == ClaimState.DONE ? 0xFFF2F6F5 : DailyBoardTheme.CARD_TOP;
-            int bottom = state == ClaimState.DONE ? 0xFFF2F6F5 : DailyBoardTheme.CARD_BOTTOM;
-            top = GuiFx.mix(top, DailyBoardTheme.AMBER_SOFT,
-                    state == ClaimState.READY ? 0.40F + 0.30F * hoverAnim : 0.12F * hoverAnim);
-            GuiFx.roundGradient(g, r.x(), r.y(), r.right(), r.bottom(), 7, top, bottom);
-            GuiFx.roundOutline(g, r.x(), r.y(), r.right(), r.bottom(), 7,
-                    GuiFx.mix(DailyBoardTheme.CARD_LINE, accent,
-                            state == ClaimState.READY ? 0.40F + 0.25F * hoverAnim
-                                    : 0.12F + 0.10F * hoverAnim));
-
+            int fill = state == ClaimState.DONE ? DailyBoardTheme.PAPER_TOP : DailyBoardTheme.CARD_TOP;
+            DailyBoardTheme.box(g, r, fill, isFocused() ? DailyBoardTheme.BLUE : DailyBoardTheme.CARD_LINE);
+            g.fill(r.x(),r.y(),r.x()+3,r.bottom(),accent);
             BoardRect button = claimButton();
-            int textX = r.x()+12;
-            int textRight = button.x()-10;
+            int textX = r.x()+12, textRight = button.x()-12;
+            g.fill(button.x()-7,r.y()+8,button.x()-6,r.bottom()-8,DailyBoardTheme.CARD_LINE);
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(task.title()), textRight-textX),
-                    textX, r.y()+9, DailyBoardTheme.INK);
+                    textX, r.y()+8, DailyBoardTheme.INK);
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(task.description()), textRight-textX),
-                    textX, r.y()+23, DailyBoardTheme.INK_SOFT);
+                    textX, r.y()+22, DailyBoardTheme.INK_SOFT);
             String reward = Component.translatable(KEY + "row.reward", nullToEmpty(task.reward())).getString();
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, reward, textRight-textX),
-                    textX, r.y()+37, DailyBoardTheme.TEAL);
+                    textX, r.y()+36, state == ClaimState.DONE ? DailyBoardTheme.MUTED : DailyBoardTheme.GOLD);
             float ratio = task.target() <= 0 ? 1.0F : Mth.clamp(task.progress()/(float)task.target(), 0, 1);
-            int barY = r.bottom()-9;
-            int barRight = button.x()-10;
-            GuiFx.roundedBar(g, textX, barY, barRight, barY+3, 1, DailyBoardTheme.TRACK);
-            if (ratio > 0) GuiFx.roundedBar(g, textX, barY,
-                    textX+Math.max(2, Math.round((barRight-textX)*ratio)), barY+3, 1, state.accent);
+            DailyBoardTheme.progressBar(g,textX,textRight,r.bottom()-10,4,ratio,DailyBoardTheme.TRACK,accent);
             String counter = task.progress()+" / "+task.target();
-            DailyBoardTheme.textCentered(g, font, Component.literal(counter), button.cx(),
-                    button.bottom()+5, DailyBoardTheme.INK_SOFT);
-            if (isFocused()) GuiFx.roundOutline(g, r.x(), r.y(), r.right(), r.bottom(), 7, DailyBoardTheme.TEAL);
-
-            boolean overButton = over && button.contains(mouseX, mouseY);
-            DailyBoardTheme.button(g, font, button, state.label(), state.fill,
-                    GuiFx.mix(DailyBoardTheme.CARD_LINE, accent,
-                            state == ClaimState.READY ? 0.55F : 0.30F), state.text,
-                    overButton && state == ClaimState.READY ? 1.0F : 0.0F);
-            if (pressAnim > 0.02F) {
-                GuiFx.roundOutline(g, button.x() - 1, button.y() - 1, button.right() + 1,
-                        button.bottom() + 1, 6,
-                        GuiFx.fade(DailyBoardTheme.AMBER_DEEP, pressAnim * 0.8F));
+            DailyBoardTheme.textCentered(g, font, Component.literal(DailyBoardTheme.fit(font,counter,button.w())),
+                    button.cx(), button.bottom()+5, DailyBoardTheme.INK_SOFT);
+            if (state == ClaimState.READY) {
+                DailyBoardTheme.button(g, font, button, state.label(), state.fill, state.fill,
+                        state.text, over && button.contains(mouseX,mouseY) ? 1 : 0);
+            } else {
+                DailyBoardTheme.textCentered(g,font,state.label(),button.cx(),button.cy()-4,state.text);
             }
         }
 
-        private void drawStateTile(GuiGraphics g, BoardRect box, ClaimState state) {
-            float pulse = state == ClaimState.READY
-                    ? 0.5F + 0.5F * GuiFx.triWave(nowMillis, 1800.0F, 0.0F) : 1.0F;
-            DailyBoardTheme.softCard(g, box, 6, state.soft, GuiFx.shade(state.soft, -0.06F),
-                    GuiFx.mix(DailyBoardTheme.CARD_LINE, state.accent,
-                            state == ClaimState.READY ? 0.35F + 0.30F * pulse : 0.30F));
-            DailyBoardTheme.textCentered(g, font, Component.literal(state.glyph), box.cx(),
-                    box.cy() - 4, state.accent);
-        }
+
 
         @Override
         protected void updateWidgetNarration(NarrationElementOutput output) {

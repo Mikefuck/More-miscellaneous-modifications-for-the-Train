@@ -23,6 +23,8 @@ public final class PlayerLotteryData {
     public long updatedAt;
     public int lootChance;
     public int coinNum;
+    /** Virtual system rewards, separate from the physical player inventory. */
+    public Map<String, Integer> systemItems = new HashMap<>();
     public boolean migratedFromSre;
     public Map<String, Map<String, Boolean>> unlocked = new HashMap<>();
     public Map<String, String> equipped = new HashMap<>();
@@ -74,6 +76,7 @@ public final class PlayerLotteryData {
         c.updatedAt = updatedAt;
         c.lootChance = lootChance;
         c.coinNum = coinNum;
+        if (systemItems != null) c.systemItems.putAll(systemItems);
         c.migratedFromSre = migratedFromSre;
         unlocked.forEach((k, v) -> c.unlocked.put(k, new HashMap<>(v)));
         c.equipped.putAll(equipped);

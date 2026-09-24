@@ -1,6 +1,7 @@
 package com.habitrain.lottery.skin;
 
 import com.habitrain.lottery.api.skin.HabiSkinApi;
+import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.bridge.InventorySkinApplier;
 import com.habitrain.lottery.bridge.SkinStateCoordinator;
 import com.habitrain.lottery.storage.PlayerLotteryData;
@@ -21,24 +22,31 @@ public final class SkinNetwork {
     public static final int MAX_ENTRIES = 4096;
     private static final java.util.Map<java.util.UUID, Integer> LAST_REQUEST = new java.util.HashMap<>();
     private SkinNetwork() {}
-    public record Entry(String type, String id, boolean owned, boolean equipped) {}
+    public record Entry(String type, String id, boolean owned, boolean equipped, SkinQuality quality) {
+        public Entry {
+            quality = java.util.Objects.requireNonNull(quality, "quality");
+        }
+        public Entry(String type, String id, boolean owned, boolean equipped) {
+            this(type, id, owned, equipped, SkinQuality.WHITE);
+        }
+    }
     public record Request(String typeName, String skin) implements CustomPacketPayload {
-        public static final Type<Request> TYPE = new Type<>(ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "skin_request"));
+        public static final Type<Request> TYPE = new Type<>(ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "skin_request_v2"));
         public static final StreamCodec<RegistryFriendlyByteBuf, Request> CODEC = StreamCodec.of(
                 (buf, p) -> { buf.writeUtf(p.typeName, 32); buf.writeUtf(p.skin, 64); },
                 buf -> new Request(buf.readUtf(32), buf.readUtf(64)));
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
     public record Snapshot(boolean open, List<Entry> entries) implements CustomPacketPayload {
-        public static final Type<Snapshot> TYPE = new Type<>(ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "skin_snapshot"));
+        public static final Type<Snapshot> TYPE = new Type<>(ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "skin_snapshot_v2"));
         public static final StreamCodec<RegistryFriendlyByteBuf, Snapshot> CODEC = StreamCodec.of((buf, p) -> {
             buf.writeBoolean(p.open); buf.writeVarInt(p.entries.size());
-            for (Entry e : p.entries) { buf.writeUtf(e.type, 32); buf.writeUtf(e.id, 64); buf.writeBoolean(e.owned); buf.writeBoolean(e.equipped); }
+            for (Entry e : p.entries) { buf.writeUtf(e.type, 32); buf.writeUtf(e.id, 64); buf.writeBoolean(e.owned); buf.writeBoolean(e.equipped); buf.writeUtf(e.quality.id(), 16); }
         }, buf -> {
             boolean open = buf.readBoolean(); int count = buf.readVarInt();
             if (count < 0 || count > MAX_ENTRIES) throw new io.netty.handler.codec.DecoderException("Skin catalog exceeds limit");
             List<Entry> entries = new ArrayList<>(count);
-            for (int i = 0; i < count; i++) entries.add(new Entry(buf.readUtf(32), buf.readUtf(64), buf.readBoolean(), buf.readBoolean()));
+            for (int i = 0; i < count; i++) entries.add(new Entry(buf.readUtf(32), buf.readUtf(64), buf.readBoolean(), buf.readBoolean(), SkinQuality.fromId(buf.readUtf(16))));
             return new Snapshot(open, List.copyOf(entries));
         });
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -80,7 +88,7 @@ public final class SkinNetwork {
         List<Entry> entries = new ArrayList<>();
         for (var skin : HabiSkinApi.registrations()) {
             entries.add(new Entry(skin.type(), skin.id(), store.isSkinUnlocked(player.getUUID(), skin.type(), skin.id()),
-                    skin.id().equals(store.getEquipped(player.getUUID(), skin.type()))));
+                    skin.id().equals(store.getEquipped(player.getUUID(), skin.type())), skin.quality()));
         }
         ServerPlayNetworking.send(player, new Snapshot(open, List.copyOf(entries)));
     }

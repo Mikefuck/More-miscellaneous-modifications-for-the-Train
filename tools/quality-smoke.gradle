@@ -1,0 +1,14 @@
+// Render quality metadata with the real GUI and the current external skin provider.
+apply from: new File(gradle.startParameter.currentDir, 'tools/warehouse-smoke.gradle')
+allprojects {
+    afterEvaluate {
+        dependencies {
+            // The upstream fixture is Mojang-named, so use the matching development jar.
+            // Production @Pseudo injections cannot be remapped back without its hierarchy.
+            runtimeOnly files('../皮肤mod/build/devlibs/habitrain_skins-1.0.40-dev.jar')
+        }
+        sourceSets.smoke.java.setSrcDirs(['tools/quality-smoke/java'])
+        sourceSets.smoke.resources.setSrcDirs(['tools/quality-smoke/resources'])
+        loom.runs.client.runDir 'build/quality-client-run'
+    }
+}

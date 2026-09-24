@@ -33,7 +33,7 @@ public abstract class BackpackScreenMixin {
     private void habi$separateCards(CallbackInfo ci) {
         if (ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
             net.minecraft.client.Minecraft.getInstance().setScreen(
-                    new com.habitrain.lottery.client.gui.CardBackpackScreen(parent));
+                    new com.habitrain.lottery.client.gui.WarehouseScreen(parent));
         }
     }
 

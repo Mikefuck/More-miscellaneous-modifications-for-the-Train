@@ -22,10 +22,19 @@ class DailyBoardLayoutTest {
             for (int i=0;i<3;i++) {
                 inside(l.tab(i),l.rail());
                 assertTrue(l.tab(i).right() <= l.close().x());
-                if (i>0) assertTrue(l.tab(i-1).right() < l.tab(i).x());
+                if (i>0) {
+                    if(l.sidebar()) assertTrue(l.tab(i-1).bottom() < l.tab(i).y());
+                    else assertTrue(l.tab(i-1).right() < l.tab(i).x());
+                }
                 inside(l.filter(i),l.toolbar());
             }
-            assertTrue(l.rail().bottom() < l.content().y());
+            if(l.sidebar()) assertTrue(l.rail().right() < l.content().x());
+            else assertTrue(l.rail().bottom() < l.content().y());
+            for(int i=0;i<DailyBoardLayout.FILTERS;i++) {
+                inside(l.filter(i),l.toolbar());
+                assertTrue(l.filter(i).w() >= 60);
+                if(i>0) assertTrue(l.filter(i-1).right() < l.filter(i).x());
+            }
             inside(l.summary(),l.content());
             inside(l.body(),l.content());
             assertTrue(l.summary().bottom() < l.body().y());

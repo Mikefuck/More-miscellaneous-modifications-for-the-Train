@@ -233,6 +233,11 @@ public final class LotteryClientNetwork {
                 LotteryNetwork.ClientLotteryState.titleVersion++;
             });
         });
+        ClientPlayNetworking.registerGlobalReceiver(com.habitrain.lottery.network.WarehouseNetwork.Snapshot.TYPE,
+                (payload, context) -> context.client().execute(() -> {
+                    if (context.client().screen instanceof com.habitrain.lottery.client.gui.WarehouseScreen screen)
+                        screen.receive(payload);
+                }));
         ClientPlayNetworking.registerGlobalReceiver(CardUseMenuS2C.TYPE, (payload, context) -> {
             context.client().execute(() -> {
                 LotteryNetwork.ClientLotteryState.cardUseRemainingUses = payload.remainingUses();
@@ -249,13 +254,8 @@ public final class LotteryClientNetwork {
                         payload.candidatesJson() == null ? "" : payload.candidatesJson();
                 LotteryNetwork.ClientLotteryState.cardUseMenuVersion++;
                 Minecraft mc = Minecraft.getInstance();
-                if (mc.player != null) {
-                    if ("self_select".equals(payload.questKey())) {
-                        mc.setScreen(new com.habitrain.lottery.client.gui.RoleSelectScreen(mc.screen));
-                    } else {
-                        mc.setScreen(new com.habitrain.lottery.client.gui.CardUseMenuScreen(mc.screen));
-                    }
-                }
+                if (mc.player != null && mc.screen instanceof com.habitrain.lottery.client.gui.WarehouseScreen screen)
+                    screen.receiveCardMenu(payload);
             });
         });
     }

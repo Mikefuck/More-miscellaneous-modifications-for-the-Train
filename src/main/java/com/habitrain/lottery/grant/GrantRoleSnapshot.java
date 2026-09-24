@@ -40,8 +40,8 @@ public final class GrantRoleSnapshot {
      * <p><b>需要 live handle / 生效角色 / 可见性的消费方不要在这里加逻辑</b>，
      * 请走 v2 {@code RoleCatalogApi}（快照与解析）与 {@code RoleVisibilityApi}
      * （{@code com.habitrain.core.api.role.v2}）。真正读 live handle 的例子是客户端
-     * {@code client/gui/RoleSelectScreen#resolveRoleDisplayName}（审核提到的
-     * {@code RoleSelectScreen:1475}），那是纯 UI 显示路径，与发奖无关。</p>
+     * {@code client/gui/WarehouseRole#resolveRoleDisplayName}（审核提到的
+     * {@code WarehouseRole}），那是纯 UI 显示路径，与发奖无关。</p>
      */
     public static SRERole remap(SRERole raw) {
         return raw;

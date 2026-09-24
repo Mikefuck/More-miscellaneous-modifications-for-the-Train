@@ -23,18 +23,18 @@ class RoleSelectCandidateTest {
                 ]
                 """;
 
-        Type type = new TypeToken<List<RoleSelectScreen.Candidate>>() {}.getType();
-        List<RoleSelectScreen.Candidate> candidates = GSON.fromJson(json, type);
+        Type type = new TypeToken<List<WarehouseRole>>() {}.getType();
+        List<WarehouseRole> candidates = GSON.fromJson(json, type);
 
         assertNotNull(candidates);
         assertEquals(2, candidates.size());
 
-        RoleSelectScreen.Candidate sheriff = candidates.get(0);
+        WarehouseRole sheriff = candidates.get(0);
         assertEquals("starrailexpress:sheriff", sheriff.id);
         assertNotNull(sheriff.displayName());
         assertTrue(!sheriff.displayName().isBlank());
 
-        RoleSelectScreen.Candidate deputy = candidates.get(1);
+        WarehouseRole deputy = candidates.get(1);
         assertEquals("starrailexpress:deputy", deputy.id);
         assertTrue(deputy.isBound());
         assertEquals("starrailexpress:sheriff", deputy.bound);
@@ -44,11 +44,11 @@ class RoleSelectCandidateTest {
     void resolvesRoleDisplayNameFallbackWhenNoLanguage() {
         // When running in headless test environment without language loaded,
         // it gracefully falls back without crashing and returns a readable name.
-        String name = RoleSelectScreen.resolveRoleDisplayName("starrailexpress:sheriff", "announcement.star.role.sheriff");
+        String name = WarehouseRole.resolveRoleDisplayName("starrailexpress:sheriff", "announcement.star.role.sheriff");
         assertNotNull(name);
         assertTrue(!name.isBlank());
 
-        String boundName = RoleSelectScreen.resolveBoundRoleDisplayName("starrailexpress:deputy");
+        String boundName = WarehouseRole.resolveBoundRoleDisplayName("starrailexpress:deputy");
         assertNotNull(boundName);
         assertTrue(!boundName.isBlank());
     }

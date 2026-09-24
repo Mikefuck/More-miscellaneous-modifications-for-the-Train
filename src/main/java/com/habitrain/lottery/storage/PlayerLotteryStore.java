@@ -799,6 +799,8 @@ public final class PlayerLotteryStore {
             data.updatedAt = System.currentTimeMillis();
             return data;
         }
+        if (data.systemItems == null) data.systemItems = new java.util.HashMap<>();
+        data.systemItems.entrySet().removeIf(e -> e.getKey() == null || e.getValue() == null || e.getValue() <= 0);
         if (data.unlocked == null) {
             data.unlocked = new HashMap<>();
         }

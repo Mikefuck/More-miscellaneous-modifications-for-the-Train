@@ -70,3 +70,12 @@ HabiDailyTaskApi.register(new HabiDailyTaskApi.Task(
 | 角色卡 | 上游旧进度任务 / 等级 | `SREPlayerProgressionComponent` 任务卡与 3/5/7 级卡写旧 CCA 进度字段，**未自动计入本页面的背包余额**；`ProgressionDataManager.addFactionCard` 的现有调用点是分配失败退款，不是新的正向发卡。 |
 
 具体代码入口分别位于本模组的 `grant/`、`backpack/`、`mail/`、`network/`、`skin/`、`api/player/` 和上游 DLC 的 `progression/`、`cca/`、`backpack/`、`noellesroles/`。上游职业规则或任务配置变动后，应重新核对该清单。
+
+
+## 1.1.24 每日任务界面
+
+界面采用列车任务调度台布局：深蓝导航、冷灰背景、白色任务行和橙色领取按钮，全部使用直角边框。
+宽屏左侧固定导航，窄屏导航转为顶部；任务分为全部、进行中、可领取、已领取四类，可领取优先显示。
+每项任务固定展示标题、说明、奖励和进度，右侧独立操作列仅在奖励可领取时显示按钮。
+支持 Tab 焦点、Enter / 空格领取、F 切换筛选、R 刷新及滚轮 / PageUp / PageDown 滚动。
+角色卡与获取途径仍可从导航访问，服务端任务和领取 API 不变。

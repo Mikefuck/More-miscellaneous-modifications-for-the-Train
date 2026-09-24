@@ -92,6 +92,7 @@ public final class LotteryNetwork {
 
     public static void registerServer() {
         registerPayloadTypes();
+        WarehouseNetwork.register();
 
         ServerPlayNetworking.registerGlobalReceiver(DailyTaskRequestC2S.TYPE, (payload, context) ->
                 context.server().execute(() -> {

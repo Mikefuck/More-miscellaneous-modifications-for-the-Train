@@ -1,6 +1,6 @@
 package com.habitrain.lottery.client.gui;
 
-/** Responsive daily board: horizontal navigation, compact summary, full-width task list. */
+/** Task dispatch layout with adaptive navigation and four explicit status filters. */
 record DailyBoardLayout(boolean compact, int pad, int gap,
                         BoardRect panel, BoardRect rail, BoardRect content, BoardRect close,
                         BoardRect summary, BoardRect body, int pagePad,
@@ -10,56 +10,60 @@ record DailyBoardLayout(boolean compact, int pad, int gap,
                         boolean showFooter, int rowH, int rowStride,
                         int cardCols, int cardH, int cardGap, int sourceRowH, int chipH, int chipGap) {
     static final int TABS = 3;
-    static final int FILTERS = 3;
+    static final int FILTERS = 4;
 
     static DailyBoardLayout of(int width, int height, int taskCount) {
-        int pw = Math.min(width - 12, 780), ph = Math.min(height - 12, 540);
-        boolean compact = pw < 540 || ph < 360;
-        int pad = compact ? 10 : 18, gap = compact ? 6 : 10;
+        int pw = Math.min(width - 12, 820), ph = Math.min(height - 12, 520);
+        boolean side = pw >= 548 && ph >= 288;
+        boolean compact = pw < 620 || ph < 360;
+        int pad = 10, gap = 8;
         BoardRect panel = new BoardRect((width-pw)/2, (height-ph)/2, pw, ph);
-        BoardRect rail = new BoardRect(panel.x()+pad, panel.y()+pad, pw-pad*2-28, 24);
-        BoardRect close = new BoardRect(panel.right()-pad-20, rail.y()+2, 20, 20);
-        BoardRect content = new BoardRect(panel.x()+pad, rail.bottom()+gap, pw-pad*2,
-                panel.bottom()-pad-rail.bottom()-gap);
-        int summaryH = compact ? 42 : 64;
+        BoardRect rail = side
+                ? new BoardRect(panel.x(), panel.y(), 108, ph)
+                : new BoardRect(panel.x(), panel.y(), pw-36, 32);
+        BoardRect close = new BoardRect(panel.right()-28, panel.y()+6, 22, 22);
+        int cx = side ? rail.right()+16 : panel.x()+pad;
+        int cy = side ? panel.y()+38 : rail.bottom()+gap;
+        BoardRect content = new BoardRect(cx, cy, panel.right()-pad-cx, panel.bottom()-pad-cy);
+        int summaryH = compact ? 44 : 66;
         BoardRect summary = new BoardRect(content.x(), content.y(), content.w(), summaryH);
         BoardRect body = new BoardRect(content.x(), summary.bottom()+gap, content.w(),
                 content.bottom()-summary.bottom()-gap);
-        BoardRect title = new BoardRect(summary.x()+10, summary.y()+7, summary.w()-110, 15);
-        BoardRect subtitle = new BoardRect(title.x(), title.bottom()+5, summary.w()-20, 10);
-        BoardRect clock = new BoardRect(summary.right()-100, summary.y()+9, 90, 10);
-        BoardRect toolbar = new BoardRect(body.x(), body.y(), body.w(), 22);
-        int fw = compact ? 48 : 60;
-        BoardRect all = new BoardRect(toolbar.x(), toolbar.y(), fw, 20);
-        BoardRect open = new BoardRect(all.right()+4, all.y(), fw, 20);
-        BoardRect done = new BoardRect(open.right()+4, all.y(), fw, 20);
-        boolean footerVisible = ph >= 300;
+        BoardRect title = new BoardRect(summary.x(), summary.y()+2, summary.w()-116, 16);
+        BoardRect subtitle = new BoardRect(title.x(), title.bottom()+6, summary.w(), 10);
+        BoardRect clock = new BoardRect(summary.right()-108, summary.y()+5, 108, 10);
+        BoardRect toolbar = new BoardRect(body.x(), body.y(), body.w(), 24);
+        int fw = (toolbar.w()-9)/4;
+        BoardRect all = new BoardRect(toolbar.x(), toolbar.y(), fw, 24);
+        BoardRect open = new BoardRect(all.right()+3, all.y(), fw, 24);
+        BoardRect done = new BoardRect(open.right()+3, all.y(), fw, 24);
+        boolean footerVisible = ph >= 330;
         BoardRect footer = new BoardRect(body.x(), body.bottom()-22, body.w(), 22);
-        BoardRect action = new BoardRect(footer.right()-70, footer.y(), 70, 20);
-        BoardRect list = new BoardRect(body.x(), toolbar.bottom()+6, body.w(),
-                (footerVisible ? footer.y()-6 : body.bottom())-toolbar.bottom()-6);
-        int rh = compact ? 64 : 76;
+        BoardRect action = new BoardRect(footer.right()-70, footer.y(), 70, 22);
+        BoardRect list = new BoardRect(body.x(), toolbar.bottom()+8, body.w(),
+                (footerVisible ? footer.y()-8 : body.bottom())-toolbar.bottom()-8);
+        int rh = compact ? 68 : 82;
         return new DailyBoardLayout(compact, pad, gap, panel, rail, content, close,
                 summary, body, 8, title, subtitle, clock,
                 toolbar, list, footer, action, all, open, done, footerVisible, rh, rh+6,
-                compact ? 2 : 3, compact ? 64 : 84, 8, compact ? 30 : 36, 20, 6);
+                compact ? 2 : 3, compact ? 64 : 84, 8, compact ? 30 : 36, 22, 6);
     }
 
+    boolean sidebar() { return rail.h() == panel.h(); }
+
     BoardRect tab(int index) {
-        int w = Math.min(94, (rail.w()-12)/3);
-        return new BoardRect(rail.x()+index*(w+6), rail.y(), w, 24);
+        if (sidebar()) return new BoardRect(rail.x()+8, rail.y()+62+index*38, rail.w()-16, 30);
+        int w = (rail.w()-12)/3;
+        return new BoardRect(rail.x()+6+index*(w+3), rail.y()+4, w-3, 24);
     }
 
     boolean tabFits() {
-        return tab(TABS-1).right() <= rail.right();
+        return tab(TABS-1).right() <= rail.right() && tab(TABS-1).bottom() <= rail.bottom();
     }
 
     BoardRect filter(int index) {
-        return switch (index) {
-            case 0 -> filterAll;
-            case 1 -> filterOpen;
-            default -> filterDone;
-        };
+        int w = (toolbar.w()-9)/4;
+        return new BoardRect(toolbar.x()+index*(w+3), toolbar.y(), w, toolbar.h());
     }
 
     /** 任务列表第 {@code index} 行的 y（已应用滚动偏移）。 */

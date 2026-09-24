@@ -8,6 +8,29 @@ import static org.junit.jupiter.api.Assertions.*;
 class SkinDefinitionTest {
 
     @Test
+    void legacyBuildersAndConstructorDefaultToWhiteRegardlessOfAccent() {
+        var old = SkinDefinition.builder("knife", "legacy", SkinQuality.RED.color()).build();
+        assertEquals(SkinQuality.WHITE, old.quality());
+        assertEquals(old, new SkinDefinition(old.type(), old.id(), old.color(), old.model(), old.lotteryPlacements()));
+    }
+
+    @Test
+    void providerChoosesQualityWithoutChangingPoolPlacementOrAccent() {
+        for (var quality : SkinQuality.values()) {
+            var skin = SkinDefinition.builder("knife", "quality_test", 0xFF34E29C)
+                    .quality(quality).addToPool("knife", 5).build();
+            assertEquals(quality, skin.quality());
+            assertEquals(0xFF34E29C, skin.color());
+            assertEquals(5, skin.lotteryPlacements().getFirst().qualityBand());
+            assertEquals(quality, SkinDefinition.builder("knife", "shorthand", quality).build().quality());
+            assertEquals(quality, SkinQuality.fromId(quality.id()));
+        }
+        assertEquals(SkinQuality.WHITE, SkinQuality.fromId("future_quality"));
+        assertEquals(SkinQuality.WHITE, SkinQuality.fromId(null));
+        assertThrows(NullPointerException.class, () -> SkinDefinition.builder("knife", "test", 0).quality(null));
+    }
+
+    @Test
     void builderNormalizesGunAndResolvesCustomModelVariants() {
         SkinDefinition definition = SkinDefinition.builder("GUN", " Crystal_One ", 0xFF33AAFF)
                 .model("example", "item/skins/revolver/crystal_one")

@@ -74,6 +74,20 @@ public final class LotteryCommands {
 
     private static LiteralArgumentBuilder<CommandSourceStack> buildRoot(String name) {
         return Commands.literal(name)
+                .then(Commands.literal("system_item")
+                        .requires(LotteryCommands::adminRequires)
+                        .then(Commands.argument("player", EntityArgument.player())
+                                .then(Commands.argument("id", net.minecraft.commands.arguments.ResourceLocationArgument.id())
+                                        .then(Commands.argument("amount", IntegerArgumentType.integer(1))
+                                                .executes(ctx -> {
+                                                    var player = EntityArgument.getPlayer(ctx, "player");
+                                                    var id = net.minecraft.commands.arguments.ResourceLocationArgument.getId(ctx, "id");
+                                                    var result = com.habitrain.lottery.api.player.HabiSystemItemApi.grant(
+                                                            player.getUUID(), id, IntegerArgumentType.getInteger(ctx, "amount"));
+                                                    if (!result.ok()) { ctx.getSource().sendFailure(Component.literal(result.message())); return 0; }
+                                                    ctx.getSource().sendSuccess(() -> Component.literal("系统道具已存入账户：" + id + " × " + result.newValue()), true);
+                                                    return 1;
+                                                })))))
                 .then(Commands.literal("open")
                         .executes(ctx -> {
                             ServerPlayer player = ctx.getSource().getPlayerOrException();
