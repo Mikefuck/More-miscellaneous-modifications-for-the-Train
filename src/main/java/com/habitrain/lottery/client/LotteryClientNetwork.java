@@ -4,10 +4,15 @@ import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.client.gui.MailComposeScreen;
 import com.habitrain.lottery.client.gui.MailboxScreen;
+import com.habitrain.lottery.client.gui.DailyTaskScreen;
+import com.habitrain.lottery.daily.DailyTaskSnapshot;
 import com.habitrain.lottery.config.LotteryConfigService;
 import com.habitrain.lottery.config.PoolConfigModels;
 import com.habitrain.lottery.config.ThemeConfig;
 import com.habitrain.lottery.network.CardUseMenuS2C;
+import com.habitrain.lottery.network.DailyTaskBoardS2C;
+import com.habitrain.lottery.network.DailyTaskClaimC2S;
+import com.habitrain.lottery.network.DailyTaskRequestC2S;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.network.MailboxClaimC2S;
 import com.habitrain.lottery.network.MailboxListS2C;
@@ -95,6 +100,21 @@ public final class LotteryClientNetwork {
     }
 
     private static void registerCommonReceivers() {
+        ClientPlayNetworking.registerGlobalReceiver(DailyTaskBoardS2C.TYPE, (payload, context) ->
+                context.client().execute(() -> {
+                    try {
+                        DailyTaskSnapshot board = GSON.fromJson(payload.json(), DailyTaskSnapshot.class);
+                        if (board == null) return;
+                        Minecraft mc = context.client();
+                        if (mc.screen instanceof DailyTaskScreen screen) {
+                            screen.applySnapshot(board);
+                        } else if (payload.open()) {
+                            mc.setScreen(new DailyTaskScreen(mc.screen, board));
+                        }
+                    } catch (RuntimeException error) {
+                        HabiLotteryMod.LOGGER.warn("Failed applying daily task board", error);
+                    }
+                }));
         ClientPlayNetworking.registerGlobalReceiver(com.habitrain.lottery.network.OpenCoinExchangeS2C.TYPE,
                 (payload, context) -> context.client().execute(() -> {
                     Minecraft mc = context.client();
@@ -301,6 +321,18 @@ public final class LotteryClientNetwork {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    public static boolean clientRequestDailyTasks() {
+        if (!ClientPlayNetworking.canSend(DailyTaskRequestC2S.TYPE)) return false;
+        ClientPlayNetworking.send(DailyTaskRequestC2S.INSTANCE);
+        return true;
+    }
+
+    public static boolean clientClaimDailyTask(String taskId) {
+        if (taskId == null || !ClientPlayNetworking.canSend(DailyTaskClaimC2S.TYPE)) return false;
+        ClientPlayNetworking.send(new DailyTaskClaimC2S(taskId));
+        return true;
     }
 
     public static boolean clientRequestSnapshot() {

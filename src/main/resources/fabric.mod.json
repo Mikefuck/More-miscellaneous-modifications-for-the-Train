@@ -16,6 +16,7 @@
     "provides": [
         "habitrain_lottery_skin_api",
         "habitrain_lottery_player_api",
+        "habitrain_lottery_daily_api",
         "habitrain_lottery_skin_effects"
     ],
     "entrypoints": {
@@ -59,6 +60,10 @@
         "habitrain_lottery:player_api": {
             "version": 1,
             "facade": "com.habitrain.lottery.api.player.HabiLotteryApi"
+        },
+        "habitrain_lottery:daily_api": {
+            "version": 1,
+            "facade": "com.habitrain.lottery.api.daily.HabiDailyTaskApi"
         }
     }
 }

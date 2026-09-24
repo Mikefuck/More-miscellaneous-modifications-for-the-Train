@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "habitrain_lottery:block/daily_task_board_side",
+    "north": "habitrain_lottery:block/daily_task_board_front",
+    "south": "habitrain_lottery:block/daily_task_board_front",
+    "east": "habitrain_lottery:block/daily_task_board_side",
+    "west": "habitrain_lottery:block/daily_task_board_side",
+    "up": "habitrain_lottery:block/daily_task_board_top",
+    "down": "habitrain_lottery:block/daily_task_board_side"
+  }
+}

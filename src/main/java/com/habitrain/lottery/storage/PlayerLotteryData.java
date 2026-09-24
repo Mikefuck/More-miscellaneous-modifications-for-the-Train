@@ -61,6 +61,12 @@ public final class PlayerLotteryData {
     public int selfSelectUsesToday;
     /** UTC day of the last automatic login card grant. */
     public long lastFactionCardGrantEpochDay = -1L;
+    /** Daily-task progress is reset lazily on the next UTC day. */
+    public long dailyTaskEpochDay = -1L;
+    public Map<String, Integer> dailyTaskProgress = new HashMap<>();
+    public Set<String> dailyTaskClaims = new HashSet<>();
+    /** Persisted before an external reward callback; retryable after a crash. */
+    public Set<String> dailyTaskPending = new HashSet<>();
 
     public PlayerLotteryData copy() {
         PlayerLotteryData c = new PlayerLotteryData();
@@ -85,6 +91,10 @@ public final class PlayerLotteryData {
         c.lastSelfSelectUseEpochDay = lastSelfSelectUseEpochDay;
         c.selfSelectUsesToday = selfSelectUsesToday;
         c.lastFactionCardGrantEpochDay = lastFactionCardGrantEpochDay;
+        c.dailyTaskEpochDay = dailyTaskEpochDay;
+        if (dailyTaskProgress != null) c.dailyTaskProgress.putAll(dailyTaskProgress);
+        if (dailyTaskClaims != null) c.dailyTaskClaims.addAll(dailyTaskClaims);
+        if (dailyTaskPending != null) c.dailyTaskPending.addAll(dailyTaskPending);
         return c;
     }
 

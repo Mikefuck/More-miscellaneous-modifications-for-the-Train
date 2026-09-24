@@ -56,6 +56,9 @@ public final class LotteryNetwork {
     }
 
     public static void registerPayloadTypes() {
+        PayloadTypeRegistry.playS2C().register(DailyTaskBoardS2C.TYPE, DailyTaskBoardS2C.CODEC);
+        PayloadTypeRegistry.playC2S().register(DailyTaskRequestC2S.TYPE, DailyTaskRequestC2S.CODEC);
+        PayloadTypeRegistry.playC2S().register(DailyTaskClaimC2S.TYPE, DailyTaskClaimC2S.CODEC);
         PayloadTypeRegistry.playS2C().register(OpenCoinExchangeS2C.TYPE, OpenCoinExchangeS2C.CODEC);
         PayloadTypeRegistry.playC2S().register(ConfigSaveC2S.TYPE, ConfigSaveC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(ConfigReloadC2S.TYPE, ConfigReloadC2S.CODEC);
@@ -89,6 +92,25 @@ public final class LotteryNetwork {
 
     public static void registerServer() {
         registerPayloadTypes();
+
+        ServerPlayNetworking.registerGlobalReceiver(DailyTaskRequestC2S.TYPE, (payload, context) ->
+                context.server().execute(() -> {
+                    ServerPlayer player = context.player();
+                    if (player != null && !rateLimited(player, "daily_task_request", 350))
+                        sendDailyTaskSnapshot(player, false);
+                }));
+        ServerPlayNetworking.registerGlobalReceiver(DailyTaskClaimC2S.TYPE, (payload, context) ->
+                context.server().execute(() -> {
+                    ServerPlayer player = context.player();
+                    if (player == null || rateLimited(player, "daily_task_claim", 350)) return;
+                    ResourceLocation id = ResourceLocation.tryParse(payload.taskId());
+                    if (id != null && com.habitrain.lottery.api.daily.HabiDailyTaskApi.claim(player, id)) {
+                        player.sendSystemMessage(Component.literal("§a[每日任务] 奖励已领取"));
+                    } else {
+                        player.sendSystemMessage(Component.literal("§c[每日任务] 暂时无法领取，请刷新任务状态"));
+                        sendDailyTaskSnapshot(player, false);
+                    }
+                }));
 
         ServerPlayNetworking.registerGlobalReceiver(ConfigSaveC2S.TYPE, (payload, context) -> {
             context.server().execute(() -> {
@@ -375,6 +397,18 @@ public final class LotteryNetwork {
     public static void sendOpenMailbox(ServerPlayer player) {
         sendIfSupported(player, OpenMailboxS2C.INSTANCE);
         sendMailboxList(player);
+    }
+
+    /** Public server-side opener for the board block and other mods. */
+    public static void sendDailyTaskSnapshot(ServerPlayer player, boolean open) {
+        if (player == null || !WorldLotteryPaths.ready()
+                || PlayerLotteryStore.get().isLoadFailed(player.getUUID())) return;
+        try {
+            String json = GSON.toJson(com.habitrain.lottery.daily.DailyTaskBoardService.snapshot(player));
+            sendIfSupported(player, new DailyTaskBoardS2C(json, open));
+        } catch (RuntimeException error) {
+            HabiLotteryMod.LOGGER.warn("Daily task snapshot failed for {}", player.getUUID(), error);
+        }
     }
 
     public static void sendMailboxList(ServerPlayer player) {
