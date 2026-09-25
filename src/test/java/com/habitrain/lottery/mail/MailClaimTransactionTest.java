@@ -19,10 +19,10 @@ class MailClaimTransactionTest {
                 () -> { throw new IllegalStateException("mixed attachment write failed"); },
                 () -> MailClaimTransaction.restoreAll(
                         () -> { throw new IllegalStateException("self-select storage failed"); },
-                        () -> restored.add("coins and draws"),
+                        () -> restored.add("green apples"),
                         () -> restored.add("faction cards")),
                 () -> { locked[0] = false; return true; });
-        assertEquals(List.of("coins and draws", "faction cards"), restored);
+        assertEquals(List.of("green apples", "faction cards"), restored);
         assertTrue(locked[0]);
         assertEquals(MailClaimTransaction.Result.RECOVERY_REQUIRED, result);
     }
@@ -32,9 +32,9 @@ class MailClaimTransactionTest {
         var result = MailClaimTransaction.run(() -> true,
                 () -> { throw new IllegalStateException("write failed"); },
                 () -> MailClaimTransaction.restoreAll(
-                        () -> order.add("self"), () -> order.add("economy"), () -> order.add("faction")),
+                        () -> order.add("self"), () -> order.add("green apples"), () -> order.add("faction")),
                 () -> { order.add("reopen"); return true; });
-        assertEquals(List.of("self", "economy", "faction", "reopen"), order);
+        assertEquals(List.of("self", "green apples", "faction", "reopen"), order);
         assertEquals(MailClaimTransaction.Result.ROLLED_BACK, result);
     }
 

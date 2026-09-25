@@ -55,7 +55,7 @@ class HabiAssetTypesTest {
         java.util.Map<String, String> equipped = new java.util.LinkedHashMap<>();
         equipped.put("knife", "a");
         HabiPlayerAssets assets = new HabiPlayerAssets(java.util.UUID.randomUUID(), "n", false,
-                10, 2, cards, 1, 0, skins, equipped, List.of("t"), "t", 3, 20000L);
+                10, cards, 1, 0, skins, equipped, List.of("t"), "t", 3, 20000L);
 
         cards.put("killer", 99);
         skins.get("knife").clear();

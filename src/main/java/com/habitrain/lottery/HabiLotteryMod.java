@@ -1,14 +1,13 @@
 package com.habitrain.lottery;
 
 import com.habitrain.lottery.block.ModBlocks;
-import com.habitrain.lottery.bridge.LotteryManagerBridge;
 import com.habitrain.lottery.bridge.SkinStateCoordinator;
 import com.habitrain.lottery.command.LotteryCommands;
-import com.habitrain.lottery.config.LotteryConfigService;
+import com.habitrain.lottery.crate.CrateService;
+import com.habitrain.lottery.config.LegacyConfigRetirement;
+import com.habitrain.lottery.daily.DailyLoginRewardTask;
 import com.habitrain.lottery.grant.CardForceGuaranteeHook;
-import com.habitrain.lottery.grant.GrantEventHooks;
 import com.habitrain.lottery.grant.LoginRewardService;
-import com.habitrain.lottery.grant.LotteryGrantService;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.skin.SkinContentBootstrap;
 import com.habitrain.lottery.backpack.ActiveCardForces;
@@ -44,10 +43,15 @@ public final class HabiLotteryMod implements ModInitializer {
         LOGGER.info("Initializing 哈比列车抽奖补齐");
 
         ModBlocks.register();
+        CrateService.register();
+        // 内置的「每日登录」任务：登录即达标，玩家在每日任务终端领取 160 绿苹果。
+        // 它取代了旧的每日自动 4 张阵营卡与自动签到绿苹果（见 DailyLoginRewardTask）。
+        DailyLoginRewardTask.register();
         SkinContentBootstrap.registerAll();
         com.habitrain.lottery.skin.SkinComponents.register();
         com.habitrain.lottery.skin.SkinNetwork.register();
         LotteryNetwork.registerServer();
+        com.habitrain.lottery.network.CrateNetwork.register();
         SkinStateCoordinator.registerLifecycle();
         // Skin effects API v1: thrown-projectile skin inheritance, impact dispatch and the
         // delayed-action queue behind SkinImpactContext#schedule.
@@ -63,20 +67,17 @@ public final class HabiLotteryMod implements ModInitializer {
                 } catch (Exception e) {
                     LOGGER.warn("Failed creating meta feature dirs: {}", e.toString());
                 }
-                LotteryConfigService.get().loadOrSeed(s);
-                if (LotteryConfigService.get().isLoadFailed()) {
-                    LOGGER.error("Lottery world config failed to load; refusing pool apply and saveAll until fixed");
-                    abortEconomyTakeover();
+                if (!LegacyConfigRetirement.retire()) {
+                    LOGGER.error("Obsolete lottery configs could not be retired; refusing player store startup");
+                    abortPlayerStoreStartup();
                     return;
                 }
-                if (!LotteryManagerBridge.applyWorldPools(s)) {
-                    LOGGER.error("Failed applying in-memory lottery pools to SRE shadow file");
-                }
                 PlayerLotteryStore.get().onServerStarted(s);
-                LOGGER.info("World lottery root: {}", WorldLotteryPaths.root());
+                CrateService.onServerStarted();
+                LOGGER.info("World player-data root: {}", WorldLotteryPaths.root());
             } catch (Throwable e) {
-                LOGGER.error("Lottery SERVER_STARTED init failed; refusing economy takeover", e);
-                abortEconomyTakeover();
+                LOGGER.error("Player store SERVER_STARTED init failed; refusing player store startup", e);
+                abortPlayerStoreStartup();
             }
         });
 
@@ -97,6 +98,7 @@ public final class HabiLotteryMod implements ModInitializer {
                     LOGGER.error("Unfinished self-select refunds at shutdown: {}", SelfSelectForces.snapshot());
                 }
                 runQuietly("PlayerLotteryStore.onServerStopping", () -> PlayerLotteryStore.get().onServerStopping());
+                runQuietly("CrateService.onServerStopping", CrateService::onServerStopping);
                 if (!runQuietly("LocalTitleStore.flushAll", () -> LocalTitleStore.get().flushAll())) {
                     LOGGER.error("Title flushAll reported failures during server stopping");
                 }
@@ -104,9 +106,6 @@ public final class HabiLotteryMod implements ModInitializer {
                 // BooleanSupplier 两个重载，void 方法的引用会变得含糊（编译期歧义）。
                 runQuietly("LocalMatchRecordStore.shutdownAndAwait",
                         () -> LocalMatchRecordStore.shutdownAndAwait());
-                if (!runQuietly("LotteryConfigService.saveAll", () -> LotteryConfigService.get().saveAll(s))) {
-                    LOGGER.error("Lottery config saveAll reported failure during server stopping");
-                }
             } catch (Throwable t) {
                 LOGGER.error("Lottery SERVER_STOPPING cleanup failed (other mods' stop listeners are unaffected)", t);
             } finally {
@@ -126,6 +125,8 @@ public final class HabiLotteryMod implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, s) -> {
             PlayerLotteryStore.get().onPlayerJoin(handler.player);
             LoginRewardService.onPlayerJoin(handler.player);
+            // 登录即完成当日「每日登录」任务，奖励仍需玩家在面板上手动领取。
+            DailyLoginRewardTask.onLogin(handler.player);
             TitleService.onPlayerJoin(handler.player);
             UUID id = handler.player.getUUID();
             s.execute(() -> {
@@ -156,10 +157,8 @@ public final class HabiLotteryMod implements ModInitializer {
         ServerTickEvents.END_SERVER_TICK.register(HabiLotteryMod::retryPendingFlush);
 
         CommandRegistrationCallback.EVENT.register(LotteryCommands::register);
-        GrantEventHooks.register();
         com.habitrain.lottery.grant.SelfSelectRoleHook.register();
         CardForceGuaranteeHook.register();
-        LotteryGrantService.init();
     }
 
     public static MinecraftServer getServer() {
@@ -219,7 +218,7 @@ public final class HabiLotteryMod implements ModInitializer {
     }
 
     /** Clears takeover and world paths so JOIN / MySQL mixins cannot run half-initialized. */
-    private static void abortEconomyTakeover() {
+    private static void abortPlayerStoreStartup() {
         PlayerLotteryStore.get().reset();
         WorldLotteryPaths.reset();
     }

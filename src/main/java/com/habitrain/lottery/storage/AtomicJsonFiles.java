@@ -138,10 +138,15 @@ public final class AtomicJsonFiles {
             }
             return JsonLoad.corrupt(quarantined);
         }
+        boolean backupExists = Files.exists(bak);
         T fromBak = tryParse(bak, type, gson);
         if (fromBak != null) {
             LOGGER.warn("Primary {} missing; restored from .bak", target);
             return JsonLoad.fromBackup(fromBak, null);
+        }
+        if (backupExists) {
+            LOGGER.error("Primary {} missing and .bak is unreadable; refusing a fresh replacement", target);
+            return JsonLoad.corrupt(null);
         }
         return JsonLoad.missing();
     }

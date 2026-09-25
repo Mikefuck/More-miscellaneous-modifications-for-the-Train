@@ -49,8 +49,7 @@ public final class WarehouseSmoke implements ClientModInitializer {
                     mc.resizeDisplay();
                     screen = new WarehouseScreen(mc.screen); mc.setScreen(screen);
                     List<WarehouseEntry> rows = new ArrayList<>();
-                    rows.add(new WarehouseEntry("currency","coins", "金币", "通过系统奖励与对局结算获得，可兑换抽奖次数。", "minecraft:gold_ingot", 2680, 0xFFCABB85, false));
-                    rows.add(new WarehouseEntry("currency","draws", "抽奖次数", "账户剩余抽奖次数。", "minecraft:paper", 16, 0xFF85B4C8, false));
+                    rows.add(new WarehouseEntry("currency","green_apples", "绿苹果", "通过每日登录奖励、邮件、管理员和玩家 API 获得。", "habitrain_lottery:textures/gui/green_apple.png", 2680, 0xFF78B85A, false));
                     var balances = new LinkedHashMap<String,Integer>();
                     String[] ids={"civilian","neutral","neutral_for_killer","killer","self_select","limit_break"};
                     for (int i=0;i<ids.length;i++) {

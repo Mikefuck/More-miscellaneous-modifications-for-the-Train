@@ -14,7 +14,6 @@ public final class WorldLotteryPaths {
     private static Path root;
     private static Path configDir;
     private static Path playersDir;
-    private static Path historyDir;
 
     private WorldLotteryPaths() {
     }
@@ -46,7 +45,6 @@ public final class WorldLotteryPaths {
         root = null;
         configDir = null;
         playersDir = null;
-        historyDir = null;
     }
 
     /** Alias for {@link #clear()} used by shutdown. */
@@ -57,18 +55,15 @@ public final class WorldLotteryPaths {
     private static void applyRoot(Path lotteryRoot) {
         Path nextConfig = lotteryRoot.resolve("config");
         Path nextPlayers = lotteryRoot.resolve("players");
-        Path nextHistory = lotteryRoot.resolve("history");
         try {
             Files.createDirectories(nextConfig);
             Files.createDirectories(nextPlayers);
-            Files.createDirectories(nextHistory);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot create habitrain_lottery world dirs", e);
         }
         root = lotteryRoot;
         configDir = nextConfig;
         playersDir = nextPlayers;
-        historyDir = nextHistory;
     }
 
     public static Path root() {
@@ -83,18 +78,9 @@ public final class WorldLotteryPaths {
         return playersDir;
     }
 
-    public static Path historyDir() {
-        return historyDir;
-    }
-
     public static Path playerFile(UUID uuid) {
         Path dir = playersDir;
         return dir == null ? null : dir.resolve(uuid.toString() + ".json");
-    }
-
-    public static Path historyFile(UUID uuid) {
-        Path dir = historyDir;
-        return dir == null ? null : dir.resolve(uuid.toString() + ".jsonl");
     }
 
     public static Path configFile(String name) {

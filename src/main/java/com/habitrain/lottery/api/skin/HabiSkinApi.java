@@ -11,7 +11,7 @@ import java.util.Optional;
 
 /** Public API for registering skins supplied by other Fabric mods. */
 public final class HabiSkinApi {
-    public static final int API_VERSION = 2;
+    public static final int API_VERSION = 3;
     public static final String ENTRYPOINT = "habitrain_lottery_skins";
 
     private static final Map<String, SkinDefinition> DEFINITIONS = new LinkedHashMap<>();
@@ -96,7 +96,7 @@ public final class HabiSkinApi {
      */
     public static synchronized boolean unregister(String type, String id) {
         try {
-            String normalizedType = SkinDefinition.normalizeType(type, false);
+            String normalizedType = SkinDefinition.normalizeType(type);
             String normalizedId = SkinDefinition.normalizeSkinId(id);
             if (normalizedId == null) {
                 return false;
@@ -130,7 +130,7 @@ public final class HabiSkinApi {
     /** The entrypoint provider that contributed {@code type/id}, if any. */
     public static synchronized java.util.Optional<String> providerOf(String type, String id) {
         try {
-            String normalizedType = SkinDefinition.normalizeType(type, false);
+            String normalizedType = SkinDefinition.normalizeType(type);
             String normalizedId = SkinDefinition.normalizeSkinId(id);
             if (normalizedId == null) {
                 return java.util.Optional.empty();
@@ -143,7 +143,7 @@ public final class HabiSkinApi {
 
     public static synchronized Optional<SkinDefinition> find(String type, String id) {
         try {
-            String normalizedType = SkinDefinition.normalizeType(type, false);
+            String normalizedType = SkinDefinition.normalizeType(type);
             String normalizedId = SkinDefinition.normalizeSkinId(id);
             if (normalizedId == null) {
                 return Optional.empty();

@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class SystemItemStorageTest {
     @TempDir Path temp;
     @Test void rewardsSurviveReloadAndCopiesDoNotMutateBalances() throws Exception {
-        var data = new PlayerLotteryData(); data.coinNum = 83;
+        var data = new PlayerLotteryData(); data.greenApples = 83;
         assertTrue(SystemItemBalances.change(data.systemItems, "events:ticket", 7));
         var copy = data.copy();
         assertTrue(SystemItemBalances.change(copy.systemItems, "events:ticket", -2));
@@ -22,16 +22,26 @@ class SystemItemStorageTest {
         Files.writeString(file, new Gson().toJson(copy), StandardCharsets.UTF_8);
         var loaded = PlayerLotteryStore.loadFromDiskForTest(file);
         assertTrue(loaded.ok()); assertEquals(5, loaded.data.systemItems.get("events:ticket"));
-        assertEquals(83, loaded.data.coinNum);
+        assertEquals(83, loaded.data.greenApples);
     }
     @Test void oldAccountsAndExplicitNullHaveAnEmptySystemInventory() throws Exception {
-        for (String json : new String[]{"{\"coinNum\":9}", "{\"coinNum\":9,\"systemItems\":null}"}) {
+        for (String json : new String[]{"{\"greenApples\":9}", "{\"greenApples\":9,\"systemItems\":null}"}) {
             Path file = temp.resolve("old.json");
             Files.writeString(file, json, StandardCharsets.UTF_8);
             var loaded = PlayerLotteryStore.loadFromDiskForTest(file);
-            assertTrue(loaded.data.systemItems.isEmpty()); assertEquals(9, loaded.data.coinNum);
+            assertTrue(loaded.data.systemItems.isEmpty()); assertEquals(9, loaded.data.greenApples);
         }
     }
+
+    @Test void retiredBalancesAreNotConvertedToGreenApples() throws Exception {
+        Path file = temp.resolve("legacy.json");
+        Files.writeString(file, "{\"lootChance\":9,\"coinNum\":42}", StandardCharsets.UTF_8);
+
+        var loaded = PlayerLotteryStore.loadFromDiskForTest(file);
+        assertTrue(loaded.ok());
+        assertEquals(0, loaded.data.greenApples);
+    }
+
     @Test void insufficientBalanceOverflowAndNewTypeLimitLeaveTheAccountUntouched() {
         var items = new HashMap<String,Integer>(); items.put("test:full", Integer.MAX_VALUE);
         assertFalse(SystemItemBalances.change(items, "test:full", 1));

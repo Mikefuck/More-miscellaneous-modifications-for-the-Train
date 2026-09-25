@@ -10,7 +10,7 @@ public enum HabiFailure {
     /** No failure. */
     NONE(""),
     /** The world lottery root is not initialised yet (server not finished starting, or the world is unloading). */
-    NOT_READY("抽奖存档尚未就绪（服务器未完成启动或世界正在卸载）"),
+    NOT_READY("玩家存档尚未就绪（服务器未完成启动或世界正在卸载）"),
     /** The mutation operation was null or unknown. */
     INVALID_OPERATION("未知操作（仅支持 ADD / SET）"),
     /** The supplied value is outside the allowed range for this asset. */

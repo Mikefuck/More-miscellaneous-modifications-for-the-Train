@@ -45,7 +45,7 @@ public final class SkinItems {
     }
 
     public static synchronized void bindItem(ResourceLocation item, String type) {
-        String canonical = SkinDefinition.normalizeType(type, false);
+        String canonical = SkinDefinition.normalizeType(type);
         String previous = BINDINGS.putIfAbsent(java.util.Objects.requireNonNull(item), canonical);
         if (previous != null && !previous.equals(canonical)) throw new IllegalStateException("Conflicting skin item: " + item);
     }
@@ -94,7 +94,7 @@ public final class SkinItems {
      * supplied purely through a data pack.</p>
      */
     public static Item defaultItem(String type) {
-        String canonical = SkinDefinition.normalizeType(type, false);
+        String canonical = SkinDefinition.normalizeType(type);
         Item bound = firstBoundItem(canonical);
         if (bound != null) return bound;
         TagKey<Item> tag = TYPE_TAGS.get(canonical);

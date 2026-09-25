@@ -73,11 +73,12 @@ class GrantKeysTest {
     }
 
     @Test
-    void loginKeysAreNotStoredInRecentGrants() {
+    void loginKeysAreDeduplicatedLikeOtherPublicGrantReasons() {
         UUID id = UUID.randomUUID();
         PlayerLotteryStore store = PlayerLotteryStore.get();
         assertTrue(store.tryConsumeGrantKey(id, "login:20000"));
-        assertFalse(store.getOrLoad(id).recentGrants.contains("login:20000"));
-        assertFalse(store.isDirty(id));
+        assertTrue(store.getOrLoad(id).recentGrants.contains("login:20000"));
+        assertFalse(store.tryConsumeGrantKey(id, "login:20000"));
+        assertTrue(store.isDirty(id));
     }
 }

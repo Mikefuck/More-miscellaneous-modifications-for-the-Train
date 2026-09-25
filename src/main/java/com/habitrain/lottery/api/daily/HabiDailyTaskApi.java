@@ -13,11 +13,13 @@ import java.util.Map;
 import java.util.Collections;
 
 /**
- * Server-side extension point for the daily-task board. No built-in tasks are registered.
- * Register definitions during mod initialization, then call {@link #advance} on the server
- * thread when a player makes progress. Progress and claims are saved in the same world
- * player file and reset at 00:00 UTC. A claim action must be durable and idempotent for
- * its player/task/day key; the board persists a retryable pending marker before calling it.
+ * Server-side extension point for the daily-task board. The lottery mod itself registers one
+ * built-in task ({@code habitrain_lottery:daily_login}, the claimable daily login reward);
+ * extensions may register their own definitions during mod initialization, then call
+ * {@link #advance} on the server thread when a player makes progress. Progress and claims are
+ * saved in the same world player file and reset at 00:00 UTC. A claim action must be durable and
+ * idempotent for its player/task/day key; the board persists a retryable pending marker before
+ * calling it.
  */
 public final class HabiDailyTaskApi {
     public static final int API_VERSION = 1;

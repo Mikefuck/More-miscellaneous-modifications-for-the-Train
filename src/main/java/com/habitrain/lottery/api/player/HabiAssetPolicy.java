@@ -9,7 +9,7 @@ import com.habitrain.lottery.backpack.PlayerCardMutationPolicy;
  * external mod cannot bypass the bounds the admin screen enforces.</p>
  */
 public final class HabiAssetPolicy {
-    /** Largest coin / draw balance the API will persist. */
+    /** Largest green-apple balance the API will persist. */
     public static final int MAX_CURRENCY = Integer.MAX_VALUE;
     /** Largest allowed absolute card balance. */
     public static final int MAX_CARD_COUNT = PlayerCardMutationPolicy.MAX_COUNT;

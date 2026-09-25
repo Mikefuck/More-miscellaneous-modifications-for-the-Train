@@ -1,6 +1,0 @@
-{
-  "parent": "minecraft:block/cube_all",
-  "textures": {
-    "all": "habitrain_lottery:block/gacha_terminal"
-  }
-}

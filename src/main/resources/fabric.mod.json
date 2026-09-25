@@ -3,7 +3,7 @@
     "id": "habitrain_lottery",
     "version": "${version}",
     "name": "哈比列车抽奖补齐",
-    "description": "独立物品皮肤组件、抽奖、邮件、玩家资产与对局功能补齐；皮肤由扩展模组提供。",
+    "description": "独立物品皮肤组件、邮件、玩家资产、角色卡与每日任务；皮肤由扩展模组提供。",
     "authors": [
         "HabiTrain"
     ],
@@ -50,7 +50,7 @@
     },
     "custom": {
         "habitrain_lottery:skin_api": {
-            "version": 2,
+            "version": 3,
             "entrypoint": "habitrain_lottery_skins"
         },
         "habitrain_lottery:skin_effects": {
@@ -58,7 +58,7 @@
             "facade": "com.habitrain.lottery.api.skin.SkinEffects"
         },
         "habitrain_lottery:player_api": {
-            "version": 1,
+            "version": 2,
             "facade": "com.habitrain.lottery.api.player.HabiLotteryApi"
         },
         "habitrain_lottery:daily_api": {

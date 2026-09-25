@@ -28,8 +28,7 @@ public final class MailCommandsCodec {
             }
             switch (r.kind()) {
                 case SKIN -> out.add(PREFIX + "SKIN:" + MailReward.skinEntry(r.factionType()).factionType());
-                case DRAWS -> out.add(PREFIX + "DRAWS:" + r.amount());
-                case COINS -> out.add(PREFIX + "COINS:" + r.amount());
+                case GREEN_APPLES -> out.add(PREFIX + "GREEN_APPLES:" + r.amount());
                 case FACTION_CARD -> {
                     String key = r.factionType() == null ? "" : r.factionType().toLowerCase(Locale.ROOT);
                     if (!key.isBlank()) {
@@ -38,6 +37,8 @@ public final class MailCommandsCodec {
                 }
                 case SELF_SELECT_CARD -> out.add(PREFIX + "SELF_SELECT_CARD:" + r.amount());
                 case LIMIT_BREAK_CARD -> out.add(PREFIX + "LIMIT_BREAK_CARD:" + r.amount());
+                case CRATE -> out.add(PREFIX + "CRATE:" + r.factionType() + ":" + r.amount());
+                case KEY -> out.add(PREFIX + "KEY:" + r.factionType() + ":" + r.amount());
             }
         }
         return out;
@@ -60,8 +61,7 @@ public final class MailCommandsCodec {
             try {
                 switch (parts[0].toUpperCase(Locale.ROOT)) {
                     case "SKIN" -> out.add(MailReward.skinEntry(parts[1]));
-                    case "DRAWS" -> out.add(MailReward.draws(Integer.parseInt(parts[1])));
-                    case "COINS" -> out.add(MailReward.coins(Integer.parseInt(parts[1])));
+                    case "GREEN_APPLES" -> out.add(MailReward.greenApples(Integer.parseInt(parts[1])));
                     case "FACTION_CARD" -> {
                         if (parts.length >= 3) {
                             out.add(MailReward.factionCard(parts[1], Integer.parseInt(parts[2])));
@@ -69,6 +69,12 @@ public final class MailCommandsCodec {
                     }
                     case "SELF_SELECT_CARD" -> out.add(MailReward.selfSelectCard(Integer.parseInt(parts[1])));
                     case "LIMIT_BREAK_CARD" -> out.add(MailReward.limitBreakCard(Integer.parseInt(parts[1])));
+                    case "CRATE" -> {
+                        if (parts.length >= 3) out.add(MailReward.crateEntry(parts[1], Integer.parseInt(parts[2])));
+                    }
+                    case "KEY" -> {
+                        if (parts.length >= 3) out.add(MailReward.keyEntry(parts[1], Integer.parseInt(parts[2])));
+                    }
                     default -> {
                     }
                 }

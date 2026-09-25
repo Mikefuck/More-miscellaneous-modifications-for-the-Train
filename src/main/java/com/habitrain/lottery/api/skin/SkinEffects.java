@@ -397,7 +397,7 @@ public final class SkinEffects {
     }
 
     private static String key(String type, String id) {
-        String canonicalType = SkinDefinition.normalizeType(type, false);
+        String canonicalType = SkinDefinition.normalizeType(type);
         String canonicalId = SkinDefinition.normalizeSkinId(id);
         if (canonicalId == null) {
             throw new IllegalArgumentException("Skin id must not be blank");

@@ -2,9 +2,6 @@ package com.habitrain.lottery.api.skin;
 
 import net.minecraft.resources.ResourceLocation;
 
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -16,7 +13,6 @@ public record SkinDefinition(
         String id,
         int color,
         ResourceLocation model,
-        List<LotteryPlacement> lotteryPlacements,
         SkinQuality quality) {
 
     public static final Set<String> SUPPORTED_TYPES = Set.of("knife", "revolver", "bat", "grenade", "hat");
@@ -27,20 +23,14 @@ public record SkinDefinition(
     private static final Pattern SKIN_ID = Pattern.compile("[a-z0-9_.-]+");
 
     public SkinDefinition {
-        type = normalizeType(type, false);
+        type = normalizeType(type);
         id = normalizeId(id);
         model = Objects.requireNonNull(model, "model");
         quality = Objects.requireNonNull(quality, "quality");
-        lotteryPlacements = lotteryPlacements == null
-                ? List.of()
-                : List.copyOf(new LinkedHashSet<>(lotteryPlacements));
-
     }
 
-    /** Binary/source compatibility for extensions compiled before quality metadata existed. */
-    public SkinDefinition(String type, String id, int color, ResourceLocation model,
-                          List<LotteryPlacement> lotteryPlacements) {
-        this(type, id, color, model, lotteryPlacements, SkinQuality.WHITE);
+    public SkinDefinition(String type, String id, int color, ResourceLocation model) {
+        this(type, id, color, model, SkinQuality.WHITE);
     }
 
     public static Builder builder(String type, String id, int color) {
@@ -51,12 +41,6 @@ public record SkinDefinition(
     public static Builder builder(String type, String id, SkinQuality quality) {
         Objects.requireNonNull(quality, "quality");
         return new Builder(type, id, quality.color()).quality(quality);
-    }
-
-    /** SRE's pool format uses {@code gun/} for the {@code revolver} skin type. */
-    public String lotteryEntry() {
-        String poolPrefix = "revolver".equals(type) ? "gun" : type;
-        return poolPrefix + "/" + id;
     }
 
     /**
@@ -95,7 +79,7 @@ public record SkinDefinition(
                 && ("item/skins/" + type + "/" + id).equals(model.getPath());
     }
 
-    static String normalizeType(String raw, boolean allowAll) {
+    static String normalizeType(String raw) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("Skin type must not be blank");
         }
@@ -107,7 +91,7 @@ public record SkinDefinition(
         if ("gun".equals(type)) {
             type = "revolver";
         }
-        if ((allowAll && "all".equals(type)) || SUPPORTED_TYPES.contains(type)) {
+        if (SUPPORTED_TYPES.contains(type)) {
             return type;
         }
         throw new IllegalArgumentException("Unsupported skin type: " + raw);
@@ -140,20 +124,10 @@ public record SkinDefinition(
             throw new IllegalArgumentException(
                     "Skin id must match [a-z0-9_.-]{1,48} and cannot contain a namespace or slash: " + raw);
         }
-        if ("default".equals(id) || "coin".equals(id)) {
+        if ("default".equals(id)) {
             throw new IllegalArgumentException("Reserved skin id: " + id);
         }
         return id;
-    }
-
-    /** Places a skin in one zero-based quality band of every matching pool type. */
-    public record LotteryPlacement(String poolType, int qualityBand) {
-        public LotteryPlacement {
-            poolType = normalizeType(poolType, true);
-            if (qualityBand < 0) {
-                throw new IllegalArgumentException("Lottery quality band must be >= 0");
-            }
-        }
     }
 
     public static final class Builder {
@@ -162,10 +136,9 @@ public record SkinDefinition(
         private final int color;
         private ResourceLocation model;
         private SkinQuality quality = SkinQuality.WHITE;
-        private final List<LotteryPlacement> placements = new ArrayList<>();
 
         private Builder(String type, String id, int color) {
-            this.type = normalizeType(type, false);
+            this.type = normalizeType(type);
             this.id = normalizeId(id);
             this.color = color;
             this.model = ResourceLocation.fromNamespaceAndPath(
@@ -191,27 +164,14 @@ public record SkinDefinition(
             return model(ResourceLocation.fromNamespaceAndPath(namespace, path));
         }
 
-        /** Sets display quality without changing the skin's accent color or lottery placement. */
+        /** Sets display quality without changing the skin's accent color. */
         public Builder quality(SkinQuality quality) {
             this.quality = Objects.requireNonNull(quality, "quality");
             return this;
         }
 
-        /** Adds the skin to band 0 of its matching type pools and all-random pools. */
-        public Builder includeInDefaultPools() {
-            placements.add(new LotteryPlacement(type, 0));
-            placements.add(new LotteryPlacement("all", 0));
-            return this;
-        }
-
-        /** Adds the skin to a specific band of every pool with the supplied pool type. */
-        public Builder addToPool(String poolType, int qualityBand) {
-            placements.add(new LotteryPlacement(poolType, qualityBand));
-            return this;
-        }
-
         public SkinDefinition build() {
-            return new SkinDefinition(type, id, color, model, placements, quality);
+            return new SkinDefinition(type, id, color, model, quality);
         }
     }
 }

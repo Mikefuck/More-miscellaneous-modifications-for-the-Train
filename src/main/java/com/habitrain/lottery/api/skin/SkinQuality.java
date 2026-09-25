@@ -1,6 +1,6 @@
 package com.habitrain.lottery.api.skin;
 
-/** Provider-declared skin quality. Independent of model tint and lottery pool bands. */
+/** Provider-declared skin quality, independent of model tint. */
 public enum SkinQuality {
     WHITE("white", 0xFFE1E5EB),
     BLUE("blue", 0xFF65AAFF),

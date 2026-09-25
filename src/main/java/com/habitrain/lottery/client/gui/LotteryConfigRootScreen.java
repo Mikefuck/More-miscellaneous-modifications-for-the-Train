@@ -1,14 +1,11 @@
 package com.habitrain.lottery.client.gui;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.habitrain.lottery.config.GrantsConfig;
-import com.habitrain.lottery.config.LotteryConfigService;
-import com.habitrain.lottery.config.PoolConfigModels;
-import com.habitrain.lottery.config.RatesConfig;
-import com.habitrain.lottery.config.ThemeConfig;
+import com.habitrain.lottery.client.CrateClientNetwork;
 import com.habitrain.lottery.client.LotteryClientNetwork;
 import com.habitrain.lottery.client.MenuAccessBridge;
 import com.habitrain.lottery.client.gui.config.ConfigConsoleLayout;
@@ -16,6 +13,7 @@ import com.habitrain.lottery.client.gui.config.ConfigSectionId;
 import com.habitrain.lottery.client.gui.config.PlayerAssetFilter;
 import com.habitrain.lottery.client.gui.config.PlayerAssetsViewState;
 import com.habitrain.lottery.client.gui.config.PlayerCardScrollLayout;
+import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.network.PlayerAdminModels;
 import com.habitrain.lottery.skin.SkinContentBootstrap;
@@ -36,27 +34,22 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * OP-gated config UI: visual editors, player chance admin, multiline JSON, server world backup.
+ * OP-gated operations console for player assets, titles, skins and mail.
  */
 public class LotteryConfigRootScreen extends Screen {
-    private static final String[] TABS = {
-            "奖池配置", "经济倍率", "奖励规则", "画面主题", "玩家资产",
-            "皮肤内容", "撰写邮件", "称号管理", "高级 JSON"
-    };
+    private static final String[] TABS = {"玩家资产", "称号管理", "皮肤内容", "开箱管理", "撰写邮件"};
     private static final ConfigSectionId[] SECTION_IDS = {
-            ConfigSectionId.POOLS, ConfigSectionId.RATES, ConfigSectionId.GRANTS,
-            ConfigSectionId.THEME, ConfigSectionId.PLAYERS, ConfigSectionId.SKINS,
-            ConfigSectionId.MAIL, ConfigSectionId.TITLES, ConfigSectionId.JSON
+            ConfigSectionId.PLAYERS, ConfigSectionId.TITLES, ConfigSectionId.SKINS,
+            ConfigSectionId.CRATES, ConfigSectionId.MAIL
     };
-    /** Visual order in the grouped navigation rail. */
-    private static final int[] NAV_ORDER = {0, 1, 2, 3, 4, 7, 5, 6, 8};
+    private static final int[] NAV_ORDER = {0, 1, 2, 3, 4};
     private static final int ROW_H = 22;
-    /** Tab indices after inserting 「称号」 before JSON. */
-    private static final int TAB_PLAYERS = 4;
-    private static final int TAB_SKINS = 5;
-    private static final int TAB_MAIL = 6;
-    private static final int TAB_TITLES = 7;
-    private static final int TAB_JSON = 8;
+    private static final int TAB_PLAYERS = 0;
+    private static final int TAB_TITLES = 1;
+    private static final int TAB_SKINS = 2;
+    private static final int TAB_CRATES = 3;
+    private static final int TAB_MAIL = 4;
+    private static final Gson GSON = new Gson();
 
     private final Screen parent;
     private int selectedTab;
@@ -64,43 +57,7 @@ public class LotteryConfigRootScreen extends Screen {
     private int[] tabX;
     private int[] tabY;
     private int[] tabW;
-    private Button applyButton;
     private Button saveButton;
-
-    private MultilineTextArea jsonArea;
-    private int jsonSection; // 0 all, 1 pools, 2 rates, 3 grants, 4 theme
-
-    // pools
-    private int selectedPoolIndex;
-    private int selectedBandIndex;
-    private EditBox poolNameBox;
-    private EditBox poolTypeBox;
-    private EditBox poolIdBox;
-    private EditBox poolCoverBox;
-    private EditBox bandProbBox;
-    private EditBox bandItemsBox;
-
-    // rates
-    private final ScrollablePanel ratesPanel = new ScrollablePanel();
-    private EditBox drawCostBox;
-    private EditBox dupCoinFlatBox;
-    private EditBox dupCoinBox;
-    private EditBox coinPerDrawBox;
-    private EditBox loginCapBox;
-    private EditBox blackoutMulBox;
-    private EditBox murderMulBox;
-    private EditBox repairMulBox;
-    private EditBox opLevelBox;
-
-    // grants
-    private int selectedGrantIndex;
-    private EditBox grantIdBox;
-    private EditBox grantAmountBox;
-    private EditBox grantModesBox;
-
-    // theme
-    private final ScrollablePanel themePanel = new ScrollablePanel();
-    private final List<EditBox> themeBgBoxes = new ArrayList<>();
 
     // players
     private int selectedPlayerIndex;
@@ -121,8 +78,10 @@ public class LotteryConfigRootScreen extends Screen {
     private final ScrollablePanel playerCardPanel = new ScrollablePanel();
     private PlayerCardScrollLayout playerCardScrollLayout;
     private int lastSeenPlayerListVersion = -1;
-    private int lastSeenConfigVersion = -1;
     private int lastSeenTitleVersion = -1;
+    private int lastSeenCrateConfigVersion = -1;
+    private int selectedCrateIndex;
+    private JsonObject crateConfig = new JsonObject();
 
     // titles (catalog + per-player owned)
     private TitleCatalog workingTitleCatalog = new TitleCatalog();
@@ -137,16 +96,11 @@ public class LotteryConfigRootScreen extends Screen {
     private String titlePlayerSearchQuery = "";
 
     // windowed side-lists (scroll survives rebuildTabContent)
-    private final ScrollableButtonList poolList = new ScrollableButtonList();
-    private final ScrollableButtonList bandList = new ScrollableButtonList();
-    private final ScrollableButtonList grantList = new ScrollableButtonList();
     private final ScrollableButtonList playerList = new ScrollableButtonList();
     private final ScrollableButtonList titleCatalogList = new ScrollableButtonList();
     private final ScrollableButtonList titlePlayerList = new ScrollableButtonList();
     private final ScrollableButtonList titleOwnedList = new ScrollableButtonList();
-
-    private Button poolMoveUpBtn;
-    private Button poolMoveDownBtn;
+    private final ScrollableButtonList crateList = new ScrollableButtonList();
 
     private final List<AbstractWidget> tabWidgets = new ArrayList<>();
 
@@ -166,21 +120,17 @@ public class LotteryConfigRootScreen extends Screen {
     protected void init() {
         super.init();
         layoutTabs();
-        LotteryConfigService.get().ensureClientDefaults();
         tabWidgets.clear();
-        themeBgBoxes.clear();
-        jsonArea = null;
 
         rebuildTabContent();
         buildFooter();
 
-        if (LotteryClientNetwork.clientRequestSnapshot()) {
-            status = LotteryNetwork.ClientLotteryState.op ? "已连接：OP 可保存/管理" : "已连接：非 OP 只读";
-            if (LotteryNetwork.ClientLotteryState.op) {
-                LotteryClientNetwork.clientRequestPlayerList();
-            }
+        if (LotteryClientNetwork.canSendPlay()) {
+            status = LotteryNetwork.ClientLotteryState.op ? "已连接：OP 可管理" : "已连接：非 OP 只读";
+            LotteryClientNetwork.clientRequestPlayerList();
+            LotteryClientNetwork.clientRequestTitleSnapshot();
         } else {
-            status = "离线浏览本地默认配置；进服后可同步/保存";
+            status = "离线浏览；进服后可同步玩家数据";
             LotteryNetwork.ClientLotteryState.op = false;
         }
     }
@@ -193,16 +143,6 @@ public class LotteryConfigRootScreen extends Screen {
             cardMutationPendingTicks = 0;
             status = Component.translatable("screen.habitrain_lottery.config.cards.timeout").getString();
             rebuildTabContent();
-        }
-        // Server snapshot arrived (save/reload/join) — rebuild editors from memory config.
-        if (LotteryNetwork.ClientLotteryState.configVersion != lastSeenConfigVersion) {
-            lastSeenConfigVersion = LotteryNetwork.ClientLotteryState.configVersion;
-            if (LotteryNetwork.ClientLotteryState.hasSnapshot) {
-                rebuildTabContent();
-                if (status == null || status.isBlank() || status.startsWith("已提交") || status.startsWith("已请求")) {
-                    status = "已同步服务器配置到界面";
-                }
-            }
         }
         // refresh player / titles tab when list arrives
         if ((selectedTab == TAB_PLAYERS || selectedTab == TAB_TITLES)
@@ -219,6 +159,15 @@ public class LotteryConfigRootScreen extends Screen {
             if (selectedTab == TAB_TITLES) {
                 rebuildTabContent();
             }
+        }
+        if (selectedTab == TAB_CRATES && CrateClientNetwork.STATE.configVersion != lastSeenCrateConfigVersion) {
+            lastSeenCrateConfigVersion = CrateClientNetwork.STATE.configVersion;
+            try {
+                crateConfig = JsonParser.parseString(CrateClientNetwork.STATE.configJson).getAsJsonObject();
+            } catch (RuntimeException ignored) {
+                crateConfig = new JsonObject();
+            }
+            rebuildTabContent();
         }
         // status comes from AdminActionResultS2C → lastAdminMessage
         if (LotteryNetwork.ClientLotteryState.lastAdminMessage != null
@@ -265,8 +214,7 @@ public class LotteryConfigRootScreen extends Screen {
     }
 
     private boolean pageHasSaveAction() {
-        return selectedTab == 0 || selectedTab == 1 || selectedTab == 2 || selectedTab == 3
-                || selectedTab == TAB_TITLES || selectedTab == TAB_JSON;
+        return selectedTab == TAB_TITLES;
     }
 
     private void buildFooter() {
@@ -274,27 +222,16 @@ public class LotteryConfigRootScreen extends Screen {
         int by = layout.footer().y() + Math.max(2, (layout.footer().height() - 20) / 2);
         int x = pageLeft();
         addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.refresh"), b -> {
-            if (LotteryClientNetwork.clientRequestSnapshot()) {
-                status = "已请求服务器快照";
-                if (LotteryNetwork.ClientLotteryState.op) {
-                    LotteryClientNetwork.clientRequestPlayerList();
-                }
+            if (LotteryClientNetwork.canSendPlay()) {
+                LotteryClientNetwork.clientRequestPlayerList();
+                LotteryClientNetwork.clientRequestTitleSnapshot();
+                status = "已请求服务器管理数据";
             } else {
-                status = "未连接服务器，显示本地配置";
+                status = "未连接服务器";
             }
             rebuildTabContent();
         }).bounds(x, by, 42, 20)
-                .tooltip(Tooltip.create(Component.literal("重新读取服务器配置与管理数据")))
-                .build());
-
-        applyButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.apply"), b -> {
-            if (!applyCurrentTab()) {
-                return;
-            }
-            status = "本页已应用到内存";
-            rebuildTabContent();
-        }).bounds(x + 45, by, 42, 20)
-                .tooltip(Tooltip.create(Component.literal("只应用到客户端内存，不写入服务器磁盘")))
+                .tooltip(Tooltip.create(Component.literal("重新读取玩家与称号数据")))
                 .build());
 
         saveButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.save"), b -> {
@@ -306,43 +243,16 @@ public class LotteryConfigRootScreen extends Screen {
                 status = "需要 OP";
                 return;
             }
-            if (!applyCurrentTab()) {
+            if (!applyTitlesFields()) {
                 return;
             }
-            if (selectedTab == TAB_TITLES) {
-                if (LotteryClientNetwork.clientSaveTitleCatalog(
-                        LotteryConfigService.GSON.toJson(workingTitleCatalog))) {
-                    status = "已提交称号模板库保存（OP）";
-                } else {
-                    status = "称号模板保存发送失败";
-                }
-                return;
-            }
-            if (LotteryClientNetwork.clientSave(LotteryConfigService.get().exportAllJson())) {
-                status = "已提交保存（OP）";
+            if (LotteryClientNetwork.clientSaveTitleCatalog(GSON.toJson(workingTitleCatalog))) {
+                status = "已提交称号模板库保存（OP）";
             } else {
-                status = "保存发送失败";
+                status = "称号模板保存发送失败";
             }
-        }).bounds(x + 90, by, 90, 20)
-                .tooltip(Tooltip.create(Component.literal("应用当前页并保存完整配置；仅服务器 OP 可用")))
-                .build());
-
-        addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.reload"), b -> {
-            if (!LotteryClientNetwork.canSendPlay()) {
-                status = "未连接服务器";
-                return;
-            }
-            if (!LotteryNetwork.ClientLotteryState.op) {
-                status = "需要 OP";
-                return;
-            }
-            if (LotteryClientNetwork.clientReload()) {
-                status = "已请求重载";
-            } else {
-                status = "重载发送失败";
-            }
-        }).bounds(x + 183, by, 58, 20)
-                .tooltip(Tooltip.create(Component.literal("放弃内存修改，重新载入服务器磁盘配置")))
+        }).bounds(x + 45, by, 90, 20)
+                .tooltip(Tooltip.create(Component.literal("保存称号模板库；仅服务器 OP 可用")))
                 .build());
 
         addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.back"), b -> onClose())
@@ -352,9 +262,6 @@ public class LotteryConfigRootScreen extends Screen {
 
     private void updateFooterState() {
         boolean visible = pageHasSaveAction();
-        if (applyButton != null) {
-            applyButton.visible = visible;
-        }
         if (saveButton != null) {
             saveButton.visible = visible;
         }
@@ -365,12 +272,6 @@ public class LotteryConfigRootScreen extends Screen {
             removeWidget(w);
         }
         tabWidgets.clear();
-        themeBgBoxes.clear();
-        jsonArea = null;
-        poolNameBox = poolTypeBox = poolIdBox = poolCoverBox = bandProbBox = bandItemsBox = null;
-        poolMoveUpBtn = poolMoveDownBtn = null;
-        drawCostBox = dupCoinFlatBox = dupCoinBox = coinPerDrawBox = loginCapBox = blackoutMulBox = murderMulBox = repairMulBox = opLevelBox = null;
-        grantIdBox = grantAmountBox = grantModesBox = null;
         bulkDeltaBox = singleDeltaBox = singleSetBox = playerSearchBox = null;
         cardStepBoxes.clear();
         cardSetBoxes.clear();
@@ -390,37 +291,22 @@ public class LotteryConfigRootScreen extends Screen {
         clearTabWidgets();
         int contentY = pageTop();
         int contentH = Math.max(ROW_H, pageBottom() - contentY);
-        boolean editable = canEdit();
-
         switch (selectedTab) {
-            case 0 -> buildPoolsTab(contentY, contentH);
-            case 1 -> buildRatesTab(contentY, contentH);
-            case 2 -> buildGrantsTab(contentY, contentH);
-            case 3 -> buildThemeTab(contentY, contentH);
-            case 4 -> buildPlayersTab(contentY, contentH);
-            case 5 -> buildSkinsTab(contentY, contentH);
-            case 6 -> buildMailTab(contentY, contentH);
-            case 7 -> buildTitlesTab(contentY, contentH);
-            case 8 -> buildJsonTab(contentY, contentH, editable);
+            case TAB_PLAYERS -> buildPlayersTab(contentY, contentH);
+            case TAB_TITLES -> buildTitlesTab(contentY, contentH);
+            case TAB_SKINS -> buildSkinsTab(contentY, contentH);
+            case TAB_CRATES -> buildCratesTab(contentY, contentH);
+            case TAB_MAIL -> buildMailTab(contentY, contentH);
             default -> {
             }
         }
         applyOpWidgetLocks();
         refreshPlayerCardLocks();
-        refreshDuplicateCoinFieldState();
-        refreshPoolMoveButtonStates();
         updateFooterState();
     }
 
-    private boolean canEdit() {
-        if (!LotteryClientNetwork.canSendPlay()) {
-            return true;
-        }
-        return LotteryNetwork.ClientLotteryState.op;
-    }
-
     private void applyOpWidgetLocks() {
-        if (selectedTab == TAB_SKINS) {
+        if (selectedTab == TAB_SKINS || selectedTab == TAB_CRATES) {
             return;
         }
         boolean onlineNonOp = LotteryClientNetwork.canSendPlay() && !LotteryNetwork.ClientLotteryState.op;
@@ -428,19 +314,13 @@ public class LotteryConfigRootScreen extends Screen {
             for (AbstractWidget w : tabWidgets) {
                 w.active = true;
             }
-            if (jsonArea != null) {
-                jsonArea.setEditable(true);
-            }
             return;
         }
         for (AbstractWidget w : tabWidgets) {
             if (w instanceof Button b) {
                 String msg = b.getMessage().getString();
-                if (msg.startsWith("池#") || msg.startsWith("带#") || msg.startsWith("事件#")
-                        || msg.startsWith("§a") || msg.startsWith("§7") || msg.startsWith("·")
-                        || msg.equals("浏览") || msg.startsWith("全部") || msg.equals("奖池")
-                        || msg.equals("倍率") || msg.equals("发次") || msg.equals("画面")
-                        || msg.equals("刷新列表") || msg.startsWith("JSON")
+                if (msg.startsWith("§a") || msg.startsWith("§7") || msg.startsWith("·")
+                        || msg.equals("刷新列表")
                         || msg.startsWith("● ") || msg.startsWith("○ ")
                         || msg.startsWith("模板 ") || msg.startsWith("拥有 ")
                         || msg.equals("刷新称号") || msg.equals("刷新玩家")
@@ -449,11 +329,6 @@ public class LotteryConfigRootScreen extends Screen {
                     w.active = true;
                     continue;
                 }
-            }
-            if (w instanceof MultilineTextArea) {
-                w.active = true;
-                ((MultilineTextArea) w).setEditable(false);
-                continue;
             }
             // Search boxes are read-only navigation aids — keep usable for non-OP viewers.
             if (w == playerSearchBox || w == titlePlayerSearchBox) {
@@ -464,576 +339,7 @@ public class LotteryConfigRootScreen extends Screen {
         }
     }
 
-    // ---------------- pools ----------------
-    private void buildPoolsTab(int y, int h) {
-        int pageX = pageLeft();
-        int pageR = pageRight();
-        PoolConfigModels.Root root = LotteryConfigService.get().getPools();
-        if (root.Pools == null) {
-            root.Pools = new ArrayList<>();
-        }
-        if (root.Pools.isEmpty()) {
-            root.Pools.add(newDefaultPool(0));
-        }
-        selectedPoolIndex = Mth.clamp(selectedPoolIndex, 0, root.Pools.size() - 1);
-        PoolConfigModels.Pool pool = root.Pools.get(selectedPoolIndex);
-        if (pool.QualityListGroup == null) {
-            pool.QualityListGroup = new ArrayList<>();
-        }
-        if (pool.QualityListGroup.isEmpty()) {
-            pool.QualityListGroup.add(newDefaultBand(1.0, List.of("coin")));
-        }
-        selectedBandIndex = Mth.clamp(selectedBandIndex, 0, pool.QualityListGroup.size() - 1);
-
-        int leftW = 120;
-        int poolViewportH = Math.max(ROW_H, h - 48);
-        List<String> poolLabels = new ArrayList<>(root.Pools.size());
-        for (int i = 0; i < root.Pools.size(); i++) {
-            PoolConfigModels.Pool p = root.Pools.get(i);
-            poolLabels.add((i == selectedPoolIndex ? "§a" : "") + "池#" + p.PoolID + " " + shortName(p.PoolName, 8));
-        }
-        poolList.setBounds(pageX, y, leftW, poolViewportH);
-        poolList.setItems(poolLabels, selectedPoolIndex);
-        poolList.setOnSelect(idx -> {
-            selectedPoolIndex = idx;
-            selectedBandIndex = 0;
-            rebuildTabContent();
-        });
-        poolList.rebuildWidgets(this::addTab, this::applyPoolFieldsToModel);
-
-        int by = poolList.viewportBottom() + 4;
-        int poolBtnW = 26;
-        int poolBtnGap = 4;
-        int poolBtnX = pageX;
-        addTab(Button.builder(Component.literal("+池"), b -> {
-            applyPoolFieldsToModel();
-            PoolConfigModels.Pool np = newDefaultPool(nextPoolId(root));
-            root.Pools.add(np);
-            selectedPoolIndex = root.Pools.size() - 1;
-            selectedBandIndex = 0;
-            status = "已添加奖池 #" + np.PoolID;
-            poolList.setItems(buildPoolLabels(root), selectedPoolIndex);
-            poolList.ensureSelectedVisible();
-            rebuildTabContent();
-        }).bounds(poolBtnX, by, poolBtnW, 20).build());
-        poolBtnX += poolBtnW + poolBtnGap;
-        addTab(Button.builder(Component.literal("-池"), b -> {
-            if (root.Pools.size() <= 1) {
-                status = "至少保留 1 个奖池";
-                return;
-            }
-            root.Pools.remove(selectedPoolIndex);
-            selectedPoolIndex = Mth.clamp(selectedPoolIndex - 1, 0, root.Pools.size() - 1);
-            selectedBandIndex = 0;
-            status = "已删除奖池";
-            rebuildTabContent();
-        }).bounds(poolBtnX, by, poolBtnW, 20).build());
-        poolBtnX += poolBtnW + poolBtnGap;
-        poolMoveUpBtn = addTab(Button.builder(Component.literal("↑"), b -> moveSelectedPool(-1))
-                .bounds(poolBtnX, by, poolBtnW, 20)
-                .tooltip(Tooltip.create(Component.literal("上移当前奖池（交换位置与 PoolID）")))
-                .build());
-        poolBtnX += poolBtnW + poolBtnGap;
-        poolMoveDownBtn = addTab(Button.builder(Component.literal("↓"), b -> moveSelectedPool(1))
-                .bounds(poolBtnX, by, poolBtnW, 20)
-                .tooltip(Tooltip.create(Component.literal("下移当前奖池（交换位置与 PoolID）")))
-                .build());
-
-        int formX = pageX + leftW + 10;
-        int formW = pageR - formX;
-        boolean compactForm = formW < 300;
-        int fy = y;
-        addTab(Button.builder(Component.literal(pool.Enable ? "启用:开" : "启用:关"), b -> {
-            pool.Enable = !pool.Enable;
-            b.setMessage(Component.literal(pool.Enable ? "启用:开" : "启用:关"));
-        }).bounds(formX, fy, 70, 20).build());
-
-        poolIdBox = addTab(new EditBox(font, formX + 76, fy, 44, 20, Component.literal("id")));
-        poolIdBox.setValue(String.valueOf(pool.PoolID));
-        poolIdBox.setHint(Component.literal("ID"));
-        poolIdBox.setTooltip(Tooltip.create(Component.literal("排序用 PoolID（侧边栏按此升序）")));
-
-        poolCoverBox = addTab(new EditBox(font, formX + 124, fy, 44, 20, Component.literal("cover")));
-        poolCoverBox.setValue(String.valueOf(pool.resolvedCoverId()));
-        poolCoverBox.setHint(Component.literal("封面"));
-        poolCoverBox.setTooltip(Tooltip.create(Component.literal(
-                "封面 CoverID → pool_bg{N}.png；调序时不随 PoolID 交换")));
-
-        int nameX = compactForm ? formX : formX + 172;
-        int nameY = compactForm ? fy + 24 : fy;
-        int nameW = compactForm ? formW : Math.max(80, formW - 172);
-        poolNameBox = addTab(new EditBox(font, nameX, nameY, nameW, 20, Component.literal("name")));
-        poolNameBox.setValue(nullToEmpty(pool.PoolName));
-        poolNameBox.setHint(Component.literal("名称"));
-
-        fy += compactForm ? 48 : 24;
-        poolTypeBox = addTab(new EditBox(font, formX, fy, formW, 20, Component.literal("type")));
-        poolTypeBox.setValue(nullToEmpty(pool.PoolType));
-        poolTypeBox.setHint(Component.literal("类型 PoolType"));
-
-        fy += 26;
-        int bandListW = compactForm ? 72 : 90;
-        int bandViewportH = Math.max(ROW_H, y + h - fy - 28);
-        List<String> bandLabels = new ArrayList<>(pool.QualityListGroup.size());
-        for (int i = 0; i < pool.QualityListGroup.size(); i++) {
-            PoolConfigModels.QualityBand bandRow = pool.QualityListGroup.get(i);
-            bandLabels.add((i == selectedBandIndex ? "§a" : "") + "带#" + i + " " +
-                    String.format(Locale.ROOT, "%.0f%%", (bandRow.Probability == null ? 0 : bandRow.Probability) * 100));
-        }
-        bandList.setBounds(formX, fy, bandListW, bandViewportH);
-        bandList.setItems(bandLabels, selectedBandIndex);
-        bandList.setOnSelect(bi -> {
-            selectedBandIndex = bi;
-            rebuildTabContent();
-        });
-        bandList.rebuildWidgets(this::addTab, this::applyPoolFieldsToModel);
-
-        int bby = bandList.viewportBottom() + 2;
-        addTab(Button.builder(Component.literal("+带"), b -> {
-            applyPoolFieldsToModel();
-            pool.QualityListGroup.add(newDefaultBand(0.1, List.of("knife/anubis")));
-            selectedBandIndex = pool.QualityListGroup.size() - 1;
-            bandList.setItems(buildBandLabels(pool), selectedBandIndex);
-            bandList.ensureSelectedVisible();
-            rebuildTabContent();
-        }).bounds(formX, bby, 42, 20).build());
-        addTab(Button.builder(Component.literal("-带"), b -> {
-            if (pool.QualityListGroup.size() <= 1) {
-                status = "至少保留 1 个品质带";
-                return;
-            }
-            applyPoolFieldsToModel();
-            pool.QualityListGroup.remove(selectedBandIndex);
-            selectedBandIndex = Mth.clamp(selectedBandIndex - 1, 0, pool.QualityListGroup.size() - 1);
-            rebuildTabContent();
-        }).bounds(formX + 46, bby, 42, 20).build());
-
-        PoolConfigModels.QualityBand band = pool.QualityListGroup.get(selectedBandIndex);
-        int detailX = formX + bandListW + 8;
-        int detailW = pageR - detailX;
-        bandProbBox = addTab(new EditBox(font, detailX, fy, compactForm ? detailW : 70, 20, Component.literal("prob")));
-        bandProbBox.setValue(band.Probability == null ? "0.1" : String.valueOf(band.Probability));
-        bandProbBox.setHint(Component.literal("概率 0-1"));
-        bandProbBox.setTooltip(Tooltip.create(Component.literal("该品质带概率，启用奖池品质带之和需≈1.0")));
-
-        addTab(Button.builder(Component.literal("均分概率"), b -> {
-            applyPoolFieldsToModel();
-            int n = pool.QualityListGroup.size();
-            double each = 1.0 / n;
-            for (PoolConfigModels.QualityBand qb : pool.QualityListGroup) {
-                qb.Probability = each;
-            }
-            status = "已均分概率";
-            rebuildTabContent();
-        }).bounds(compactForm ? detailX : detailX + 76, compactForm ? fy + 24 : fy,
-                compactForm ? detailW : 70, 20).build());
-
-        bandItemsBox = addTab(new EditBox(font, detailX, fy + (compactForm ? 48 : 24),
-                detailW, 20, Component.literal("items")));
-        bandItemsBox.setMaxLength(20000);
-        bandItemsBox.setValue(String.join(",", band.ItemList == null ? List.of() : band.ItemList));
-        bandItemsBox.setHint(Component.literal("条目 type/id,逗号分隔 或 coin"));
-    }
-
-    private List<String> buildPoolLabels(PoolConfigModels.Root root) {
-        List<String> labels = new ArrayList<>();
-        if (root.Pools == null) {
-            return labels;
-        }
-        for (int i = 0; i < root.Pools.size(); i++) {
-            PoolConfigModels.Pool p = root.Pools.get(i);
-            labels.add((i == selectedPoolIndex ? "§a" : "") + "池#" + p.PoolID + " " + shortName(p.PoolName, 8));
-        }
-        return labels;
-    }
-
-    /**
-     * Swap selected pool with neighbor: list order + PoolID (player UI sorts by PoolID).
-     * CoverID stays on the pool object so sketch art follows content, not the slot.
-     */
-    private void moveSelectedPool(int delta) {
-        if (delta != -1 && delta != 1) {
-            return;
-        }
-        applyPoolFieldsToModel();
-        PoolConfigModels.Root root = LotteryConfigService.get().getPools();
-        if (root.Pools == null || root.Pools.size() < 2) {
-            status = "至少需要 2 个奖池才能排序";
-            return;
-        }
-        // Pin covers before PoolID swap; otherwise null CoverID would re-bind to the new ID.
-        PoolConfigModels.ensureCoverIds(root);
-        selectedPoolIndex = Mth.clamp(selectedPoolIndex, 0, root.Pools.size() - 1);
-        int from = selectedPoolIndex;
-        int to = from + delta;
-        if (to < 0 || to >= root.Pools.size()) {
-            status = delta < 0 ? "已到顶" : "已到底";
-            refreshPoolMoveButtonStates();
-            return;
-        }
-        PoolConfigModels.Pool a = root.Pools.get(from);
-        PoolConfigModels.Pool b = root.Pools.get(to);
-        root.Pools.set(from, b);
-        root.Pools.set(to, a);
-        int tmpId = a.PoolID;
-        a.PoolID = b.PoolID;
-        b.PoolID = tmpId;
-        // CoverID intentionally not swapped — art follows pool content.
-        selectedPoolIndex = to;
-        status = delta < 0 ? "已上移奖池（PoolID 已换，封面保留）" : "已下移奖池（PoolID 已换，封面保留）";
-        poolList.setItems(buildPoolLabels(root), selectedPoolIndex);
-        poolList.ensureSelectedVisible();
-        rebuildTabContent();
-    }
-
-    private void refreshPoolMoveButtonStates() {
-        if (poolMoveUpBtn == null && poolMoveDownBtn == null) {
-            return;
-        }
-        boolean editable = canEdit();
-        PoolConfigModels.Root root = LotteryConfigService.get().getPools();
-        int n = root.Pools == null ? 0 : root.Pools.size();
-        int idx = n == 0 ? 0 : Mth.clamp(selectedPoolIndex, 0, n - 1);
-        if (poolMoveUpBtn != null) {
-            poolMoveUpBtn.active = editable && idx > 0;
-        }
-        if (poolMoveDownBtn != null) {
-            poolMoveDownBtn.active = editable && n > 1 && idx < n - 1;
-        }
-    }
-
-    private List<String> buildBandLabels(PoolConfigModels.Pool pool) {
-        List<String> labels = new ArrayList<>();
-        if (pool.QualityListGroup == null) {
-            return labels;
-        }
-        for (int i = 0; i < pool.QualityListGroup.size(); i++) {
-            PoolConfigModels.QualityBand bandRow = pool.QualityListGroup.get(i);
-            labels.add((i == selectedBandIndex ? "§a" : "") + "带#" + i + " " +
-                    String.format(Locale.ROOT, "%.0f%%", (bandRow.Probability == null ? 0 : bandRow.Probability) * 100));
-        }
-        return labels;
-    }
-
-    private PoolConfigModels.Pool newDefaultPool(int id) {
-        PoolConfigModels.Pool p = new PoolConfigModels.Pool();
-        p.PoolID = id;
-        p.CoverID = id;
-        p.Enable = true;
-        p.PoolName = "新奖池" + id;
-        p.PoolType = "weapon";
-        p.QualityListGroup = new ArrayList<>();
-        p.QualityListGroup.add(newDefaultBand(1.0, List.of("coin")));
-        return p;
-    }
-
-    private PoolConfigModels.QualityBand newDefaultBand(double prob, List<String> items) {
-        PoolConfigModels.QualityBand band = new PoolConfigModels.QualityBand();
-        band.Probability = prob;
-        band.ItemList = new ArrayList<>(items);
-        return band;
-    }
-
-    private int nextPoolId(PoolConfigModels.Root root) {
-        int max = -1;
-        for (PoolConfigModels.Pool p : root.Pools) {
-            max = Math.max(max, p.PoolID);
-        }
-        return max + 1;
-    }
-
-    private void applyPoolFieldsToModel() {
-        PoolConfigModels.Root root = LotteryConfigService.get().getPools();
-        if (root.Pools == null || root.Pools.isEmpty()) {
-            return;
-        }
-        selectedPoolIndex = Mth.clamp(selectedPoolIndex, 0, root.Pools.size() - 1);
-        PoolConfigModels.Pool pool = root.Pools.get(selectedPoolIndex);
-        if (poolIdBox != null) {
-            try {
-                pool.PoolID = Integer.parseInt(poolIdBox.getValue().trim());
-            } catch (Exception ignored) {
-            }
-        }
-        if (poolCoverBox != null) {
-            try {
-                pool.CoverID = Integer.parseInt(poolCoverBox.getValue().trim());
-            } catch (Exception ignored) {
-            }
-        } else if (pool.CoverID == null) {
-            pool.CoverID = pool.PoolID;
-        }
-        if (poolNameBox != null) {
-            pool.PoolName = poolNameBox.getValue();
-        }
-        if (poolTypeBox != null) {
-            pool.PoolType = poolTypeBox.getValue();
-        }
-        if (pool.QualityListGroup == null || pool.QualityListGroup.isEmpty()) {
-            return;
-        }
-        selectedBandIndex = Mth.clamp(selectedBandIndex, 0, pool.QualityListGroup.size() - 1);
-        PoolConfigModels.QualityBand band = pool.QualityListGroup.get(selectedBandIndex);
-        if (bandProbBox != null) {
-            try {
-                band.Probability = Double.parseDouble(bandProbBox.getValue().trim());
-            } catch (Exception ignored) {
-            }
-        }
-        if (bandItemsBox != null) {
-            List<String> items = new ArrayList<>();
-            for (String part : bandItemsBox.getValue().split("[,;\\s]+")) {
-                if (!part.isBlank()) {
-                    items.add(part.trim());
-                }
-            }
-            band.ItemList = items;
-        }
-    }
-
-    // ---------------- rates ----------------
-    private void buildRatesTab(int y, int h) {
-        RatesConfig rates = LotteryConfigService.get().getRates();
-        String[][] rows = {
-                {"抽次消耗倍率", String.valueOf(rates.drawCostMultiplier)},
-                {"重复转币固定值", String.valueOf(rates.duplicateCoinFlat)},
-                {"重复转币倍率", String.valueOf(rates.duplicateCoinMultiplier)},
-                {"金币换抽价格", String.valueOf(rates.coinPerDraw)},
-                {"连登奖励上限", String.valueOf(rates.loginRewardCap)},
-                {"blackout 发次倍率", String.valueOf(rates.modeMultiplier("blackout"))},
-                {"murder 发次倍率", String.valueOf(rates.modeMultiplier("murder"))},
-                {"repair 发次倍率", String.valueOf(rates.modeMultiplier("repair"))},
-                {"OP 权限等级", String.valueOf(rates.opPermissionLevel)},
-        };
-        int rowH = 36;
-        int contentH = rows.length * rowH;
-        ratesPanel.setBounds(pageLeft(), y, pageWidth(), h);
-        ratesPanel.setContentHeight(contentH);
-
-        int x = pageLeft();
-        int w = Math.min(260, pageWidth());
-        EditBox[] boxes = new EditBox[rows.length];
-        for (int i = 0; i < rows.length; i++) {
-            int cy = i * rowH;
-            int sy = ratesPanel.applyY(cy);
-            EditBox box = labeledField(x, sy, w, rows[i][0], rows[i][1]);
-            box.visible = sy + 20 > y && sy < y + h;
-            boxes[i] = box;
-        }
-        drawCostBox = boxes[0];
-        dupCoinFlatBox = boxes[1];
-        dupCoinBox = boxes[2];
-        coinPerDrawBox = boxes[3];
-        loginCapBox = boxes[4];
-        blackoutMulBox = boxes[5];
-        murderMulBox = boxes[6];
-        repairMulBox = boxes[7];
-        opLevelBox = boxes[8];
-        dupCoinFlatBox.setTooltip(Tooltip.create(Component.literal(
-                "重复皮肤返还的固定金币。>0 时覆盖倍率，倍率输入会被禁用")));
-        dupCoinFlatBox.setResponder(s -> refreshDuplicateCoinFieldState());
-        refreshDuplicateCoinFieldState();
-    }
-
-    private void refreshDuplicateCoinFieldState() {
-        if (dupCoinBox == null) {
-            return;
-        }
-        int flat = 0;
-        if (dupCoinFlatBox != null) {
-            try {
-                flat = (int) Math.round(Double.parseDouble(dupCoinFlatBox.getValue().trim()));
-            } catch (Exception e) {
-                flat = LotteryConfigService.get().getRates().duplicateCoinFlat();
-            }
-        }
-        boolean flatWins = flat > 0;
-        boolean editable = canEdit();
-        dupCoinBox.active = editable && !flatWins;
-        dupCoinBox.setEditable(editable && !flatWins);
-        dupCoinBox.setTooltip(Tooltip.create(Component.literal(flatWins
-                ? "duplicateCoinFlat>0：固定值优先，倍率不生效"
-                : "flat=0 时按 SRE 基础金币 × 该倍率返还")));
-    }
-
-    private EditBox labeledField(int x, int y, int w, String label, String value) {
-        EditBox box = addTab(new EditBox(font, x, y + 12, w, 20, Component.literal(label)));
-        box.setValue(value);
-        box.setHint(Component.literal(label));
-        return box;
-    }
-
-    private void applyRatesFields() {
-        RatesConfig rates = LotteryConfigService.get().getRates();
-        rates.drawCostMultiplier = parseD(drawCostBox, rates.drawCostMultiplier);
-        rates.duplicateCoinFlat = Math.max(0, (int) Math.round(parseD(dupCoinFlatBox, rates.duplicateCoinFlat)));
-        rates.duplicateCoinMultiplier = parseD(dupCoinBox, rates.duplicateCoinMultiplier);
-        rates.coinPerDraw = Math.max(1, (int) Math.round(parseD(coinPerDrawBox, rates.coinPerDraw)));
-        rates.loginRewardCap = Math.max(1, (int) Math.round(parseD(loginCapBox, rates.loginRewardCap)));
-        if (rates.modeMultipliers == null) {
-            rates.modeMultipliers = new java.util.HashMap<>();
-        }
-        rates.modeMultipliers.put("blackout", parseD(blackoutMulBox, 1.0));
-        rates.modeMultipliers.put("murder", parseD(murderMulBox, 1.0));
-        rates.modeMultipliers.put("repair", parseD(repairMulBox, 1.0));
-        rates.opPermissionLevel = (int) parseD(opLevelBox, rates.opPermissionLevel);
-    }
-
-    // ---------------- grants ----------------
-    private void buildGrantsTab(int y, int h) {
-        int pageX = pageLeft();
-        int pageR = pageRight();
-        GrantsConfig grants = LotteryConfigService.get().getGrants();
-        if (grants.events == null) {
-            grants.events = new ArrayList<>();
-        }
-        if (grants.events.isEmpty()) {
-            GrantsConfig.GrantEvent e = new GrantsConfig.GrantEvent();
-            e.id = "sre_participate";
-            e.amount = 1;
-            e.enabled = true;
-            e.modes = new ArrayList<>(List.of("*"));
-            grants.events.add(e);
-        }
-        selectedGrantIndex = Mth.clamp(selectedGrantIndex, 0, grants.events.size() - 1);
-
-        int leftW = 140;
-        int grantViewportH = Math.max(ROW_H, h - 48);
-        List<String> grantLabels = new ArrayList<>(grants.events.size());
-        for (int i = 0; i < grants.events.size(); i++) {
-            GrantsConfig.GrantEvent e = grants.events.get(i);
-            grantLabels.add((i == selectedGrantIndex ? "§a" : "") + (e.enabled ? "" : "§7")
-                    + shortName(e.id, 14) + " +" + e.amount);
-        }
-        grantList.setBounds(pageX, y, leftW, grantViewportH);
-        grantList.setItems(grantLabels, selectedGrantIndex);
-        grantList.setOnSelect(idx -> {
-            selectedGrantIndex = idx;
-            rebuildTabContent();
-        });
-        grantList.rebuildWidgets(this::addTab, this::applyGrantFields);
-
-        int by = grantList.viewportBottom() + 4;
-        addTab(Button.builder(Component.literal("+事件"), b -> {
-            applyGrantFields();
-            GrantsConfig.GrantEvent e = new GrantsConfig.GrantEvent();
-            e.id = "custom_event";
-            e.amount = 1;
-            e.enabled = true;
-            e.modes = new ArrayList<>(List.of("*"));
-            grants.events.add(e);
-            selectedGrantIndex = grants.events.size() - 1;
-            grantList.setItems(buildGrantLabels(grants), selectedGrantIndex);
-            grantList.ensureSelectedVisible();
-            rebuildTabContent();
-        }).bounds(pageX, by, 50, 20).build());
-        addTab(Button.builder(Component.literal("-事件"), b -> {
-            if (grants.events.size() <= 1) {
-                status = "至少保留 1 个事件";
-                return;
-            }
-            grants.events.remove(selectedGrantIndex);
-            selectedGrantIndex = Mth.clamp(selectedGrantIndex - 1, 0, grants.events.size() - 1);
-            rebuildTabContent();
-        }).bounds(pageX + 54, by, 50, 20).build());
-
-        GrantsConfig.GrantEvent e = grants.events.get(selectedGrantIndex);
-        int fx = pageX + leftW + 10;
-        int fw = pageR - fx;
-        int fy = y;
-        addTab(Button.builder(Component.literal(e.enabled ? "启用:开" : "启用:关"), b -> {
-            e.enabled = !e.enabled;
-            b.setMessage(Component.literal(e.enabled ? "启用:开" : "启用:关"));
-        }).bounds(fx, fy, 70, 20).build());
-        fy += 24;
-        grantIdBox = addTab(new EditBox(font, fx, fy, fw, 20, Component.literal("id")));
-        grantIdBox.setValue(nullToEmpty(e.id));
-        grantIdBox.setHint(Component.literal("事件 ID"));
-        fy += 24;
-        grantAmountBox = addTab(new EditBox(font, fx, fy, 80, 20, Component.literal("amount")));
-        grantAmountBox.setValue(String.valueOf(e.amount));
-        grantAmountBox.setHint(Component.literal("次数"));
-        fy += 24;
-        grantModesBox = addTab(new EditBox(font, fx, fy, fw, 20, Component.literal("modes")));
-        grantModesBox.setValue(e.modes == null ? "*" : String.join(",", e.modes));
-        grantModesBox.setHint(Component.literal("模式 blackout,murder,repair 或 *"));
-    }
-
-    private List<String> buildGrantLabels(GrantsConfig grants) {
-        List<String> labels = new ArrayList<>();
-        if (grants.events == null) {
-            return labels;
-        }
-        for (int i = 0; i < grants.events.size(); i++) {
-            GrantsConfig.GrantEvent e = grants.events.get(i);
-            labels.add((i == selectedGrantIndex ? "§a" : "") + (e.enabled ? "" : "§7")
-                    + shortName(e.id, 14) + " +" + e.amount);
-        }
-        return labels;
-    }
-
-    private void applyGrantFields() {
-        GrantsConfig grants = LotteryConfigService.get().getGrants();
-        if (grants.events == null || grants.events.isEmpty()) {
-            return;
-        }
-        selectedGrantIndex = Mth.clamp(selectedGrantIndex, 0, grants.events.size() - 1);
-        GrantsConfig.GrantEvent e = grants.events.get(selectedGrantIndex);
-        if (grantIdBox != null) {
-            e.id = grantIdBox.getValue().trim();
-        }
-        if (grantAmountBox != null) {
-            try {
-                e.amount = Integer.parseInt(grantAmountBox.getValue().trim());
-            } catch (Exception ignored) {
-            }
-        }
-        if (grantModesBox != null) {
-            List<String> modes = new ArrayList<>();
-            for (String p : grantModesBox.getValue().split("[,;\\s]+")) {
-                if (!p.isBlank()) {
-                    modes.add(p.trim());
-                }
-            }
-            e.modes = modes.isEmpty() ? new ArrayList<>(List.of("*")) : modes;
-        }
-    }
-
-    // ---------------- theme ----------------
-    private void buildThemeTab(int y, int h) {
-        ThemeConfig theme = LotteryConfigService.get().getTheme();
-        if (theme.qualityBackgrounds == null) {
-            theme.qualityBackgrounds = new ArrayList<>();
-        }
-        while (theme.qualityBackgrounds.size() < 6) {
-            theme.qualityBackgrounds.add("noellesroles:textures/gui/loot/common_skin.png");
-        }
-        String[] labels = {"COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY", "UNBELIEVABLE"};
-        int rowH = 34;
-        themePanel.setBounds(pageLeft(), y, pageWidth(), h);
-        themePanel.setContentHeight(labels.length * rowH);
-        for (int i = 0; i < 6; i++) {
-            int sy = themePanel.applyY(i * rowH);
-            EditBox box = addTab(new EditBox(font, pageLeft(), sy + 12, pageWidth(), 20, Component.literal(labels[i])));
-            box.setMaxLength(256);
-            box.setValue(theme.qualityBackgrounds.get(i));
-            box.setHint(Component.literal(labels[i] + " 背景 RL"));
-            box.visible = sy + 32 > y && sy < y + h;
-            themeBgBoxes.add(box);
-        }
-    }
-
-    private void applyThemeFields() {
-        ThemeConfig theme = LotteryConfigService.get().getTheme();
-        if (theme.qualityBackgrounds == null) {
-            theme.qualityBackgrounds = new ArrayList<>();
-        }
-        theme.qualityBackgrounds.clear();
-        for (EditBox box : themeBgBoxes) {
-            theme.qualityBackgrounds.add(box.getValue().trim());
-        }
-    }
-
+    // ---------------- players ----------------
     // ---------------- players ----------------
     /** Filtered player rows for the admin list (name contains query, case-insensitive). */
     private List<PlayerAdminModels.PlayerRow> currentPlayerRows() {
@@ -1100,19 +406,19 @@ public class LotteryConfigRootScreen extends Screen {
 
         addTab(Button.builder(Component.literal("全员+N"), b -> {
             int n = (int) parseD(bulkDeltaBox, 1);
-            if (!LotteryClientNetwork.clientModifyChance("add_all_online", "", n)) {
+            if (!LotteryClientNetwork.clientModifyGreenApples("add_all_online", "", n)) {
                 status = "需要进服且为 OP";
             }
         }).bounds(actionsX, y, actionW, 20).build());
         addTab(Button.builder(Component.literal("全员-N"), b -> {
             int n = (int) parseD(bulkDeltaBox, 1);
-            if (!LotteryClientNetwork.clientModifyChance("add_all_online", "", -Math.abs(n))) {
+            if (!LotteryClientNetwork.clientModifyGreenApples("add_all_online", "", -Math.abs(n))) {
                 status = "需要进服且为 OP";
             }
         }).bounds(actionsX + actionW + 4, y, actionW, 20).build());
         addTab(Button.builder(Component.literal("全员= N"), b -> {
             int n = (int) parseD(bulkDeltaBox, 0);
-            if (!LotteryClientNetwork.clientModifyChance("set_all_online", "", n)) {
+            if (!LotteryClientNetwork.clientModifyGreenApples("set_all_online", "", n)) {
                 status = "需要进服且为 OP";
             }
         }).bounds(actionsX + (actionW + 4) * 2, y, actionW, 20).build());
@@ -1170,7 +476,7 @@ public class LotteryConfigRootScreen extends Screen {
             PlayerAdminModels.PlayerRow row = players.get(i);
             String mark = i == selectedPlayerIndex ? "§a" : (row.online ? "§f" : "§7");
             playerLabels.add(mark + (row.online ? "● " : "○ ") + shortName(row.name, 12)
-                    + "  抽:" + row.lootChance + " 币:" + row.coinNum);
+                    + "  绿苹果:" + row.greenApples);
         }
         playerList.setBounds(pageX, listTop, listW, listH);
         playerList.setItems(playerLabels, selectedPlayerIndex);
@@ -1253,19 +559,19 @@ public class LotteryConfigRootScreen extends Screen {
 
                 addTab(Button.builder(Component.literal("此人+"), b -> {
                     int n = (int) parseD(singleDeltaBox, 1);
-                    LotteryClientNetwork.clientModifyChance("add_one", sel.uuid, Math.abs(n));
+                    LotteryClientNetwork.clientModifyGreenApples("add_one", sel.uuid, Math.abs(n));
                 }).bounds(px + 54, baseY, 40, 20).build());
                 addTab(Button.builder(Component.literal("此人-"), b -> {
                     int n = (int) parseD(singleDeltaBox, 1);
-                    LotteryClientNetwork.clientModifyChance("add_one", sel.uuid, -Math.abs(n));
+                    LotteryClientNetwork.clientModifyGreenApples("add_one", sel.uuid, -Math.abs(n));
                 }).bounds(px + 98, baseY, 40, 20).build());
 
                 singleSetBox = addTab(new EditBox(font, px, baseY + 26, 50, 20, Component.literal("set")));
-                singleSetBox.setValue(String.valueOf(sel.lootChance));
+                singleSetBox.setValue(String.valueOf(sel.greenApples));
                 singleSetBox.setHint(Component.literal("="));
                 addTab(Button.builder(Component.literal("设为"), b -> {
-                    int n = (int) parseD(singleSetBox, sel.lootChance);
-                    LotteryClientNetwork.clientModifyChance("set_one", sel.uuid, n);
+                    int n = (int) parseD(singleSetBox, sel.greenApples);
+                    LotteryClientNetwork.clientModifyGreenApples("set_one", sel.uuid, n);
                 }).bounds(px + 54, baseY + 26, 50, 20).build());
             }
         } else {
@@ -1420,6 +726,40 @@ public class LotteryConfigRootScreen extends Screen {
         }).bounds(pageLeft(), y, 120, 20).build());
     }
 
+    // ---------------- crates ----------------
+    private void buildCratesTab(int y, int h) {
+        int x = pageLeft();
+        int editWidth = Math.min(126, Math.max(82, (pageWidth() - 8) / 2));
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.crates"), b -> {
+            if (minecraft != null) minecraft.setScreen(new CrateAdminScreen(this, selectedCrateIndex));
+        }).bounds(x, y, editWidth, 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.action.crates_hint")))
+                .build());
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.crates_refresh"), b -> {
+            if (CrateClientNetwork.connected()) {
+                CrateClientNetwork.requestConfig();
+                status = Component.translatable("screen.habitrain_lottery.config.action.crates_requested").getString();
+            } else {
+                status = Component.translatable("screen.habitrain_lottery.crate_admin.offline").getString();
+            }
+        }).bounds(x + editWidth + 8, y, Math.min(100, pageWidth() - editWidth - 8), 20).build());
+        List<CrateService.Definition> crates = CrateService.definitions();
+        List<String> labels = new ArrayList<>();
+        for (int i = 0; i < crates.size(); i++) {
+            labels.add((i == selectedCrateIndex ? "§a● " : "§7○ ")
+                    + Component.translatable(crates.get(i).nameKey()).getString());
+        }
+        int listW = consoleLayout().mode() == ConfigConsoleLayout.Mode.NARROW
+                ? pageWidth() : Math.min(200, Math.max(110, pageWidth() / 2));
+        crateList.setBounds(x, y + 26, listW, Math.max(ROW_H, h - 26));
+        crateList.setItems(labels, selectedCrateIndex);
+        crateList.setOnSelect(index -> {
+            selectedCrateIndex = index;
+            rebuildTabContent();
+        });
+        crateList.rebuildWidgets(this::addTab, null);
+    }
+
     // ---------------- mail ----------------
     private void buildMailTab(int y, int h) {
         addTab(Button.builder(Component.literal("撰写邮件"), b -> {
@@ -1437,7 +777,7 @@ public class LotteryConfigRootScreen extends Screen {
         String json = LotteryNetwork.ClientLotteryState.titleCatalogJson;
         try {
             if (json != null && !json.isBlank()) {
-                TitleCatalog parsed = LotteryConfigService.GSON.fromJson(json, TitleCatalog.class);
+                TitleCatalog parsed = GSON.fromJson(json, TitleCatalog.class);
                 if (parsed != null) {
                     workingTitleCatalog = parsed;
                 }
@@ -1875,157 +1215,6 @@ public class LotteryConfigRootScreen extends Screen {
                 .bounds(ownedColX + (ownedActionW + 4) * 2, opY2, ownedActionW, 18).build());
     }
 
-    // ---------------- json ----------------
-    private void buildJsonTab(int y, int h, boolean editable) {
-        String[] parts = {"全部", "奖池", "倍率", "发次", "画面"};
-        int buttonGap = 2;
-        int buttonW = Math.max(42, Math.min(52, (pageWidth() - buttonGap * parts.length) / (parts.length + 1)));
-        for (int i = 0; i < parts.length; i++) {
-            final int idx = i;
-            addTab(Button.builder(Component.literal(parts[i]), b -> {
-                jsonSection = idx;
-                if (jsonArea != null) {
-                    jsonArea.setValue(jsonForSection(idx));
-                }
-                status = "JSON: " + parts[idx];
-            }).bounds(pageLeft() + i * (buttonW + buttonGap), y, buttonW, 18).build());
-        }
-        addTab(Button.builder(Component.literal("格式化"), b -> {
-            if (jsonArea == null) {
-                return;
-            }
-            try {
-                // re-pretty current memory export for section
-                applyJsonEditor();
-                jsonArea.setValue(jsonForSection(jsonSection));
-                status = "已格式化";
-            } catch (Exception e) {
-                status = "格式化失败";
-            }
-        }).bounds(pageLeft() + 5 * (buttonW + buttonGap), y, buttonW, 18).build());
-
-        jsonArea = addTab(new MultilineTextArea(font, pageLeft(), y + 22, pageWidth(), Math.max(80, h - 28)));
-        jsonArea.setMaxLength(1_000_000);
-        jsonArea.setEditable(editable || !LotteryClientNetwork.canSendPlay());
-        jsonArea.setValue(jsonForSection(jsonSection));
-    }
-
-    private String jsonForSection(int idx) {
-        LotteryConfigService cfg = LotteryConfigService.get();
-        return switch (idx) {
-            case 1 -> LotteryConfigService.GSON.toJson(cfg.getPools());
-            case 2 -> LotteryConfigService.GSON.toJson(cfg.getRates());
-            case 3 -> LotteryConfigService.GSON.toJson(cfg.getGrants());
-            case 4 -> LotteryConfigService.GSON.toJson(cfg.getTheme());
-            default -> cfg.exportAllJson();
-        };
-    }
-
-    private boolean applyJsonEditor() {
-        if (jsonArea == null) {
-            return true;
-        }
-        try {
-            String text = jsonArea.getValue();
-            try {
-                LotteryConfigService.get().importAllJson(text);
-                return true;
-            } catch (Exception ignored) {
-            }
-            PoolConfigModels.Root pools = LotteryConfigService.GSON.fromJson(text, PoolConfigModels.Root.class);
-            if (pools != null && pools.Pools != null) {
-                String err = validatePools(pools);
-                if (err != null) {
-                    status = err;
-                    return false;
-                }
-                LotteryConfigService.get().setPools(pools);
-                return true;
-            }
-            RatesConfig rates = LotteryConfigService.GSON.fromJson(text, RatesConfig.class);
-            if (rates != null && rates.modeMultipliers != null) {
-                LotteryConfigService.get().setRates(rates);
-                return true;
-            }
-            GrantsConfig grants = LotteryConfigService.GSON.fromJson(text, GrantsConfig.class);
-            if (grants != null && grants.events != null) {
-                LotteryConfigService.get().setGrants(grants);
-                return true;
-            }
-            ThemeConfig theme = LotteryConfigService.GSON.fromJson(text, ThemeConfig.class);
-            if (theme != null && theme.qualityBackgrounds != null) {
-                LotteryConfigService.get().setTheme(theme);
-                return true;
-            }
-            status = "无法识别 JSON 结构";
-            return false;
-        } catch (Exception e) {
-            status = e.getMessage() == null ? "JSON 解析失败" : e.getMessage();
-            return false;
-        }
-    }
-
-    private boolean applyCurrentTab() {
-        try {
-            switch (selectedTab) {
-                case 0 -> {
-                    applyPoolFieldsToModel();
-                    String err = validatePools(LotteryConfigService.get().getPools());
-                    if (err != null) {
-                        status = err;
-                        return false;
-                    }
-                }
-                case 1 -> applyRatesFields();
-                case 2 -> applyGrantFields();
-                case 3 -> applyThemeFields();
-                case 7 -> {
-                    return applyTitlesFields();
-                }
-                case 8 -> {
-                    return applyJsonEditor();
-                }
-                default -> {
-                }
-            }
-            return true;
-        } catch (Exception e) {
-            status = e.getMessage() == null ? "应用失败" : e.getMessage();
-            return false;
-        }
-    }
-
-    private String validatePools(PoolConfigModels.Root root) {
-        if (root == null || root.Pools == null || root.Pools.isEmpty()) {
-            return "Pools 为空";
-        }
-        for (PoolConfigModels.Pool pool : root.Pools) {
-            if (!pool.Enable) {
-                continue;
-            }
-            if (pool.PoolName == null || pool.PoolName.isBlank()) {
-                return "存在空 PoolName";
-            }
-            if (pool.QualityListGroup == null || pool.QualityListGroup.isEmpty()) {
-                return "奖池 " + pool.PoolName + " 无品质带";
-            }
-            double sum = 0;
-            for (PoolConfigModels.QualityBand band : pool.QualityListGroup) {
-                if (band.Probability == null || band.Probability <= 0) {
-                    return "奖池 " + pool.PoolName + " 概率非法";
-                }
-                if (band.ItemList == null || band.ItemList.isEmpty()) {
-                    return "奖池 " + pool.PoolName + " 条目为空";
-                }
-                sum += band.Probability;
-            }
-            if (sum < 0.999 || sum > 1.001) {
-                return String.format(Locale.ROOT, "奖池 %s 概率和=%.4f，需≈1.0", pool.PoolName, sum);
-            }
-        }
-        return null;
-    }
-
     private void layoutTabs() {
         tabX = new int[TABS.length];
         tabY = new int[TABS.length];
@@ -2039,15 +1228,18 @@ public class LotteryConfigRootScreen extends Screen {
             return;
         }
         int y = nav.y() + 8;
+        ConfigSectionId.Group previousGroup = null;
         for (int position = 0; position < NAV_ORDER.length; position++) {
-            if (position == 0 || position == 4 || position == 7) {
+            int tab = NAV_ORDER[position];
+            ConfigSectionId.Group group = SECTION_IDS[tab].group();
+            if (previousGroup == null || previousGroup != group) {
                 y += 12;
             }
-            int tab = NAV_ORDER[position];
             tabX[tab] = nav.x() + 4;
             tabY[tab] = y;
             tabW[tab] = Math.max(0, nav.width() - 8);
             y += 18;
+            previousGroup = group;
         }
     }
 
@@ -2084,29 +1276,7 @@ public class LotteryConfigRootScreen extends Screen {
         drawTabs(g, mx, my);
 
         int contentY = pageTop();
-        if (selectedTab == 1) {
-            String[] labels = {
-                    "抽次消耗倍率", "重复转币固定值", "重复转币倍率", "金币换抽价格", "连登奖励上限",
-                    "blackout 发次倍率", "murder 发次倍率", "repair 发次倍率", "OP 权限等级"
-            };
-            int rowH = 36;
-            int viewTop = contentY;
-            int viewBottom = pageBottom();
-            for (int i = 0; i < labels.length; i++) {
-                int sy = ratesPanel.applyY(i * rowH);
-                if (sy + 12 > viewTop && sy < viewBottom) {
-                    g.drawString(font, labels[i], pageLeft(), sy, 0xFFB0B8C0, false);
-                }
-            }
-        } else if (selectedTab == 3) {
-            String[] labels = {"COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY", "UNBELIEVABLE"};
-            for (int i = 0; i < labels.length; i++) {
-                int sy = themePanel.applyY(i * 34);
-                if (sy + 12 > contentY && sy < pageBottom()) {
-                    g.drawString(font, labels[i] + " 背景", pageLeft(), sy, 0xFFB0B8C0, false);
-                }
-            }
-        } else if (selectedTab == TAB_PLAYERS) {
+        if (selectedTab == TAB_PLAYERS) {
             List<PlayerAdminModels.PlayerRow> players = currentPlayerRows();
             boolean narrow = layout.mode() == ConfigConsoleLayout.Mode.NARROW;
             boolean showNarrowDetail = narrow
@@ -2123,7 +1293,7 @@ public class LotteryConfigRootScreen extends Screen {
                 if (!narrow) {
                     g.drawString(font, "选中: " + sel.name + (sel.online ? " §a在线" : " §7离线"), px, py, 0xFFFFFFFF, false);
                     g.drawString(font, "UUID: " + shortName(sel.uuid, 18), px, py + 12, 0xFF8A92A0, false);
-                    g.drawString(font, "抽数: " + sel.lootChance + "   硬币: " + sel.coinNum + "   解锁: " + sel.unlockCount,
+                    g.drawString(font, "绿苹果: " + sel.greenApples + "   已解锁皮肤: " + sel.unlockCount,
                             px, py + 26, 0xFFD4A55A, false);
                 }
                 if (playerCardsPage) {
@@ -2163,22 +1333,47 @@ public class LotteryConfigRootScreen extends Screen {
                         }
                     }
                 } else if (!narrow) {
-                    g.drawString(font, "备份目录: <world>/lottery_backup/<时间戳>/", px, py + 126, 0xFF8A92A0, false);
+                    g.drawString(font, "玩家数据备份目录: <world>/lottery_backup/<时间戳>/", px, py + 126, 0xFF8A92A0, false);
                 }
             } else if (!narrow) {
                 String emptyHint = (playerSearchQuery != null && !playerSearchQuery.isBlank())
                         ? "无匹配玩家"
-                        : "进服后点「刷新列表」查看玩家抽数";
+                        : "进服后点「刷新列表」查看玩家资产";
                 g.drawString(font, emptyHint, px, py, 0xFF8A92A0, false);
             }
         } else if (selectedTab == TAB_SKINS) {
             int yy = contentY + 28;
             g.drawString(font, "已注册皮肤: " + SkinContentBootstrap.getRegisteredCount(), pageLeft(), yy, 0xFFFFFFFF, false);
             g.drawString(font, "皮肤由扩展模组提供，本模组不内置皮肤", pageLeft(), yy + 14, 0xFF8A92A0, false);
-            g.drawString(font, "命令: /hlt skins  |  /hlt open", pageLeft(), yy + 28, 0xFF8A92A0, false);
+            g.drawString(font, "命令: /hlt skins", pageLeft(), yy + 28, 0xFF8A92A0, false);
+        } else if (selectedTab == TAB_CRATES) {
+            List<CrateService.Definition> crates = CrateService.definitions();
+            if (!crates.isEmpty() && layout.mode() != ConfigConsoleLayout.Mode.NARROW) {
+                CrateService.Definition crate = crates.get(Mth.clamp(selectedCrateIndex, 0, crates.size() - 1));
+                int detailX = pageLeft() + Math.min(200, Math.max(110, pageWidth() / 2)) + 10;
+                int detailW = Math.max(50, pageRight() - detailX);
+                JsonObject pools = crateConfig.has("pools") && crateConfig.get("pools").isJsonObject()
+                        ? crateConfig.getAsJsonObject("pools") : new JsonObject();
+                JsonObject pool = pools.has(crate.id()) && pools.get(crate.id()).isJsonObject()
+                        ? pools.getAsJsonObject(crate.id()) : new JsonObject();
+                boolean enabled = !pool.has("enabled") || pool.get("enabled").getAsBoolean();
+                boolean custom = pool.has("customPool") && pool.get("customPool").getAsBoolean();
+                boolean protect = pool.has("duplicateProtection") && pool.get("duplicateProtection").getAsBoolean();
+                String[] lines = {
+                        Component.translatable(crate.nameKey()).getString(),
+                        Component.translatable("screen.habitrain_lottery.crate_admin.key_label", CrateService.keyItemId(crate.id())).getString(),
+                        Component.translatable(enabled ? "screen.habitrain_lottery.crate_admin.enabled" : "screen.habitrain_lottery.crate_admin.disabled").getString(),
+                        Component.translatable(custom ? "screen.habitrain_lottery.crate_admin.custom_pool" : "screen.habitrain_lottery.crate_admin.default_pool").getString(),
+                        Component.translatable(protect ? "screen.habitrain_lottery.crate_admin.no_duplicates" : "screen.habitrain_lottery.crate_admin.allow_duplicates").getString()
+                };
+                for (int i = 0; i < lines.length; i++) {
+                    g.drawString(font, font.plainSubstrByWidth(lines[i], detailW), detailX, contentY + 28 + i * 16,
+                            i == 0 ? crate.color() : 0xFFB7C1C6, false);
+                }
+            }
         } else if (selectedTab == TAB_MAIL) {
             int yy = contentY + 28;
-            g.drawString(font, "OP 可撰写系统邮件，发放抽数 / 金币 / 阵营卡 / 自选卡。", pageLeft(), yy, 0xFFFFFFFF, false);
+            g.drawString(font, "OP 可撰写系统邮件，发放绿苹果 / 阵营卡 / 自选卡。", pageLeft(), yy, 0xFFFFFFFF, false);
             g.drawString(font, "邮件存于 world/habitrain_lottery/mail/players/", pageLeft(), yy + 14, 0xFF8A92A0, false);
             g.drawString(font, "玩家在大厅「邮箱管理」领取。", pageLeft(), yy + 28, 0xFF8A92A0, false);
         } else if (selectedTab == TAB_TITLES) {
@@ -2213,16 +1408,7 @@ public class LotteryConfigRootScreen extends Screen {
         }
         // Tabs above widgets so footer/status never covers the bar; bar stays sharp.
         drawTabs(g, mx, my);
-        if (selectedTab == 0) {
-            poolList.renderScrollbar(g);
-            bandList.renderScrollbar(g);
-        } else if (selectedTab == 1) {
-            ratesPanel.renderScrollbar(g);
-        } else if (selectedTab == 3) {
-            themePanel.renderScrollbar(g);
-        } else if (selectedTab == 2) {
-            grantList.renderScrollbar(g);
-        } else if (selectedTab == TAB_PLAYERS) {
+        if (selectedTab == TAB_PLAYERS) {
             if (!isNarrowPlayerDetail()) {
                 playerList.renderScrollbar(g);
             }
@@ -2234,6 +1420,8 @@ public class LotteryConfigRootScreen extends Screen {
             titleCatalogList.renderScrollbar(g);
             titlePlayerList.renderScrollbar(g);
             titleOwnedList.renderScrollbar(g);
+        } else if (selectedTab == TAB_CRATES) {
+            crateList.renderScrollbar(g);
         }
         int statusY = Math.max(layout.header().bottom(), layout.footer().y() - 11);
         g.drawString(font, Component.literal(status == null ? "" : status),
@@ -2290,12 +1478,15 @@ public class LotteryConfigRootScreen extends Screen {
             g.drawCenteredString(font, sectionTitle(selectedTab), nav.x() + nav.width() / 2, cy, 0xFFFFFFFF);
             g.drawString(font, "›", nav.right() - 14, cy, 0xFFD4A55A, false);
         } else {
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.config.group.lottery"),
-                    nav.x() + 6, tabY[0] - 10, 0xFF57C6D6, false);
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.config.group.players_and_content"),
-                    nav.x() + 6, tabY[TAB_PLAYERS] - 10, 0xFF57C6D6, false);
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.config.group.operations"),
-                    nav.x() + 6, tabY[TAB_MAIL] - 10, 0xFF57C6D6, false);
+            ConfigSectionId.Group previousGroup = null;
+            for (int tab : NAV_ORDER) {
+                ConfigSectionId.Group group = SECTION_IDS[tab].group();
+                if (previousGroup == null || previousGroup != group) {
+                    g.drawString(font, Component.translatable(group.translationKey()),
+                            nav.x() + 6, tabY[tab] - 10, 0xFF57C6D6, false);
+                }
+                previousGroup = group;
+            }
             for (int i = 0; i < TABS.length; i++) {
             boolean selected = i == selectedTab;
             boolean hover = mx >= tabX[i] && mx < tabX[i] + tabW[i]
@@ -2349,7 +1540,9 @@ public class LotteryConfigRootScreen extends Screen {
         if (tab < 0 || tab >= TABS.length || selectedTab == tab) {
             return;
         }
-        applyCurrentTab();
+        if (selectedTab == TAB_TITLES) {
+            applyTitlesFields();
+        }
         selectedTab = tab;
         layoutTabs();
         rebuildTabContent();
@@ -2360,6 +1553,9 @@ public class LotteryConfigRootScreen extends Screen {
         if (tab == TAB_TITLES && LotteryNetwork.ClientLotteryState.op) {
             LotteryClientNetwork.clientRequestTitleSnapshot();
             LotteryClientNetwork.clientRequestPlayerList();
+        }
+        if (tab == TAB_CRATES) {
+            CrateClientNetwork.requestConfig();
         }
     }
 
@@ -2374,54 +1570,7 @@ public class LotteryConfigRootScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         if (MenuAccessBridge.isLocked()) return false;
-        if (jsonArea != null && jsonArea.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)) {
-            return true;
-        }
-        if (selectedTab == 0) {
-            int beforePool = poolList.getScroll();
-            int beforeBand = bandList.getScroll();
-            if (poolList.mouseScrolled(mouseX, mouseY, verticalAmount)) {
-                if (poolList.getScroll() != beforePool) {
-                    applyPoolFieldsToModel();
-                    rebuildTabContent();
-                }
-                return true;
-            }
-            if (bandList.mouseScrolled(mouseX, mouseY, verticalAmount)) {
-                if (bandList.getScroll() != beforeBand) {
-                    applyPoolFieldsToModel();
-                    rebuildTabContent();
-                }
-                return true;
-            }
-        } else if (selectedTab == 1) {
-            int before = ratesPanel.getScroll();
-            if (ratesPanel.mouseScrolled(mouseX, mouseY, verticalAmount)) {
-                if (ratesPanel.getScroll() != before) {
-                    applyRatesFields();
-                    rebuildTabContent();
-                }
-                return true;
-            }
-        } else if (selectedTab == 3) {
-            int before = themePanel.getScroll();
-            if (themePanel.mouseScrolled(mouseX, mouseY, verticalAmount)) {
-                if (themePanel.getScroll() != before) {
-                    applyThemeFields();
-                    rebuildTabContent();
-                }
-                return true;
-            }
-        } else if (selectedTab == 2) {
-            int before = grantList.getScroll();
-            if (grantList.mouseScrolled(mouseX, mouseY, verticalAmount)) {
-                if (grantList.getScroll() != before) {
-                    applyGrantFields();
-                    rebuildTabContent();
-                }
-                return true;
-            }
-        } else if (selectedTab == TAB_PLAYERS) {
+        if (selectedTab == TAB_PLAYERS) {
             if (playerCardsPage && playerCardScrollLayout != null
                     && playerCardScrollLayout.viewportHeight() > 0) {
                 int beforeCards = playerCardPanel.getScroll();
@@ -2445,6 +1594,12 @@ public class LotteryConfigRootScreen extends Screen {
                 if (playerList.getScroll() != before) {
                     rebuildTabContent();
                 }
+                return true;
+            }
+        } else if (selectedTab == TAB_CRATES) {
+            int before = crateList.getScroll();
+            if (crateList.mouseScrolled(mouseX, mouseY, verticalAmount)) {
+                if (crateList.getScroll() != before) rebuildTabContent();
                 return true;
             }
         } else if (selectedTab == TAB_TITLES) {
@@ -2476,7 +1631,6 @@ public class LotteryConfigRootScreen extends Screen {
 
     @Override
     public void onClose() {
-        applyCurrentTab();
         if (minecraft != null) {
             minecraft.setScreen(parent);
         }

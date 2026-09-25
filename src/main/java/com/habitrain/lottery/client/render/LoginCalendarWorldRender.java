@@ -65,7 +65,6 @@ public final class LoginCalendarWorldRender {
     private static int cachedDateMonth = Integer.MIN_VALUE;
     private static String cachedDateLine = "";
     private static int cachedStreak = Integer.MIN_VALUE;
-    private static int cachedReward = Integer.MIN_VALUE;
     private static String cachedStreakText = "";
 
     static {
@@ -137,14 +136,12 @@ public final class LoginCalendarWorldRender {
         int month;
         int today;
         int streak;
-        int reward;
         int mask;
         if (LotteryNetwork.ClientLoginState.hasData) {
             year = LotteryNetwork.ClientLoginState.year;
             month = LotteryNetwork.ClientLoginState.month;
             today = LotteryNetwork.ClientLoginState.dayOfMonth;
             streak = LotteryNetwork.ClientLoginState.streak;
-            reward = LotteryNetwork.ClientLoginState.rewardToday;
             mask = LotteryNetwork.ClientLoginState.loginDaysMask;
         } else {
             LocalDate now = LocalDate.now(ZoneOffset.UTC);
@@ -152,7 +149,6 @@ public final class LoginCalendarWorldRender {
             month = now.getMonthValue();
             today = now.getDayOfMonth();
             streak = 0;
-            reward = 0;
             mask = 0;
         }
         YearMonth ym = YearMonth.of(year, Math.max(1, Math.min(12, month)));
@@ -162,7 +158,7 @@ public final class LoginCalendarWorldRender {
 
         Font font = mc.font;
         MultiBufferSource.BufferSource textBuffers = mc.renderBuffers().bufferSource();
-        refreshClockStrings(year, month, streak, reward);
+        refreshClockStrings(year, month, streak);
 
         RenderSystem.enableDepthTest();
         RenderSystem.enablePolygonOffset();
@@ -220,7 +216,7 @@ public final class LoginCalendarWorldRender {
     }
 
     /** Header clock uses UTC so it matches login settle / S2C day cells. */
-    private static void refreshClockStrings(int year, int month, int streak, int reward) {
+    private static void refreshClockStrings(int year, int month, int streak) {
         long epochSec = System.currentTimeMillis() / 1000L;
         if (epochSec != clockEpochSec) {
             clockEpochSec = epochSec;
@@ -233,10 +229,9 @@ public final class LoginCalendarWorldRender {
             cachedDateMonth = month;
             cachedDateLine = String.format("%04d-%02d", year, month);
         }
-        if (streak != cachedStreak || reward != cachedReward) {
+        if (streak != cachedStreak) {
             cachedStreak = streak;
-            cachedReward = reward;
-            cachedStreakText = "连登" + streak + " 今日+" + reward;
+            cachedStreakText = "连登" + streak;
         }
     }
 

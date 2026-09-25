@@ -81,8 +81,9 @@ public final class WarehouseNetwork {
                 fail(player, request, "storage_error"); return;
             }
             List<WarehouseEntry> rows = new ArrayList<>();
-            rows.add(new WarehouseEntry("currency", "coins", key("coins"), key("coins_hint"), "minecraft:gold_ingot", data.coinNum, 0xFFD5C98D, false));
-            rows.add(new WarehouseEntry("currency", "draws", key("draws"), key("draws_hint"), "minecraft:paper", data.lootChance, 0xFF85B4C8, false));
+            rows.add(new WarehouseEntry("currency", "green_apples", key("green_apples"),
+                    key("green_apples_hint"), "habitrain_lottery:textures/gui/green_apple.png",
+                    data.greenApples, 0xFF78B85A, false));
             cards.cards().forEach((id, count) -> rows.add(new WarehouseEntry("card", id,
                     "screen.habitrain_lottery.config.cards." + id, key("card_hint." + id), "minecraft:paper", count, 0, false)));
             data.systemItems.entrySet().stream().sorted(java.util.Map.Entry.comparingByKey()).forEach(e -> {

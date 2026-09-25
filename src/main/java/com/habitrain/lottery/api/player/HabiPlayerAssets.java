@@ -16,8 +16,7 @@ public record HabiPlayerAssets(
         UUID uuid,
         String name,
         boolean online,
-        int coins,
-        int draws,
+        int greenApples,
         Map<String, Integer> factionCards,
         int selfSelectCards,
         int limitBreakCards,
@@ -30,6 +29,7 @@ public record HabiPlayerAssets(
 
     public HabiPlayerAssets {
         name = name == null ? "" : name;
+        greenApples = Math.max(0, greenApples);
         factionCards = immutableOrdered(factionCards);
         selfSelectCards = Math.max(0, selfSelectCards);
         limitBreakCards = Math.max(0, limitBreakCards);
@@ -51,7 +51,7 @@ public record HabiPlayerAssets(
 
     /** An all-zero snapshot used before the world store is ready. */
     public static HabiPlayerAssets empty(UUID uuid) {
-        return new HabiPlayerAssets(uuid, "", false, 0, 0, Map.of(), 0, 0,
+        return new HabiPlayerAssets(uuid, "", false, 0, Map.of(), 0, 0,
                 Map.of(), Map.of(), List.of(), "", 0, -1L);
     }
 

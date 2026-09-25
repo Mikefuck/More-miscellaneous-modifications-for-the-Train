@@ -14,8 +14,7 @@ public final class PlayerAdminModels {
     public static final class PlayerRow {
         public String name = "";
         public String uuid = "";
-        public int lootChance;
-        public int coinNum;
+        public int greenApples;
         public int unlockCount;
         public boolean online;
         public String cardStatus = "MISSING";
@@ -24,11 +23,10 @@ public final class PlayerAdminModels {
         public PlayerRow() {
         }
 
-        public PlayerRow(String name, UUID uuid, int lootChance, int coinNum, int unlockCount, boolean online) {
+        public PlayerRow(String name, UUID uuid, int greenApples, int unlockCount, boolean online) {
             this.name = name == null ? "" : name;
             this.uuid = uuid == null ? "" : uuid.toString();
-            this.lootChance = lootChance;
-            this.coinNum = coinNum;
+            this.greenApples = greenApples;
             this.unlockCount = unlockCount;
             this.online = online;
         }

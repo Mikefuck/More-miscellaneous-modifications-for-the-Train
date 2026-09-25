@@ -3,6 +3,8 @@ package com.habitrain.lottery.client.gui;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.habitrain.lottery.client.LotteryClientNetwork;
+import com.habitrain.lottery.crate.CrateCatalog;
+import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.network.CardUseMenuS2C;
 import com.habitrain.lottery.network.CardUseRequestC2S;
 import com.habitrain.lottery.network.LotteryNetwork.ClientLotteryState;
@@ -24,7 +26,6 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import org.agmas.noellesroles.client.screen.LootInfoScreen;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -284,7 +285,10 @@ public final class WarehouseScreen extends Screen {
                     || ClientLotteryState.cardUseRemainingSelfUses <= 0) return;
             prepareSubmit("self_select", "self", detail.role.id);
         } else if ("skin".equals(e.kind()) || "title".equals(e.kind())) minecraft.setScreen(new SkinWardrobeScreen(this));
-        else if ("currency".equals(e.kind())) minecraft.setScreen(new LootInfoScreen());
+        else if ("special".equals(e.kind()) && CrateCatalog.isCrateItem(e.id())) {
+            String crateId = e.id().substring((CrateService.NAMESPACE + ":crate_").length());
+            minecraft.setScreen(new CrateOpenScreen(this, crateId));
+        }
     }
 
     private void prepareSubmit(String key, String mode, String role) {
@@ -353,8 +357,9 @@ public final class WarehouseScreen extends Screen {
                         && ClientLotteryState.cardBalances.getOrDefault("self_select", 0) > 0 && ClientLotteryState.cardUseRemainingSelfUses > 0;
             } else {
                 boolean appearance = e.kind().equals("skin") || e.kind().equals("title");
-                detailAction.setMessage(text(appearance ? "wardrobe" : e.kind().equals("currency") ? "lottery" : "stored"));
-                detailAction.active = !busy() && (appearance || e.kind().equals("currency"));
+                boolean crate = e.kind().equals("special") && CrateCatalog.isCrateItem(e.id());
+                detailAction.setMessage(text(appearance ? "wardrobe" : crate ? "open_crate" : "stored"));
+                detailAction.active = !busy() && (appearance || crate && e.count() > 0);
             }
             detailAction.active &= !detailClosing && (reducedMotion || now() - detailAt >= 220);
         }
@@ -609,11 +614,14 @@ public final class WarehouseScreen extends Screen {
                     : entry.kind().equals("card") ? WarehouseTheme.cardColor(entry.id()) : entry.color());
             String artId = role != null ? role.cardArt() : entry.kind().equals("card") ? entry.id() : null;
             ResourceLocation candidate = artId != null ? ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/cards/" + artId + ".png") : null;
+            if (entry.kind().equals("currency") && entry.id().equals("green_apples")) {
+                candidate = ResourceLocation.tryParse(entry.icon());
+            }
             art = candidate != null && minecraft.getResourceManager().getResource(candidate).isPresent() ? candidate : null;
             ItemStack stack = ItemStack.EMPTY;
             if (entry.kind().equals("skin")) stack = SkinItems.preview(entry.id());
             if (stack.isEmpty()) {
-                ResourceLocation item = ResourceLocation.tryParse(entry.icon());
+                ResourceLocation item = ResourceLocation.tryParse(entry.kind().equals("currency") ? "minecraft:apple" : entry.icon());
                 stack = new ItemStack(item == null ? Items.CHEST : BuiltInRegistries.ITEM.get(item));
             }
             icon = stack.isEmpty() ? new ItemStack(Items.CHEST) : stack;
@@ -656,7 +664,8 @@ public final class WarehouseScreen extends Screen {
             g.pose().pushPose();
             if (art != null) {
                 g.setColor(1, 1, 1, opacity);
-                g.blit(art, cx - size / 2, cy - size / 2, size, size, 0, 0, 128, 128, 128, 128);
+                int pixels = entry.kind().equals("currency") ? 32 : 128;
+                g.blit(art, cx - size / 2, cy - size / 2, size, size, 0, 0, pixels, pixels, pixels, pixels);
                 g.setColor(1, 1, 1, 1);
             } else {
                 float scale = size / 16f;

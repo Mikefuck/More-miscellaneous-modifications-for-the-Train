@@ -53,7 +53,7 @@ class SkinEffectsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SkinEffects.registerTrail(TYPE, "has/slash", (level, projectile, position, partial) -> { }));
         assertThrows(IllegalArgumentException.class,
-                () -> SkinEffects.registerAnimation(TYPE, "coin", SkinAnimation.none()));
+                () -> SkinEffects.registerAnimation(TYPE, "has/slash", SkinAnimation.none()));
         assertThrows(NullPointerException.class,
                 () -> SkinEffects.registerImpact(TYPE, "effects_null", null));
     }

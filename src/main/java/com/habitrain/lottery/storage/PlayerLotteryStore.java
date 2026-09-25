@@ -1,13 +1,16 @@
 package com.habitrain.lottery.storage;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.bridge.EconomyMirror;
 import com.habitrain.lottery.bridge.InventorySkinApplier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -17,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
- * Authoritative per-player lottery/skin economy stored under the world root.
+ * Authoritative per-player green apples and skin state stored under the world root.
  */
 public final class PlayerLotteryStore {
     private static final PlayerLotteryStore INSTANCE = new PlayerLotteryStore();
@@ -27,9 +30,9 @@ public final class PlayerLotteryStore {
     private final Map<UUID, PlayerLotteryData> cache = new ConcurrentHashMap<>();
     private final Map<UUID, Boolean> dirty = new ConcurrentHashMap<>();
     private final Set<UUID> loadFailed = ConcurrentHashMap.newKeySet();
-    private final Set<UUID> pendingSrePush = ConcurrentHashMap.newKeySet();
-
-    /** When true, economy mixins write through to this store instead of only SRE. */
+    /** Players loaded from .bak must repair the primary without copying a corrupt primary back over it. */
+    private final Set<UUID> recoveredFromBackup = ConcurrentHashMap.newKeySet();
+    /** True after this world's player store has started. */
     private volatile boolean takeoverActive;
 
     private PlayerLotteryStore() {
@@ -48,8 +51,160 @@ public final class PlayerLotteryStore {
     }
 
     public void onServerStarted(MinecraftServer server) {
+        if (!scrubAllLegacyBalances()) {
+            takeoverActive = false;
+            throw new IllegalStateException("Unable to retire all legacy player balances");
+        }
         takeoverActive = true;
-        HabiLotteryMod.LOGGER.info("Player lottery store takeover active");
+        HabiLotteryMod.LOGGER.info("Player green-apple store active");
+    }
+
+    /** Retire the two old balances in offline accounts without changing other saved assets. */
+    private boolean scrubAllLegacyBalances() {
+        Path players = WorldLotteryPaths.playersDir();
+        if (players == null || !Files.isDirectory(players)) {
+            return true;
+        }
+        boolean[] ok = {true};
+        try (var files = Files.list(players)) {
+            files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString()
+                            .matches("[0-9a-fA-F-]{36}\\.json"))
+                    .forEach(path -> {
+                        try {
+                            var loaded = AtomicJsonFiles.readJson(path, JsonObject.class, GSON);
+                            if (!loaded.ok() || loaded.value() == null) {
+                                HabiLotteryMod.LOGGER.error("Cannot retire unreadable player account {}", path);
+                                ok[0] = false;
+                            } else if (!scrubLegacyJson(path, loaded.value())) {
+                                ok[0] = false;
+                            }
+                        } catch (RuntimeException e) {
+                            ok[0] = false;
+                            HabiLotteryMod.LOGGER.error("Failed retiring legacy balances in {}", path, e);
+                        }
+                        Path backup = AtomicJsonFiles.bakPath(path);
+                        if (Files.exists(backup)) {
+                            if (!Files.isRegularFile(backup)) {
+                                HabiLotteryMod.LOGGER.error("Player account backup is not a regular file {}", backup);
+                                ok[0] = false;
+                            } else if (!scrubLegacyFileSafely(backup)) {
+                                ok[0] = false;
+                            }
+                        }
+                    });
+            // A world may have only a recovery copy after an interrupted write. Scrub it
+            // too, without treating it as a new authoritative primary file.
+            try (var backups = Files.list(players)) {
+                backups.filter(path -> path.getFileName().toString()
+                                .matches("[0-9a-fA-F-]{36}\\.json\\.bak"))
+                        .forEach(path -> {
+                            if (!Files.isRegularFile(path)) {
+                                HabiLotteryMod.LOGGER.error("Player account backup is not a regular file {}", path);
+                                ok[0] = false;
+                            } else if (!scrubLegacyFileSafely(path)) {
+                                ok[0] = false;
+                            }
+                        });
+            }
+        } catch (Exception e) {
+            HabiLotteryMod.LOGGER.error("Unable to scan player accounts for legacy balances", e);
+            return false;
+        }
+        return ok[0];
+    }
+
+    /** Remove retired balance fields from both the primary file and its recovery copy. */
+    private static boolean scrubLegacyJson(Path path, JsonObject json) {
+        if (path == null || json == null) {
+            return false;
+        }
+        boolean changed = json.remove("lootChance") != null;
+        changed |= json.remove("coinNum") != null;
+        changed |= json.remove("migratedFromSre") != null;
+        changed |= json.remove("recentSettledMatches") != null;
+        changed |= scrubGreenApples(json);
+        int version = legacyVersion(json);
+        if (version < 2) {
+            json.addProperty("version", 2);
+            changed = true;
+        }
+        if (!changed) {
+            return true;
+        }
+        boolean written = AtomicJsonFiles.writeJson(path, json, GSON, true, false);
+        if (!written) {
+            HabiLotteryMod.LOGGER.error("Failed retiring legacy balances in {}", path);
+        }
+        return written;
+    }
+
+    /** Canonicalize the new currency during the one-time legacy scrub. */
+    private static boolean scrubGreenApples(JsonObject json) {
+        if (json == null || !json.has("greenApples")) {
+            return false;
+        }
+        JsonElement element = json.get("greenApples");
+        int normalized;
+        try {
+            long raw = element == null || element.isJsonNull() ? 0L : element.getAsLong();
+            normalized = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, raw));
+        } catch (RuntimeException malformed) {
+            normalized = 0;
+        }
+        boolean canonicalNumber = element instanceof JsonPrimitive primitive && primitive.isNumber();
+        if (canonicalNumber) {
+            try {
+                if (Integer.toString(normalized).equals(element.getAsString())) {
+                    return false;
+                }
+            } catch (RuntimeException ignored) {
+                // Fall through and replace the malformed primitive.
+            }
+        }
+        json.addProperty("greenApples", normalized);
+        return true;
+    }
+
+    private static boolean scrubLegacyFile(Path path) {
+        if (path == null || !Files.isRegularFile(path)) {
+            return true;
+        }
+        JsonObject json = readRawJson(path);
+        if (json == null) {
+            HabiLotteryMod.LOGGER.error("Cannot parse legacy player account {}", path);
+            return false;
+        }
+        return scrubLegacyJson(path, json);
+    }
+
+    private static boolean scrubLegacyFileSafely(Path path) {
+        try {
+            return scrubLegacyFile(path);
+        } catch (RuntimeException e) {
+            HabiLotteryMod.LOGGER.error("Failed retiring legacy player account {}", path, e);
+            return false;
+        }
+    }
+
+    private static int legacyVersion(JsonObject json) {
+        if (json == null || !json.has("version") || !json.get("version").isJsonPrimitive()) {
+            return 1;
+        }
+        try {
+            return json.get("version").getAsInt();
+        } catch (RuntimeException ignored) {
+            // Treat a malformed version as legacy so it is replaced with the current schema.
+            return 1;
+        }
+    }
+
+    private static JsonObject readRawJson(Path path) {
+        if (path == null || !Files.isRegularFile(path)) {
+            return null;
+        }
+        var loaded = AtomicJsonFiles.readJson(path, JsonObject.class, GSON);
+        return loaded.ok() ? loaded.value() : null;
     }
 
     public void onPlayerJoin(ServerPlayer player) {
@@ -58,55 +213,31 @@ public final class PlayerLotteryStore {
         }
         UUID uuid = player.getUUID();
         loadFailed.remove(uuid);
-        boolean keptDirty = cache.containsKey(uuid) && isDirty(uuid);
         PlayerLotteryData data = adoptJoin(uuid);
         if (data == null) {
             HabiLotteryMod.LOGGER.error(
-                    "Refusing lottery takeover for {} — player JSON primary and .bak are unreadable; will not cache or flush zeros",
+                    "Refusing player data load for {} — primary and .bak are unreadable; will not cache or flush zeros",
                     uuid);
             return;
         }
-        data.migratedFromSre = true;
         boolean stillDirty = isDirty(uuid);
-
-        boolean skipEconomyPush = !keptDirty
-                && !stillDirty
-                && data.lootChance == 0
-                && data.coinNum == 0
-                && playerFileExists(uuid)
-                && EconomyMirror.sreChanceOrCoinsNonZero(player);
-        if (skipEconomyPush) {
-            EconomyMirror.copyChanceCoinsFromSre(player, data);
-            HabiLotteryMod.LOGGER.error(
-                    "All-zero lottery JSON for {} but SRE/CCA chance/coins are non-zero; skip economy overwrite and keep live values",
-                    uuid);
-        }
-
-        boolean pushed = EconomyMirror.pushToSre(player, data, !skipEconomyPush);
-        if (!pushed) {
-            pendingSrePush.add(uuid);
-            markDirty(uuid);
-            HabiLotteryMod.LOGGER.error(
-                    "pushToSre failed for {} — JOIN is not a commit; leaving dirty for retry and not flushing as success",
-                    uuid);
-            MinecraftServer joinServer = player.getServer();
-            if (joinServer != null) {
-                joinServer.execute(() -> retryPendingSrePush(uuid, joinServer));
-            }
-            return;
-        }
-        pendingSrePush.remove(uuid);
+        boolean recovered = recoveredFromBackup.contains(uuid);
         InventorySkinApplier.applyAllEquipped(player, data.equipped);
+        // Repair a backup recovery immediately. The first repair write skips copying a
+        // corrupt primary back over the valid .bak; later writes use normal backups again.
+        if (recovered) {
+            if (!flush(uuid)) {
+                HabiLotteryMod.LOGGER.error("Failed repairing recovered player account {}", uuid);
+            }
         // Do not clobber an unflushed dirty entry with a spurious success flush.
-        if (!stillDirty && (!playerFileExists(uuid) || skipEconomyPush)) {
+        } else if (!stillDirty && !playerFileExists(uuid)) {
             markDirty(uuid);
             flush(uuid);
         }
         HabiLotteryMod.LOGGER.info(
-                "Loaded world lottery for {} (coins={}, chance={}, unlockTypes={}) from {}",
+                "Loaded world player assets for {} (greenApples={}, unlockTypes={}) from {}",
                 player.getGameProfile().getName(),
-                data.coinNum,
-                data.lootChance,
+                data.greenApples,
                 data.unlocked == null ? 0 : data.unlocked.size(),
                 WorldLotteryPaths.playerFile(uuid));
     }
@@ -140,9 +271,16 @@ public final class PlayerLotteryStore {
             loadFailed.add(uuid);
             cache.remove(uuid);
             dirty.remove(uuid);
+            recoveredFromBackup.remove(uuid);
             return null;
         }
         cache.put(uuid, load.data);
+        if (load.usedBackup()) {
+            recoveredFromBackup.add(uuid);
+            dirty.put(uuid, true);
+        } else {
+            recoveredFromBackup.remove(uuid);
+        }
         return load.data;
     }
 
@@ -166,25 +304,6 @@ public final class PlayerLotteryStore {
         return file != null && java.nio.file.Files.isRegularFile(file);
     }
 
-    private void retryPendingSrePush(UUID uuid, MinecraftServer server) {
-        if (uuid == null || server == null || !pendingSrePush.contains(uuid) || isLoadFailed(uuid)) {
-            return;
-        }
-        ServerPlayer online = server.getPlayerList().getPlayer(uuid);
-        PlayerLotteryData data = cache.get(uuid);
-        if (online == null || data == null) {
-            return;
-        }
-        boolean pushed = EconomyMirror.pushToSre(online, data, true);
-        if (!pushed) {
-            HabiLotteryMod.LOGGER.error("pushToSre retry still failed for {}", uuid);
-            return;
-        }
-        pendingSrePush.remove(uuid);
-        InventorySkinApplier.applyAllEquipped(online, data.equipped);
-        flush(uuid);
-    }
-
     public void onPlayerQuit(ServerPlayer player) {
         if (player == null) {
             return;
@@ -194,7 +313,6 @@ public final class PlayerLotteryStore {
             loadFailed.remove(uuid);
             cache.remove(uuid);
             dirty.remove(uuid);
-            pendingSrePush.remove(uuid);
             return;
         }
         boolean ok = flush(uuid);
@@ -206,7 +324,6 @@ public final class PlayerLotteryStore {
         }
         cache.remove(uuid);
         dirty.remove(uuid);
-        pendingSrePush.remove(uuid);
     }
 
     public PlayerLotteryData getOrLoad(UUID uuid) {
@@ -221,12 +338,19 @@ public final class PlayerLotteryStore {
         DiskLoad load = readPlayer(uuid);
         if (load.isCorrupt()) {
             loadFailed.add(uuid);
+            recoveredFromBackup.remove(uuid);
             HabiLotteryMod.LOGGER.error(
                     "Refusing to cache a zero lottery account for unreadable player file {}",
                     uuid);
             return normalize(null);
         }
         cache.put(uuid, load.data);
+        if (load.usedBackup()) {
+            recoveredFromBackup.add(uuid);
+            dirty.put(uuid, true);
+        } else {
+            recoveredFromBackup.remove(uuid);
+        }
         return load.data;
     }
 
@@ -255,20 +379,13 @@ public final class PlayerLotteryStore {
         update(player.getUUID(), mutator);
     }
 
-    public int getLootChance(UUID uuid) {
-        return getOrLoad(uuid).lootChance;
+    public int getGreenApples(UUID uuid) {
+        return getOrLoad(uuid).greenApples;
     }
 
-    public void addLootChance(UUID uuid, int delta) {
-        update(uuid, d -> d.lootChance = Math.max(0, d.lootChance + delta));
-    }
-
-    public int getCoinNum(UUID uuid) {
-        return getOrLoad(uuid).coinNum;
-    }
-
-    public void addCoinNum(UUID uuid, int delta) {
-        update(uuid, d -> d.coinNum = Math.max(0, d.coinNum + delta));
+    public void addGreenApples(UUID uuid, int delta) {
+        update(uuid, d -> d.greenApples = (int) Math.max(0L,
+                Math.min(Integer.MAX_VALUE, (long) d.greenApples + delta)));
     }
 
     public boolean isSkinUnlocked(UUID uuid, String type, String skin) {
@@ -453,9 +570,6 @@ public final class PlayerLotteryStore {
         if (isLoadFailed(uuid)) {
             return false;
         }
-        if (key != null && key.startsWith("login:")) {
-            return true;
-        }
         PlayerLotteryData d = getOrLoad(uuid);
         if (isLoadFailed(uuid) || !GrantKeys.tryConsume(d, key)) {
             return false;
@@ -491,39 +605,32 @@ public final class PlayerLotteryStore {
         if (uuid == null) {
             return true;
         }
-        try {
-            if (isLoadFailed(uuid)) {
-                return true;
-            }
-            if (isFlushDeferred()) {
-                return true;
-            }
-            if (!Boolean.TRUE.equals(dirty.get(uuid))) {
-                return true;
-            }
-            PlayerLotteryData data = cache.get(uuid);
-            if (data == null) {
-                return true;
-            }
-            if (!WorldLotteryPaths.ready()) {
-                return false;
-            }
-            Path file = WorldLotteryPaths.playerFile(uuid);
-            if (file == null) {
-                return false;
-            }
-            boolean ok = AtomicJsonFiles.writeJson(file, data, GSON, true, true);
-            if (ok) {
-                dirty.remove(uuid);
-            } else {
-                HabiLotteryMod.LOGGER.error("Failed saving player lottery data {}", uuid);
-            }
-            return ok;
-        } finally {
-            if (!isFlushDeferred()) {
-                LotteryHistoryStore.get().flushPending(uuid);
-            }
+        if (isLoadFailed(uuid) || isFlushDeferred()
+                || !Boolean.TRUE.equals(dirty.get(uuid))) {
+            return true;
         }
+        PlayerLotteryData data = cache.get(uuid);
+        if (data == null) {
+            return true;
+        }
+        if (!WorldLotteryPaths.ready()) {
+            return false;
+        }
+        Path file = WorldLotteryPaths.playerFile(uuid);
+        if (file == null) {
+            return false;
+        }
+        // A recovered .bak is the only trusted copy when the primary was corrupt. Do not
+        // copy that corrupt primary back over the valid backup during the repair write.
+        boolean repairBackup = recoveredFromBackup.contains(uuid);
+        boolean ok = AtomicJsonFiles.writeJson(file, data, GSON, true, !repairBackup);
+        if (ok) {
+            dirty.remove(uuid);
+            recoveredFromBackup.remove(uuid);
+        } else {
+            HabiLotteryMod.LOGGER.error("Failed saving player lottery data {}", uuid);
+        }
+        return ok;
     }
 
     /** Flushes only dirty cache entries. Returns false if any dirty write fails. */
@@ -537,7 +644,6 @@ public final class PlayerLotteryStore {
                 ok = false;
             }
         }
-        LotteryHistoryStore.get().flushAllPending();
         return ok;
     }
 
@@ -557,10 +663,9 @@ public final class PlayerLotteryStore {
         cache.clear();
         dirty.clear();
         loadFailed.clear();
-        pendingSrePush.clear();
+        recoveredFromBackup.clear();
         takeoverActive = false;
         DEFERRED_FLUSH.remove();
-        LotteryHistoryStore.get().resetForTest();
     }
 
     public void markDirty(UUID uuid) {
@@ -574,96 +679,31 @@ public final class PlayerLotteryStore {
         return Boolean.TRUE.equals(dirty.get(uuid));
     }
 
-    public void setLootChance(UUID uuid, int value) {
-        update(uuid, d -> d.lootChance = Math.max(0, value));
+    public void setGreenApples(UUID uuid, int value) {
+        update(uuid, d -> d.greenApples = Math.max(0, value));
     }
 
-    public void setCoinNum(UUID uuid, int value) {
-        update(uuid, d -> d.coinNum = Math.max(0, value));
-    }
-
-    /**
-     * 批量写在线玩家抽数（审核 B-20）。
-     *
-     * <p>旧实现逐人 {@code setLootChance + flush} 并丢弃 flush 返回值，
-     * 最后把<b>循环次数</b>当成成功人数返回——磁盘满 / 世界只读时会向管理员
-     * 虚报「已为在线 N 人调整」而实际一个都没落盘。
-     *
-     * <p>现在逐人快照 + 检查 flush，失败即回滚该玩家并<b>不计入</b>返回计数，
-     * 因此返回值是真实的成功人数。
-     *
-     * @return 真正写入成功的玩家数
-     */
-    public int setLootChanceToOnline(MinecraftServer server, int value) {
+    /** Number of online players whose green-apple change was durably written. */
+    public int setGreenApplesToOnline(MinecraftServer server, int value) {
         if (server == null) {
             return 0;
         }
         int count = 0;
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.lootChance = Math.max(0, value))) {
-                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.greenApples = Math.max(0, value))) {
                 count++;
             }
         }
         return count;
     }
 
-    /** 批量加在线玩家抽数（审核 B-20，语义同 {@link #setLootChanceToOnline}）。 */
-    public int addLootChanceToOnline(MinecraftServer server, int delta) {
-        if (server == null) {
-            return 0;
-        }
+    /** Number of online players whose green-apple change was durably written. */
+    public int addGreenApplesToOnline(MinecraftServer server, int delta) {
+        if (server == null) return 0;
         int count = 0;
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.lootChance = Math.max(0, d.lootChance + delta))) {
-                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-                count++;
-            }
-        }
-        return count;
-    }
-
-    /** 批量加在线玩家金币（审核 B-20，语义同 {@link #setLootChanceToOnline}）。 */
-    public int addCoinsToOnline(MinecraftServer server, int delta) {
-        if (server == null) {
-            return 0;
-        }
-        int count = 0;
-        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.coinNum = Math.max(0, d.coinNum + delta))) {
-                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-                count++;
-            }
-        }
-        return count;
-    }
-
-    /** 批量清零在线玩家金币（审核 B-20，语义同 {@link #setLootChanceToOnline}）。 */
-    public int clearCoinsForOnline(MinecraftServer server) {
-        if (server == null) {
-            return 0;
-        }
-        int count = 0;
-        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.coinNum = 0)) {
-                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-                count++;
-            }
-        }
-        return count;
-    }
-
-    /** 设置在线玩家金币（审核 B-20）。 */
-    public int setCoinsToOnline(MinecraftServer server, int value) {
-        if (server == null) {
-            return 0;
-        }
-        int count = 0;
-        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.coinNum = Math.max(0, value))) {
-                EconomyMirror.syncChanceAndCoins(sp, getOrLoad(sp.getUUID()));
-                count++;
-            }
+            if (applyToPlayerWithRollback(sp.getUUID(), d -> d.greenApples = (int) Math.max(0L,
+                    Math.min(Integer.MAX_VALUE, (long) d.greenApples + delta)))) count++;
         }
         return count;
     }
@@ -700,8 +740,7 @@ public final class PlayerLotteryStore {
                 com.habitrain.lottery.network.PlayerAdminModels.PlayerRow r = new com.habitrain.lottery.network.PlayerAdminModels.PlayerRow(
                         sp.getGameProfile().getName(),
                         sp.getUUID(),
-                        d.lootChance,
-                        d.coinNum,
+                        d.greenApples,
                         countUnlocked(d),
                         true
                 );
@@ -724,8 +763,7 @@ public final class PlayerLotteryStore {
                                         new com.habitrain.lottery.network.PlayerAdminModels.PlayerRow(
                                                 shortUuid(uuid),
                                                 uuid,
-                                                load.data.lootChance,
-                                                load.data.coinNum,
+                                                load.data.greenApples,
                                                 countUnlocked(load.data),
                                                 false
                                         );
@@ -807,6 +845,8 @@ public final class PlayerLotteryStore {
         if (data.equipped == null) {
             data.equipped = new HashMap<>();
         }
+        data.version = 2;
+        data.greenApples = Math.max(0, data.greenApples);
         GrantKeys.normalize(data);
         return data;
     }
@@ -855,6 +895,10 @@ public final class PlayerLotteryStore {
 
         boolean isCorrupt() {
             return kind == Kind.CORRUPT;
+        }
+
+        boolean usedBackup() {
+            return kind == Kind.OK_BACKUP;
         }
 
         boolean flushable() {

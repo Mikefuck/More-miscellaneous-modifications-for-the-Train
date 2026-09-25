@@ -1,5 +1,6 @@
 package com.habitrain.lottery.client.gui;
 
+import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.MailTargetParse;
 import com.habitrain.lottery.network.MailComposeC2SPayload;
 import com.habitrain.lottery.network.MailComposeC2SPayload.RewardEntry;
@@ -26,10 +27,11 @@ public class MailComposeScreen extends Screen {
     private static final int PAGE_RECIPIENTS = 1;
     private static final int PAGE_REWARDS = 2;
     private static final int PAGE_SKIN = 3;
+    private static final int PAGE_CRATES = 4;
     private EditBox skinBox;
     private String skinEntry = "";
 
-    private static final String[] PAGE_LABELS = {"1 写邮件", "2 收件人", "3 附件", "4 皮肤"};
+    private static final String[] PAGE_LABELS = {"1 写邮件", "2 收件人", "3 附件", "4 皮肤", "5 箱子/钥匙"};
     private static final String[] FACTIONS = {"killer", "civilian", "neutral", "neutral_for_killer"};
     private static final String[] FACTION_LABELS = {"杀手", "平民", "中立", "杀手中立"};
 
@@ -46,16 +48,18 @@ public class MailComposeScreen extends Screen {
     private EditBox titleBox;
     private MultilineTextArea bodyArea;
     private MultilineTextArea offlineArea;
-    private EditBox goldBox;
-    private EditBox drawsBox;
+    private EditBox greenApplesBox;
     private EditBox cardAmountBox;
     private EditBox selfSelectAmountBox;
     private EditBox limitBreakAmountBox;
+    private EditBox crateAmountBox;
     private EditBox expiresBox;
 
     private int page = PAGE_CONTENT;
     private int targetMode = MailComposeC2SPayload.MODE_ONLINE_LIST;
     private int factionIdx;
+    private int crateIdx;
+    private boolean keyAttachment;
 
     private final List<String> selectedOnline = new ArrayList<>();
     private final List<String> onlineNames = new ArrayList<>();
@@ -101,6 +105,7 @@ public class MailComposeScreen extends Screen {
                 addRenderableWidget(skinBox);
                 skinBox.setTooltip(Tooltip.create(Component.literal("填写新皮肤组件已注册的 type/id；领取后解锁，重复领取不叠加")));
             }
+            case PAGE_CRATES -> buildCratePage();
             default -> buildContentPage();
         }
 
@@ -296,26 +301,17 @@ public class MailComposeScreen extends Screen {
 
     private void buildRewardsPage() {
         int gap = 6;
-        int fieldWidth = Math.max(1, (contentWidth - gap * 2) / 3);
+        int fieldWidth = Math.max(1, (contentWidth - gap) / 2);
         int fieldY = contentTop + 12;
 
-        int drawsButtonWidth = Math.min(34, Math.max(24, fieldWidth / 3));
-        int drawsInputWidth = Math.max(1, fieldWidth - drawsButtonWidth - 4);
-        drawsBox = prepareNumberBox(drawsBox, contentX, fieldY, drawsInputWidth, true, "抽数附件");
-        Button addDrawButton = Button.builder(Component.literal("+1"), b -> addOneDraw())
-                .bounds(contentX + drawsInputWidth + 4, fieldY, drawsButtonWidth, 18)
-                .build();
-        addDrawButton.setTooltip(Tooltip.create(Component.literal("向邮件附件增加 1 次抽奖机会")));
-        goldBox = prepareNumberBox(goldBox, contentX + fieldWidth + gap, fieldY, fieldWidth, true, "金币");
+        greenApplesBox = prepareNumberBox(greenApplesBox, contentX, fieldY, fieldWidth, true, "绿苹果");
         boolean freshExpiresBox = expiresBox == null;
-        expiresBox = prepareNumberBox(expiresBox, contentX + (fieldWidth + gap) * 2, fieldY,
-                contentX + contentWidth - (contentX + (fieldWidth + gap) * 2), false, "有效期");
+        expiresBox = prepareNumberBox(expiresBox, contentX + fieldWidth + gap, fieldY,
+                contentX + contentWidth - (contentX + fieldWidth + gap), false, "有效期");
         if (freshExpiresBox && targetMode == MailComposeC2SPayload.MODE_ALL_PLAYERS) {
             expiresBox.setValue(String.valueOf(MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS));
         }
-        addRenderableWidget(drawsBox);
-        addRenderableWidget(addDrawButton);
-        addRenderableWidget(goldBox);
+        addRenderableWidget(greenApplesBox);
         addRenderableWidget(expiresBox);
 
         int factionY = fieldY + 38;
@@ -352,17 +348,42 @@ public class MailComposeScreen extends Screen {
         addRenderableWidget(limitBreakAmountBox);
     }
 
-    private void addOneDraw() {
-        if (drawsBox == null) {
-            return;
+    private void buildCratePage() {
+        int gap = 5;
+        int rowWidth = Math.max(1, (contentWidth - gap * 2) / 3);
+        int y = contentTop + 12;
+        List<CrateCatalog.Entry> entries = CrateCatalog.entries();
+        for (int i = 0; i < entries.size(); i++) {
+            CrateCatalog.Entry entry = entries.get(i);
+            int row = i / 3;
+            int col = i % 3;
+            int x = contentX + col * (rowWidth + gap);
+            int buttonWidth = col == 2 ? contentX + contentWidth - x : rowWidth;
+            final int selected = i;
+            Button button = Button.builder(Component.literal((i == crateIdx ? "◆ " : "") + entry.id()), b -> {
+                crateIdx = selected;
+                rebuildPage();
+            }).bounds(x, y + row * 25, buttonWidth, 20).build();
+            button.active = i != crateIdx;
+            addRenderableWidget(button);
         }
-        int current = parseIntSafe(drawsBox.getValue(), 0);
-        if (current == Integer.MAX_VALUE) {
-            status = "抽数已达到可填写的最大值";
-            return;
-        }
-        drawsBox.setValue(String.valueOf(current + 1));
-        status = "已向附件添加 1 次抽奖机会，当前共 " + (current + 1) + " 次";
+        int controlsY = y + ((entries.size() + 2) / 3) * 25 + 6;
+        int half = Math.max(1, (contentWidth - gap) / 2);
+        Button crateButton = Button.builder(Component.literal(keyAttachment ? "箱子" : "◆ 箱子"), b -> {
+            keyAttachment = false;
+            rebuildPage();
+        }).bounds(contentX, controlsY, half, 20).build();
+        crateButton.active = keyAttachment;
+        addRenderableWidget(crateButton);
+        Button keyButton = Button.builder(Component.literal(keyAttachment ? "◆ 钥匙" : "钥匙"), b -> {
+            keyAttachment = true;
+            rebuildPage();
+        }).bounds(contentX + half + gap, controlsY, contentX + contentWidth - (contentX + half + gap), 20).build();
+        keyButton.active = !keyAttachment;
+        addRenderableWidget(keyButton);
+        crateAmountBox = prepareNumberBox(crateAmountBox, contentX, controlsY + 28, contentWidth, false,
+                keyAttachment ? "钥匙数量" : "箱子数量");
+        addRenderableWidget(crateAmountBox);
     }
 
     private EditBox prepareNumberBox(EditBox box, int x, int y, int boxWidth,
@@ -410,16 +431,12 @@ public class MailComposeScreen extends Screen {
 
     private List<RewardEntry> buildRewards() {
         List<RewardEntry> built = new ArrayList<>();
-        int draws = parseIntSafe(drawsBox != null ? drawsBox.getValue() : "0", 0);
-        int gold = parseIntSafe(goldBox != null ? goldBox.getValue() : "0", 0);
+        int greenApples = parseIntSafe(greenApplesBox != null ? greenApplesBox.getValue() : "0", 0);
         int cards = parseIntSafe(cardAmountBox != null ? cardAmountBox.getValue() : "0", 0);
         int selfCards = parseIntSafe(selfSelectAmountBox != null ? selfSelectAmountBox.getValue() : "0", 0);
         int limitBreakCards = parseIntSafe(limitBreakAmountBox != null ? limitBreakAmountBox.getValue() : "0", 0);
-        if (draws != 0) {
-            built.add(new RewardEntry(RewardEntry.DRAWS, draws, ""));
-        }
-        if (gold != 0) {
-            built.add(new RewardEntry(RewardEntry.COINS, gold, ""));
+        if (greenApples != 0) {
+            built.add(new RewardEntry(RewardEntry.GREEN_APPLES, greenApples, ""));
         }
         if (cards != 0) {
             built.add(new RewardEntry(RewardEntry.FACTION_CARD, cards, FACTIONS[factionIdx]));
@@ -431,6 +448,12 @@ public class MailComposeScreen extends Screen {
             built.add(new RewardEntry(RewardEntry.LIMIT_BREAK_CARD, limitBreakCards, ""));
         }
         if (!skinEntry.isBlank()) built.add(new RewardEntry(RewardEntry.SKIN, 1, skinEntry));
+        int crateAmount = parseIntSafe(crateAmountBox != null ? crateAmountBox.getValue() : "0", 0);
+        if (crateAmount != 0 && !CrateCatalog.entries().isEmpty()) {
+            built.add(new RewardEntry(keyAttachment ? RewardEntry.KEY : RewardEntry.CRATE,
+                    crateAmount, CrateCatalog.entries().get(Math.max(0, Math.min(crateIdx,
+                            CrateCatalog.entries().size() - 1))).id()));
+        }
         return built;
     }
 
@@ -509,13 +532,14 @@ public class MailComposeScreen extends Screen {
         for (RewardEntry reward : rewards) {
             switch (reward.kind()) {
                 case RewardEntry.SKIN -> parts.add("皮肤 " + reward.factionType());
-                case RewardEntry.DRAWS -> parts.add("抽数 " + reward.amount());
-                case RewardEntry.COINS -> parts.add("金币 " + reward.amount());
+                case RewardEntry.GREEN_APPLES -> parts.add("绿苹果 " + reward.amount());
                 case RewardEntry.FACTION_CARD ->
                         parts.add(FACTION_LABELS[factionIdx] + "阵营卡 x" + reward.amount());
                 case RewardEntry.SELF_SELECT_CARD -> parts.add("自选卡 x" + reward.amount());
                 case RewardEntry.LIMIT_BREAK_CARD -> parts.add(Component.translatable(
                         "screen.habitrain_lottery.config.cards.limit_break").getString() + " x" + reward.amount());
+                case RewardEntry.CRATE -> parts.add("箱子 " + reward.factionType() + " x" + reward.amount());
+                case RewardEntry.KEY -> parts.add("钥匙 " + reward.factionType() + " x" + reward.amount());
                 default -> {
                 }
             }
@@ -611,12 +635,20 @@ public class MailComposeScreen extends Screen {
             graphics.drawString(font, font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth), contentX, contentTop + 60, BRASS, false);
             return;
         }
+        if (page == PAGE_CRATES) {
+            String kind = keyAttachment ? "钥匙" : "箱子";
+            String selected = CrateCatalog.entries().isEmpty() ? "" : CrateCatalog.entries()
+                    .get(Math.max(0, Math.min(crateIdx, CrateCatalog.entries().size() - 1))).id();
+            graphics.drawString(font, kind + "附件 · 当前选择 " + selected, contentX, contentTop + 2, TEXT, false);
+            graphics.drawString(font, font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth),
+                    contentX, contentTop + 112, BRASS, false);
+            return;
+        }
         graphics.drawString(font, "基础奖励", contentX, contentTop, MUTED, false);
-        graphics.drawString(font, "抽数附件", drawsBox.getX(), drawsBox.getY() - 10, MUTED, false);
-        graphics.drawString(font, "金币", goldBox.getX(), goldBox.getY() - 10, MUTED, false);
+        graphics.drawString(font, "绿苹果", greenApplesBox.getX(), greenApplesBox.getY() - 10, MUTED, false);
         graphics.drawString(font, "有效期（天）",
                 expiresBox.getX(), expiresBox.getY() - 10, MUTED, false);
-        graphics.drawString(font, "阵营卡类型（四选一）", contentX, drawsBox.getY() + 26, MUTED, false);
+        graphics.drawString(font, "阵营卡类型（四选一）", contentX, greenApplesBox.getY() + 26, MUTED, false);
         graphics.drawString(font, font.plainSubstrByWidth("阵营卡数量", cardAmountBox.getWidth()),
                 cardAmountBox.getX(), cardAmountBox.getY() - 10, TEXT, false);
         graphics.drawString(font, font.plainSubstrByWidth(

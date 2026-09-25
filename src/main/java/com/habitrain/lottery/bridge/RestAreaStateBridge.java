@@ -12,8 +12,8 @@ import java.lang.reflect.Method;
  * {@code com.habitrain.core.game.sre.EliminatedRestAreaService}，并且都写成
  * {@code try { ... } catch (Throwable ignored) { resting = false; }}。
  * 于是核心一旦重构或移除该类，{@code NoClassDefFoundError} 会被吞掉，
- * 结果就是<b>门禁静默 fail-open</b>：旁观 / 休息中的玩家可以抽奖、领邮件、用卡。
- * 而这条路径是全模组最热的（每次抽奖、领邮件、金币兑换、开界面、用卡，
+ * 结果就是<b>门禁静默 fail-open</b>：旁观 / 休息中的玩家可以领邮件、用卡。
+ * 而这条路径是全模组最热的（每次领邮件、开界面、用卡，
  * 以及每个玩家每次名牌渲染都会走）。
  *
  * <h2>现在的做法</h2>
@@ -24,7 +24,7 @@ import java.lang.reflect.Method;
  *
  * <h2>降级方向（重要）</h2>
  * <p>探针失败时本类返回 {@code true}（判定为「正在休息」），即<b>fail-closed</b>：
- * 宁可在核心缺失时让抽奖 / 领邮件 / 用卡整体停摆并打出可读的错误日志，
+ * 宁可在核心缺失时让领邮件 / 用卡整体停摆并打出可读的错误日志，
  * 也不要静默放行。这与旧实现的方向<b>完全相反</b>，也是修复 B-01 的核心。
  * 名牌渲染等非门禁路径可以调用 {@link #isAvailable()} 自行选择更温和的降级。
  */
@@ -45,7 +45,7 @@ public final class RestAreaStateBridge {
      * 玩家是否正在淘汰休息区。
      *
      * @param player 目标玩家；{@code null} 返回 {@code false}
-     * @return {@code true} 表示必须按「旁观、休息或死亡」处理（拒绝抽奖 / 领邮件 / 用卡）
+     * @return {@code true} 表示必须按「旁观、休息或死亡」处理（拒绝领邮件 / 用卡）
      */
     public static boolean isResting(ServerPlayer player) {
         if (player == null) {
@@ -107,11 +107,11 @@ public final class RestAreaStateBridge {
         degradedLogged = true;
         if (cause != null) {
             com.habitrain.lottery.HabiLotteryMod.LOGGER.error(
-                    "[抽奖] {} — 抽奖/邮件/用卡门禁将按“休息中”保守拒绝，请升级 habitrain_core",
+                    "[资产] {} — 邮件/用卡门禁将按“休息中”保守拒绝，请升级 habitrain_core",
                     message, cause);
         } else {
             com.habitrain.lottery.HabiLotteryMod.LOGGER.error(
-                    "[抽奖] {} — 抽奖/邮件/用卡门禁将按“休息中”保守拒绝，请升级 habitrain_core",
+                    "[资产] {} — 邮件/用卡门禁将按“休息中”保守拒绝，请升级 habitrain_core",
                     message);
         }
     }

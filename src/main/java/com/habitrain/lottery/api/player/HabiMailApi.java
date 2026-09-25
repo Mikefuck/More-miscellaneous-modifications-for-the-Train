@@ -89,24 +89,13 @@ public final class HabiMailApi {
         return new MailDraft(sender, title, content, expiresAt, safe);
     }
 
-    /** One draft that grants 抽数. */
-    public static MailDraft draws(String sender, String title, String content, int amount) {
-        return draft(sender, title, content, List.of(draws(amount)));
+    /** One draft that grants green apples. */
+    public static MailDraft greenApples(String sender, String title, String content, int amount) {
+        return draft(sender, title, content, List.of(greenApples(amount)));
     }
 
-    /** One draft that grants 金币. */
-    public static MailDraft coins(String sender, String title, String content, int amount) {
-        return draft(sender, title, content, List.of(coins(amount)));
-    }
-
-    /** {@code DRAWS} reward. */
-    public static MailReward draws(int amount) {
-        return MailReward.draws(MailComposeLimits.clampRewardAmount(amount));
-    }
-
-    /** {@code COINS} reward. */
-    public static MailReward coins(int amount) {
-        return MailReward.coins(MailComposeLimits.clampRewardAmount(amount));
+    public static MailReward greenApples(int amount) {
+        return MailReward.greenApples(MailComposeLimits.clampRewardAmount(amount));
     }
 
     /**
@@ -130,6 +119,16 @@ public final class HabiMailApi {
 
     public static MailReward limitBreakCard(int amount) {
         return MailReward.limitBreakCard(MailComposeLimits.clampRewardAmount(amount));
+    }
+
+    /** A crate attachment from the shared crate catalogue. */
+    public static MailReward crate(String crateId, int amount) {
+        return MailReward.crate(crateId, MailComposeLimits.clampRewardAmount(amount));
+    }
+
+    /** A matching crate key attachment from the shared crate catalogue. */
+    public static MailReward key(String crateId, int amount) {
+        return MailReward.key(crateId, MailComposeLimits.clampRewardAmount(amount));
     }
 
     private static MailReward clamp(MailReward reward) {

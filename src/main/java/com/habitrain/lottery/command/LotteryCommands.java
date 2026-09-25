@@ -1,19 +1,14 @@
 package com.habitrain.lottery.command;
 
-import com.habitrain.lottery.PlayerStateGate;
-import com.habitrain.lottery.bridge.EconomyMirror;
-import com.habitrain.lottery.bridge.LotteryManagerBridge;
-import com.habitrain.lottery.config.LotteryConfigService;
-import com.habitrain.lottery.grant.CoinToDrawService;
-import com.habitrain.lottery.grant.LotteryGrantService;
+import com.habitrain.lottery.api.player.HabiLotteryApi;
 import com.habitrain.lottery.meta.MenuGateServerBridge;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.skin.SkinContentBootstrap;
-import com.habitrain.lottery.storage.MigrationService;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
+import com.habitrain.lottery.crate.CrateService;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -36,28 +31,10 @@ public final class LotteryCommands {
                                 Commands.CommandSelection environment) {
         dispatcher.register(buildRoot("habitrain_lottery"));
         dispatcher.register(buildRoot("hlt"));
-        // Official LootInfoScreen bottom-left button: sendCommand("sre:loot coin2lottery")
-        dispatcher.register(Commands.literal("sre:loot")
-                .then(coinExchangeCommand()));
-        dispatcher.register(Commands.literal("sre")
-                .then(Commands.literal("loot")
-                        .then(coinExchangeCommand())));
-    }
-
-    private static LiteralArgumentBuilder<CommandSourceStack> coinExchangeCommand() {
-        return Commands.literal("coin2lottery")
-                .executes(ctx -> CoinToDrawService.openScreen(ctx.getSource().getPlayerOrException()))
-                .then(Commands.argument("amount", IntegerArgumentType.integer(1))
-                        .executes(ctx -> CoinToDrawService.tryBuy(ctx.getSource().getPlayerOrException(),
-                                IntegerArgumentType.getInteger(ctx, "amount"))));
     }
 
     private static int opLevel() {
-        try {
-            return LotteryConfigService.get().getRates().opPermissionLevel();
-        } catch (Throwable ignored) {
-            return 2;
-        }
+        return 2;
     }
 
     /** Console is OP-only break-glass; in-game admins also need MenuGate on dedicated. */
@@ -88,58 +65,43 @@ public final class LotteryCommands {
                                                     ctx.getSource().sendSuccess(() -> Component.literal("系统道具已存入账户：" + id + " × " + result.newValue()), true);
                                                     return 1;
                                                 })))))
-                .then(Commands.literal("open")
-                        .executes(ctx -> {
-                            ServerPlayer player = ctx.getSource().getPlayerOrException();
-                            if (PlayerStateGate.spectatorRestOrDead(player)) {
-                                ctx.getSource().sendFailure(Component.literal(PlayerStateGate.OPEN_BLOCKED));
-                                return 0;
-                            }
-                            LotteryNetwork.sendOpenLootUi(player);
-                            ctx.getSource().sendSuccess(() -> Component.literal("已打开抽奖界面"), false);
-                            return 1;
-                        }))
-                .then(Commands.literal("reload")
+                .then(Commands.literal("crates")
                         .requires(LotteryCommands::adminRequires)
-                        .executes(ctx -> {
-                            LotteryManagerBridge.reloadFromDisk(ctx.getSource().getServer());
-                            LotteryNetwork.broadcastConfigAndPoolsToAll(ctx.getSource().getServer());
-                            ctx.getSource().sendSuccess(() -> Component.literal("已重载抽奖配置与奖池"), true);
-                            return 1;
-                        }))
-                .then(Commands.literal("grant")
-                        .requires(LotteryCommands::adminRequires)
-                        .then(Commands.argument("player", EntityArgument.player())
-                                .then(Commands.argument("amount", IntegerArgumentType.integer(-1000, 1000))
-                                        .executes(ctx -> {
-                                            ServerPlayer p = EntityArgument.getPlayer(ctx, "player");
-                                            int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                            LotteryGrantService.grant(p, amount, "cmd:" + System.currentTimeMillis(), false);
-                                            ctx.getSource().sendSuccess(() -> Component.literal(
-                                                    "已给 " + p.getGameProfile().getName() + " 调整抽奖次数 " + amount), true);
-                                            return 1;
-                                        }))))
-                .then(Commands.literal("coin")
+                        .then(Commands.literal("give")
+                                .then(Commands.argument("player", EntityArgument.player())
+                                        .then(Commands.argument("item", StringArgumentType.word())
+                                                .suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
+                                                        java.util.stream.Stream.concat(
+                                                                        CrateService.definitions().stream().map(d -> "crate_" + d.id()),
+                                                                        CrateService.definitions().stream().map(CrateService.Definition::keyId))
+                                                                .sorted(), builder))
+                                                .then(Commands.argument("amount", IntegerArgumentType.integer(1, 100000))
+                                                        .executes(ctx -> {
+                                                            ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+                                                            String raw = StringArgumentType.getString(ctx, "item");
+                                                            String id = raw.startsWith("crate_") || raw.startsWith("key_") ? raw : "crate_" + raw;
+                                                            var result = com.habitrain.lottery.api.player.HabiSystemItemApi.grant(
+                                                                    target.getUUID(), net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                                                                            CrateService.NAMESPACE, id), IntegerArgumentType.getInteger(ctx, "amount"));
+                                                            if (!result.ok()) { ctx.getSource().sendFailure(Component.literal(result.message())); return 0; }
+                                                            ctx.getSource().sendSuccess(() -> Component.literal("已发放 " + id + " × " + IntegerArgumentType.getInteger(ctx, "amount")), true);
+                                                            return 1;
+                                                        }))))))
+                .then(Commands.literal("green_apples")
                         .requires(LotteryCommands::adminRequires)
                         .then(Commands.argument("player", EntityArgument.player())
                                 .then(Commands.argument("amount", IntegerArgumentType.integer(-100000, 100000))
                                         .executes(ctx -> {
                                             ServerPlayer p = EntityArgument.getPlayer(ctx, "player");
                                             int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                            // 审核 B-19：管理写路径必须检查 flush 结果，否则
-                                            // 磁盘满 / 世界只读时会向管理员虚报成功。
-                                            com.habitrain.lottery.storage.PlayerLotteryData snap =
-                                                    PlayerLotteryStore.get().getOrLoad(p.getUUID()).copy();
-                                            boolean wasDirty = PlayerLotteryStore.get().isDirty(p.getUUID());
-                                            PlayerLotteryStore.get().update(p, d -> d.coinNum = Math.max(0, d.coinNum + amount));
-                                            if (!PlayerLotteryStore.get().flush(p.getUUID())) {
-                                                PlayerLotteryStore.get().restoreSnapshot(p.getUUID(), snap, wasDirty);
-                                                ctx.getSource().sendFailure(Component.literal(
-                                                        "§c写入失败：金币未变更（存档不可写），请检查磁盘/世界目录权限"));
+                                            var result = HabiLotteryApi.addGreenApples(p.getUUID(), amount);
+                                            if (!result.ok()) {
+                                                ctx.getSource().sendFailure(Component.literal(result.message()));
                                                 return 0;
                                             }
                                             ctx.getSource().sendSuccess(() -> Component.literal(
-                                                    "已给 " + p.getGameProfile().getName() + " 调整金币 " + amount), true);
+                                                    "已给 " + p.getGameProfile().getName() + " 调整绿苹果 " + amount
+                                                            + "，现有 " + result.newValue()), true);
                                             return 1;
                                         }))))
                 .then(Commands.literal("mail")
@@ -165,21 +127,9 @@ public final class LotteryCommands {
                                     int unlocks = d.unlocked.values().stream().mapToInt(m -> m.size()).sum();
                                     ctx.getSource().sendSuccess(() -> Component.literal(
                                             p.getGameProfile().getName()
-                                                    + " chance=" + d.lootChance
-                                                    + " coins=" + d.coinNum
+                                                    + " greenApples=" + d.greenApples
                                                     + " unlocks=" + unlocks
-                                                    + " equipped=" + d.equipped.size()
-                                                    + " migrated=" + d.migratedFromSre), false);
-                                    return 1;
-                                })))
-                .then(Commands.literal("migrate")
-                        .requires(LotteryCommands::adminRequires)
-                        .then(Commands.argument("player", EntityArgument.player())
-                                .executes(ctx -> {
-                                    ServerPlayer p = EntityArgument.getPlayer(ctx, "player");
-                                    MigrationService.forceMigrate(p);
-                                    ctx.getSource().sendSuccess(() -> Component.literal(
-                                            "已强制迁移 " + p.getGameProfile().getName()), true);
+                                                    + " equipped=" + d.equipped.size()), false);
                                     return 1;
                                 })))
                 .then(Commands.literal("skins")

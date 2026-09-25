@@ -1,6 +1,6 @@
-# 哈比列车皮肤特效 API v1（抽奖补齐 1.1.18）
+# 哈比列车皮肤特效 API v1（抽奖补齐 1.1.27）
 
-皮肤 API v2（`docs/skin-api.md`）负责**外观**：模型、贴图、奖池、解锁、装备。
+皮肤 API v3（`docs/skin-api.md`）负责**外观**：模型、贴图、品质、解锁、装备。
 本文件描述的**皮肤特效 API v1** 负责**行为**：模型动效、投掷物拖尾、命中/爆炸特效。
 
 - 门面类：`com.habitrain.lottery.api.skin.SkinEffects`（`API_VERSION = 1`）
@@ -8,8 +8,8 @@
 - 硬门禁 id：`habitrain_lottery_skin_effects`（可写 `"depends": {"habitrain_lottery_skin_effects": "*"}`）
 - 元数据声明（可选，建议）：`"custom": {"habitrain_lottery:skin_effects": {"version": 1}}`，
   版本不符时抽奖补齐会输出 WARN
-- **皮肤 API v2 保持完全兼容**：`SkinEffects.API_VERSION` 与 `HabiSkinApi.API_VERSION` 相互独立，
-  旧 v2 扩展不注册特效即可，行为与 1.1.17 完全一致
+- **皮肤 API v3 与特效 API v1 相互独立**：`SkinEffects.API_VERSION` 与 `HabiSkinApi.API_VERSION` 分开声明，
+  扩展可只使用外观 API，也可额外注册特效。
 
 > 一句话：**先在 `registerSkins()` 里 `HabiSkinApi.register(SkinDefinition...)`，再用
 > `SkinEffects.registerAnimation/registerTrail/registerImpact(...)` 给同一个 `type/id` 挂行为。**
@@ -29,10 +29,9 @@
 ```java
 public final class ExampleSkins implements SkinRegistrar {
     @Override public void registerSkins() {
-        // ① 外观（皮肤 API v2，行为不变）
+        // ① 外观（皮肤 API v3）
         HabiSkinApi.register(SkinDefinition.builder("grenade", "example_black_hole", 0xFFAA55FF)
                 .model("skin_example", "item/skins/grenade/example_black_hole")
-                .includeInDefaultPools()
                 .build());
 
         // ② 只允许普通手雷使用这个皮肤（grenade 类型默认还覆盖粘性雷/滞时雷）
@@ -176,7 +175,7 @@ SkinEffects.restrictToItems("grenade", "example_black_hole",
 | 拖尾看不到 | 没注册拖尾处理器（`hasTrails()` 为 false）或物品限制把该物品排除了 |
 | 爆炸还是原版粒子 | 该堆叠没有皮肤组件（非装备者投出、被别的模组生成）或没注册撞击处理器 |
 
-复用指令：`/hlt skins reregister`（重跑全部入口点）、`/hlt reload`（重载奖池与资源）。
+复用指令：`/hlt skins reregister`（重跑全部入口点）。资源包重载仍使用原版的 F3+T。
 
 ---
 
@@ -195,8 +194,8 @@ SkinEffects.restrictToItems("grenade", "example_black_hole",
 
 ## 5. 相关文档与源码
 
-- `docs/skin-api.md` —— 皮肤 API v2（外观、奖池、解锁、邮件）
-- `docs/player-api.md` —— 玩家资产 / 抽奖 / 邮件 API
+- `docs/skin-api.md` —— 皮肤 API v3（外观、品质、解锁、邮件）
+- `docs/player-api.md` —— 玩家资产 / 绿苹果 / 邮件 API
 - 源码：`src/main/java/com/habitrain/lottery/api/skin/`
   - `SkinEffects.java`、`SkinAnimation.java`、`SkinImpactContext.java`、`SkinImpactHandler.java`、`SkinTrailHandler.java`
 - 接线实现：`bridge/SkinEffectRuntime.java`（投掷物继承皮肤、撞击派发、延时队列）、

@@ -1,9 +1,7 @@
 package com.habitrain.lottery.grant;
 
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.backpack.DailyFactionCardService;
-import com.habitrain.lottery.bridge.EconomyMirror;
-import com.habitrain.lottery.config.LotteryConfigService;
+import com.habitrain.lottery.daily.DailyLoginRewardTask;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
@@ -16,7 +14,16 @@ import java.time.ZoneOffset;
 import java.util.HashSet;
 
 /**
- * UTC consecutive-login rewards: day N grants min(N, loginRewardCap) draws once per day.
+ * UTC 登录日记账：维护连续登录天数与当月登录日历（登录月历方块的数据源）。
+ *
+ * <p>1.1.29 起这里<b>不再发放任何奖励</b>：
+ * <ul>
+ *   <li>旧的「连续登录第 N 天自动发 min(N, 10) 个绿苹果」已取消；</li>
+ *   <li>旧的「每日自动白送 4 张阵营卡」已取消。</li>
+ * </ul>
+ * 两者合并为每日任务终端上的内置任务
+ * {@link com.habitrain.lottery.daily.DailyLoginRewardTask}：登录即可在面板领取
+ * 160 绿苹果。本类只负责日期/连续天数结算，供登录月历与玩家资产快照展示。
  */
 public final class LoginRewardService {
     static final long UNOBSERVED_DAY = Long.MIN_VALUE;
@@ -25,7 +32,7 @@ public final class LoginRewardService {
     private LoginRewardService() {
     }
 
-    public record SettleOutcome(boolean mutated, int granted) {
+    public record SettleOutcome(boolean mutated) {
     }
 
     public static long todayEpochDayUtc() {
@@ -49,8 +56,8 @@ public final class LoginRewardService {
     }
 
     /**
-     * Cheap END_SERVER_TICK hook: when the UTC day changes, settle login + daily cards
-     * for every currently online player.
+     * Cheap END_SERVER_TICK hook: when the UTC day changes, settle the login day and
+     * refresh the claimable daily-login task for every currently online player.
      */
     public static void onEndServerTick(MinecraftServer server) {
         if (server == null || !PlayerLotteryStore.get().isTakeoverActive()) {
@@ -71,7 +78,8 @@ public final class LoginRewardService {
                 }
                 try {
                     settle(player, true);
-                    DailyFactionCardService.grantLoginCard(player);
+                    // 新的 UTC 日：把当日登录奖励重新变成可领取状态。
+                    DailyLoginRewardTask.onLogin(player);
                     LotteryNetwork.sendLoginState(player);
                 } catch (Exception e) {
                     HabiLotteryMod.LOGGER.warn("Online UTC-day settle failed for {}: {}",
@@ -84,7 +92,7 @@ public final class LoginRewardService {
     }
 
     /**
-     * Settle login for today (idempotent). Sends login state S2C.
+     * Settle the login day for today (idempotent). Sends login state S2C.
      */
     public static void onPlayerJoin(ServerPlayer player) {
         if (player == null || !PlayerLotteryStore.get().isTakeoverActive()
@@ -95,13 +103,15 @@ public final class LoginRewardService {
             settle(player, true);
             LotteryNetwork.sendLoginState(player);
         } catch (Exception e) {
-            HabiLotteryMod.LOGGER.warn("Login reward settle failed for {}: {}",
+            HabiLotteryMod.LOGGER.warn("Login settle failed for {}: {}",
                     player.getGameProfile().getName(), e.toString());
         }
     }
 
     /**
-     * Force re-sync state (block back face); does not re-grant if already settled today.
+     * Force re-sync state (login-calendar block); does not re-settle if already recorded today.
+     * Also repairs today's claimable daily-login task, so the calendar block stays a valid
+     * entry point to the relocated reward.
      */
     public static void onInspect(ServerPlayer player) {
         if (player == null || !PlayerLotteryStore.get().isTakeoverActive()
@@ -109,13 +119,11 @@ public final class LoginRewardService {
             return;
         }
         settle(player, false);
+        DailyLoginRewardTask.onLogin(player);
         PlayerLotteryData d = PlayerLotteryStore.get().getOrLoad(player);
         player.sendSystemMessage(Component.literal(
                 "§a[签到] 连续登录 " + d.consecutiveLoginDays
-                        + " 天 · 今日奖励 "
-                        + Math.min(Math.max(1, d.consecutiveLoginDays),
-                        LotteryConfigService.get().getRates().loginRewardCap())
-                        + " 抽（UTC 日切）"));
+                        + " 天 · 每日登录奖励请在每日任务终端领取"));
         LotteryNetwork.sendLoginState(player);
     }
 
@@ -134,17 +142,18 @@ public final class LoginRewardService {
     }
 
     /**
-     * Pure login-day settlement. Mutates {@code d} only when the UTC day or month set needs an update.
+     * Pure login-day bookkeeping. Mutates {@code d} only when the UTC day or month set
+     * needs an update. Grants nothing.
      */
-    public static SettleOutcome applySettle(PlayerLotteryData d, long today, String monthKey, int dayOfMonth, int cap) {
+    public static SettleOutcome applySettle(PlayerLotteryData d, long today, String monthKey, int dayOfMonth) {
         if (d == null) {
-            return new SettleOutcome(false, 0);
+            return new SettleOutcome(false);
         }
         if (d.loginDaysThisMonth == null) {
             d.loginDaysThisMonth = new HashSet<>();
         }
         if (alreadySettledToday(d, today, monthKey, dayOfMonth)) {
-            return new SettleOutcome(false, 0);
+            return new SettleOutcome(false);
         }
 
         if (d.loginDaysMonthKey == null || !d.loginDaysMonthKey.equals(monthKey)) {
@@ -154,7 +163,7 @@ public final class LoginRewardService {
         d.loginDaysThisMonth.add(dayOfMonth);
 
         if (d.lastLoginEpochDay == today) {
-            return new SettleOutcome(true, 0);
+            return new SettleOutcome(true);
         }
 
         if (d.lastLoginEpochDay == today - 1) {
@@ -163,18 +172,14 @@ public final class LoginRewardService {
             d.consecutiveLoginDays = 1;
         }
         d.lastLoginEpochDay = today;
-
-        int amount = Math.min(d.consecutiveLoginDays, cap);
-        d.lootChance = Math.max(0, d.lootChance + amount);
-        return new SettleOutcome(true, amount);
+        return new SettleOutcome(true);
     }
 
-    private static void settle(ServerPlayer player, boolean announceGrant) {
+    private static void settle(ServerPlayer player, boolean announceFailure) {
         long today = todayEpochDayUtc();
         LocalDate todayDate = dateOf(today);
         String monthKey = String.format("%04d-%02d", todayDate.getYear(), todayDate.getMonthValue());
         int dayOfMonth = todayDate.getDayOfMonth();
-        int cap = LotteryConfigService.get().getRates().loginRewardCap();
 
         PlayerLotteryStore store = PlayerLotteryStore.get();
         PlayerLotteryData current = store.getOrLoad(player);
@@ -184,38 +189,15 @@ public final class LoginRewardService {
 
         PlayerLotteryData snapshot = current.copy();
         boolean wasDirty = store.isDirty(player.getUUID());
-        final int[] granted = {0};
-        store.update(player.getUUID(), d -> {
-            SettleOutcome outcome = applySettle(d, today, monthKey, dayOfMonth, cap);
-            granted[0] = outcome.granted();
-        });
-        boolean ok = store.flush(player.getUUID());
-        if (!ok) {
+        store.update(player.getUUID(), d -> applySettle(d, today, monthKey, dayOfMonth));
+        if (!store.flush(player.getUUID())) {
             store.restoreSnapshot(player.getUUID(), snapshot, wasDirty);
             HabiLotteryMod.LOGGER.error(
-                    "Login settle flush failed for {}; restored snapshot (UTC day not consumed)",
+                    "Login day flush failed for {}; restored snapshot (UTC day not consumed)",
                     player.getUUID());
-            if (announceGrant) {
-                player.sendSystemMessage(Component.literal("§c[签到] 存档写入失败，今日奖励未发放，请稍后重试"));
+            if (announceFailure) {
+                player.sendSystemMessage(Component.literal("§c[签到] 存档写入失败，登录记录未保存，请稍后重试"));
             }
-            return;
         }
-
-        if (granted[0] > 0) {
-            EconomyMirror.syncChanceAndCoins(player, store.getOrLoad(player));
-            if (announceGrant) {
-                player.sendSystemMessage(Component.literal(
-                        "§a[签到] 连续第 " + store.getOrLoad(player).consecutiveLoginDays
-                                + " 天，获得 " + granted[0] + " 次抽奖机会"));
-            }
-            HabiLotteryMod.LOGGER.info("Login reward {} draws for {} streak={}",
-                    granted[0], player.getGameProfile().getName(),
-                    store.getOrLoad(player).consecutiveLoginDays);
-        }
-    }
-
-    public static int rewardForStreak(int streak) {
-        int cap = LotteryConfigService.get().getRates().loginRewardCap();
-        return Math.min(Math.max(0, streak), cap);
     }
 }

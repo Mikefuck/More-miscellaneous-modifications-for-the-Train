@@ -30,6 +30,6 @@ class PlayerAssetFilterTest {
     }
 
     private static PlayerAdminModels.PlayerRow row(String name, String uuid) {
-        return new PlayerAdminModels.PlayerRow(name, UUID.fromString(uuid), 0, 0, 0, false);
+        return new PlayerAdminModels.PlayerRow(name, UUID.fromString(uuid), 0, 0, false);
     }
 }

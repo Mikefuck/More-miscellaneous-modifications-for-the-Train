@@ -5,8 +5,8 @@ import com.habitrain.lottery.card.CardUseGates;
 import net.minecraft.server.level.ServerPlayer;
 
 /**
- * Spectator / rest-area / dead gate for lottery economy actions that must stay
- * available to living in-match players (mail claim, coin-to-draw, loot roll, open).
+ * Spectator / rest-area / dead gate for mail and card actions that must stay
+ * available to living in-match players.
  *
  * <p><b>审核 B-01</b>：休息区判定不再越层 import 核心实现层的
  * {@code game.sre.EliminatedRestAreaService}，而是经
@@ -17,8 +17,6 @@ import net.minecraft.server.level.ServerPlayer;
  */
 public final class PlayerStateGate {
     public static final String MAIL_BLOCKED = "§c[邮箱] 旁观、休息或死亡时不能领取邮件";
-    public static final String DRAW_BLOCKED = "§c[抽奖] 旁观、休息或死亡时不能抽奖或兑换";
-    public static final String OPEN_BLOCKED = "旁观、休息或死亡时不能打开抽奖界面";
 
     private PlayerStateGate() {
     }

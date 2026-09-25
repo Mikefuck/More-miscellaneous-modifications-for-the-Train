@@ -45,8 +45,12 @@ public final class LotteryBackupService {
             return Result.fail("备份失败: 世界路径无效");
         }
         try {
-            PlayerLotteryStore.get().flushAll();
-            LocalTitleStore.get().flushAll();
+            if (!PlayerLotteryStore.get().flushAll()) {
+                return Result.fail("备份失败: 玩家资产写入未完成");
+            }
+            if (!LocalTitleStore.get().flushAll()) {
+                return Result.fail("备份失败: 称号数据写入未完成");
+            }
             Files.createDirectories(backupRoot);
             String ts = LocalDateTime.now().format(TS);
             Path dest = resolveBackupFolder(backupRoot, ts);

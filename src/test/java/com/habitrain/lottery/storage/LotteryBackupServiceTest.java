@@ -18,7 +18,7 @@ class LotteryBackupServiceTest {
         Path src = temp.resolve("habitrain_lottery");
         Path nested = src.resolve("players");
         Files.createDirectories(nested);
-        Files.writeString(nested.resolve("a.json"), "{\"lootChance\":3}", StandardCharsets.UTF_8);
+        Files.writeString(nested.resolve("a.json"), "{\"greenApples\":3}", StandardCharsets.UTF_8);
         Files.createDirectories(src.resolve("mail/players"));
         Files.writeString(src.resolve("mail/players/b.json"), "[]", StandardCharsets.UTF_8);
 
@@ -26,7 +26,7 @@ class LotteryBackupServiceTest {
         LotteryBackupService.copyTree(src, dest);
 
         assertTrue(Files.isRegularFile(dest.resolve("players/a.json")));
-        assertEquals("{\"lootChance\":3}", Files.readString(dest.resolve("players/a.json")));
+        assertEquals("{\"greenApples\":3}", Files.readString(dest.resolve("players/a.json")));
         assertTrue(Files.isRegularFile(dest.resolve("mail/players/b.json")));
         assertFalse(Files.exists(LotteryBackupService.partialDir(dest)));
     }

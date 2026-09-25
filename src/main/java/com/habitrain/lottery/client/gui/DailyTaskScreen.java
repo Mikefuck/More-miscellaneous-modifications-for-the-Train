@@ -62,12 +62,10 @@ public final class DailyTaskScreen extends Screen {
                     KEY + "card.limit_break"),
     };
 
-    /** 发放来源的三个分类；键与 {@code DailyTaskBoardService.sources()} 的 category 一致。 */
+    /** 发放来源分类；键与 {@code DailyTaskBoardService.sources()} 的 category 一致。 */
     private static final SourceCategory[] CATEGORIES = {
-            new SourceCategory("draws", KEY + "source.cat.draws", DailyBoardTheme.BLUE,
-                    DailyBoardTheme.BLUE_SOFT),
-            new SourceCategory("coins", KEY + "source.cat.coins", DailyBoardTheme.GOLD,
-                    DailyBoardTheme.AMBER_SOFT),
+            new SourceCategory("green_apples", KEY + "source.cat.green_apples", DailyBoardTheme.GREEN,
+                    DailyBoardTheme.GREEN_SOFT),
             new SourceCategory("cards", KEY + "source.cat.cards", DailyBoardTheme.VIOLET,
                     DailyBoardTheme.VIOLET_SOFT),
     };
@@ -403,7 +401,7 @@ public final class DailyTaskScreen extends Screen {
                 layout.subtitle().x(), layout.subtitle().y(), DailyBoardTheme.INK_SOFT);
         if (!layout.compact() && snapshot != null) {
             String balances = Component.translatable(KEY + "balances",
-                    snapshot.draws(), snapshot.coins(), snapshot.cardTotal()).getString();
+                    snapshot.greenApples(), snapshot.cardTotal()).getString();
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, balances, layout.subtitle().w()),
                     title.x(), layout.subtitle().y()+16, DailyBoardTheme.MUTED);
         }

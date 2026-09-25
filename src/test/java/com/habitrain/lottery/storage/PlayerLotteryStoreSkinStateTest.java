@@ -11,16 +11,14 @@ class PlayerLotteryStoreSkinStateTest {
     @Test
     void nonSkinUpdatesDoNotAffectUnlockedOrEquippedMaps() {
         PlayerLotteryData data = new PlayerLotteryData();
-        data.lootChance = 5;
-        data.coinNum = 100;
+        data.greenApples = 100;
         data.unlocked.computeIfAbsent("knife", k -> new HashMap<>()).put("gold_knife", true);
         data.unlocked.computeIfAbsent("revolver", k -> new HashMap<>()).put("vintage_gun", true);
         data.equipped.put("knife", "gold_knife");
         data.equipped.put("revolver", "vintage_gun");
 
-        // Simulate currency and login streak mutations
-        data.coinNum += 50;
-        data.lootChance -= 1;
+        // Simulate green-apple and login-streak mutations
+        data.greenApples += 50;
         data.consecutiveLoginDays = 3;
         data.lastLoginEpochDay = 20000L;
 
@@ -35,15 +33,13 @@ class PlayerLotteryStoreSkinStateTest {
     @Test
     void playerLotteryDataCopyPreservesAllFieldsDeeply() {
         PlayerLotteryData original = new PlayerLotteryData();
-        original.lootChance = 10;
-        original.coinNum = 500;
+        original.greenApples = 500;
         original.unlocked.computeIfAbsent("bat", k -> new HashMap<>()).put("zombie_bat", true);
         original.equipped.put("bat", "zombie_bat");
         original.recentGrants.add("grant:1");
 
         PlayerLotteryData copied = original.copy();
-        assertEquals(original.lootChance, copied.lootChance);
-        assertEquals(original.coinNum, copied.coinNum);
+        assertEquals(original.greenApples, copied.greenApples);
         assertEquals("zombie_bat", copied.equipped.get("bat"));
         assertTrue(Boolean.TRUE.equals(copied.unlocked.get("bat").get("zombie_bat")));
         assertTrue(copied.recentGrants.contains("grant:1"));

@@ -6,8 +6,8 @@ import java.util.Set;
 
 /**
  * Normalizes skin item-type keys used across SRE economy, CCA, and world store.
- * UI may send full ids ({@code trainmurdermystery:knife}) while lottery unlocks
- * use abstract types ({@code knife}).
+ * UI may send full ids ({@code trainmurdermystery:knife}) while skin state
+ * uses abstract types ({@code knife}).
  */
 public final class SkinTypeKeys {
     private SkinTypeKeys() {
@@ -22,7 +22,7 @@ public final class SkinTypeKeys {
         if (colon >= 0 && colon < t.length() - 1) {
             t = t.substring(colon + 1);
         }
-        // SRE lottery uses gun/ for revolvers in pool entries; registry path is revolver
+        // Keep the historical gun alias for revolver skin storage.
         if ("gun".equals(t)) {
             return "revolver";
         }

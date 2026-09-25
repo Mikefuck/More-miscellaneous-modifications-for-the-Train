@@ -86,7 +86,8 @@ public final class BackpackJoinService {
                 HabiLotteryMod.LOGGER.error("Failed seeding backpack JSON from SRE for {}", uuid);
                 return false;
             }
-            DailyFactionCardService.grantLoginCard(player);
+            // 注意：这里曾调用 DailyFactionCardService.grantLoginCard（每日白送 4 张阵营卡）。
+            // 1.1.29 起取消，登录奖励改为每日任务终端上的「每日登录」任务（160 绿苹果）。
         } else if (CORRUPT_UNSAVED.contains(uuid)) {
             HabiLotteryMod.LOGGER.error(
                     "Corrupt backpack JSON for {} still unreadable, leaving unsaved", uuid);

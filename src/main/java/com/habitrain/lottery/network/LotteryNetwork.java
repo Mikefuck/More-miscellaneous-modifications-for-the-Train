@@ -5,14 +5,12 @@ import com.habitrain.lottery.card.CardUseService;
 
 import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.PlayerStateGate;
-import com.habitrain.lottery.bridge.EconomyMirror;
-import com.habitrain.lottery.bridge.LotteryManagerBridge;
+import com.habitrain.lottery.api.player.HabiAssetOperation;
+import com.habitrain.lottery.api.player.HabiAssetPolicy;
+import com.habitrain.lottery.api.player.HabiLotteryApi;
 import com.habitrain.lottery.backpack.PlayerCardAdminModels;
 import com.habitrain.lottery.backpack.PlayerCardAdminService;
 import com.habitrain.lottery.backpack.PlayerCardMutationPolicy;
-import com.habitrain.lottery.config.LotteryConfigService;
-import com.habitrain.lottery.config.RatesConfig;
 import com.habitrain.lottery.meta.MenuGateServerBridge;
 import com.habitrain.lottery.mail.MailService;
 import com.habitrain.lottery.storage.LotteryBackupService;
@@ -23,9 +21,7 @@ import com.habitrain.lottery.title.PlayerTitleData;
 import com.habitrain.lottery.title.TitleCatalog;
 import com.habitrain.lottery.title.TitlePaths;
 import com.habitrain.lottery.title.TitleService;
-import io.wifi.starrailexpress.data.PlayerEconomyManager;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -59,12 +55,8 @@ public final class LotteryNetwork {
         PayloadTypeRegistry.playS2C().register(DailyTaskBoardS2C.TYPE, DailyTaskBoardS2C.CODEC);
         PayloadTypeRegistry.playC2S().register(DailyTaskRequestC2S.TYPE, DailyTaskRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(DailyTaskClaimC2S.TYPE, DailyTaskClaimC2S.CODEC);
-        PayloadTypeRegistry.playS2C().register(OpenCoinExchangeS2C.TYPE, OpenCoinExchangeS2C.CODEC);
-        PayloadTypeRegistry.playC2S().register(ConfigSaveC2S.TYPE, ConfigSaveC2S.CODEC);
-        PayloadTypeRegistry.playC2S().register(ConfigReloadC2S.TYPE, ConfigReloadC2S.CODEC);
-        PayloadTypeRegistry.playC2S().register(ConfigRequestC2S.TYPE, ConfigRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(PlayerListRequestC2S.TYPE, PlayerListRequestC2S.CODEC);
-        PayloadTypeRegistry.playC2S().register(PlayerChanceModifyC2S.TYPE, PlayerChanceModifyC2S.CODEC);
+        PayloadTypeRegistry.playC2S().register(PlayerGreenApplesModifyC2S.TYPE, PlayerGreenApplesModifyC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(PlayerCardModifyC2S.TYPE, PlayerCardModifyC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(BackupRequestC2S.TYPE, BackupRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(MailComposeC2SPayload.TYPE, MailComposeC2SPayload.CODEC);
@@ -76,9 +68,7 @@ public final class LotteryNetwork {
         PayloadTypeRegistry.playC2S().register(CardUseRequestC2S.TYPE, CardUseRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(CardUseConfirmC2S.TYPE, CardUseConfirmC2S.CODEC);
 
-        PayloadTypeRegistry.playS2C().register(ConfigSnapshotS2C.TYPE, ConfigSnapshotS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(OpStatusS2C.TYPE, OpStatusS2C.CODEC);
-        PayloadTypeRegistry.playS2C().register(OpenLootUiS2C.TYPE, OpenLootUiS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(PlayerListS2C.TYPE, PlayerListS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(BackupDataS2C.TYPE, BackupDataS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(AdminActionResultS2C.TYPE, AdminActionResultS2C.CODEC);
@@ -113,45 +103,6 @@ public final class LotteryNetwork {
                     }
                 }));
 
-        ServerPlayNetworking.registerGlobalReceiver(ConfigSaveC2S.TYPE, (payload, context) -> {
-            context.server().execute(() -> {
-                ServerPlayer player = context.player();
-                if (player == null) {
-                    return;
-                }
-                if (rateLimited(player, "config_save", 2000)) {
-                    player.sendSystemMessage(Component.literal("§c[抽奖] 操作过快"));
-                    return;
-                }
-                handleSave(player, payload.json());
-            });
-        });
-        ServerPlayNetworking.registerGlobalReceiver(ConfigReloadC2S.TYPE, (payload, context) -> {
-            context.server().execute(() -> {
-                ServerPlayer player = context.player();
-                if (player == null) {
-                    return;
-                }
-                if (rateLimited(player, "config_reload", 2000)) {
-                    player.sendSystemMessage(Component.literal("§c[抽奖] 操作过快"));
-                    return;
-                }
-                handleReload(player);
-            });
-        });
-        ServerPlayNetworking.registerGlobalReceiver(ConfigRequestC2S.TYPE, (payload, context) -> {
-            context.server().execute(() -> {
-                ServerPlayer player = context.player();
-                if (player == null) {
-                    return;
-                }
-                if (rateLimited(player, "config_request", 10000)) {
-                    player.sendSystemMessage(Component.literal("§c[抽奖] 操作过快"));
-                    return;
-                }
-                sendSnapshot(player);
-            });
-        });
         ServerPlayNetworking.registerGlobalReceiver(PlayerListRequestC2S.TYPE, (payload, context) -> {
             context.server().execute(() -> {
                 ServerPlayer player = context.player();
@@ -165,17 +116,17 @@ public final class LotteryNetwork {
                 handlePlayerList(player);
             });
         });
-        ServerPlayNetworking.registerGlobalReceiver(PlayerChanceModifyC2S.TYPE, (payload, context) -> {
+        ServerPlayNetworking.registerGlobalReceiver(PlayerGreenApplesModifyC2S.TYPE, (payload, context) -> {
             context.server().execute(() -> {
                 ServerPlayer player = context.player();
                 if (player == null) {
                     return;
                 }
-                if (rateLimited(player, "player_chance_mod", 2000)) {
+                if (rateLimited(player, "player_green_apples_mod", 2000)) {
                     ServerPlayNetworking.send(player, new AdminActionResultS2C("操作过快", false));
                     return;
                 }
-                handleChanceModify(player, payload);
+                handleGreenApplesModify(player, payload);
             });
         });
         ServerPlayNetworking.registerGlobalReceiver(PlayerCardModifyC2S.TYPE, (payload, context) -> {
@@ -211,7 +162,7 @@ public final class LotteryNetwork {
                     return;
                 }
                 if (rateLimited(player, "mail_compose", 2000)) {
-                    player.sendSystemMessage(Component.literal("§c[抽奖] 操作过快"));
+                    player.sendSystemMessage(Component.literal("§c[邮件] 操作过快"));
                     return;
                 }
                 MailComposeC2SPayload.handle(player, payload);
@@ -301,18 +252,8 @@ public final class LotteryNetwork {
             });
         });
 
-        // Re-enable the SRE gacha draw flow (upstream disabled all Loot C2S handlers).
-        // Must run after SRE registers its empty stubs so unregister hits them. Fabric
-        // Loader does NOT order mod entrypoints by the depends graph: this mod's
-        // onInitialize can run before SRE's, in which case the noellesroles:loot_*
-        // payload types are not registered yet and registerGlobalReceiver throws
-        // "no payload type has been registered". Defer to SERVER_STARTING — by then
-        // every mod's init has run, so SRE's payload types and its empty stub
-        // receivers are guaranteed to exist.
-        ServerLifecycleEvents.SERVER_STARTING.register(server -> LootRollServer.register());
-
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
-            sendSnapshot(handler.player);
+            sendOpStatus(handler.player);
         });
     }
 
@@ -334,14 +275,12 @@ public final class LotteryNetwork {
             }
         }
         int streak = Math.max(0, data.consecutiveLoginDays);
-        int reward = com.habitrain.lottery.grant.LoginRewardService.rewardForStreak(streak);
         sendIfSupported(player, new LoginStateS2C(
                 epoch,
                 date.getYear(),
                 date.getMonthValue(),
                 date.getDayOfMonth(),
                 streak,
-                reward,
                 mask
         ));
     }
@@ -372,23 +311,6 @@ public final class LotteryNetwork {
             HabiLotteryMod.LOGGER.warn("S2C {} failed: {}", payload.type().id(), t.toString());
             return false;
         }
-    }
-
-    public static void sendOpenLootUi(ServerPlayer player) {
-        if (player == null || PlayerStateGate.spectatorRestOrDead(player)) {
-            return;
-        }
-        int coins = 0;
-        int draws = 0;
-        try {
-            // PlayerEconomyManager is redirected to world-authoritative data by
-            // PlayerEconomyManagerMixin when takeover is active.
-            coins = PlayerEconomyManager.getCoinNum(player);
-            draws = PlayerEconomyManager.getLootChance(player);
-        } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("Failed reading economy for open loot UI: {}", t.toString());
-        }
-        sendIfSupported(player, new OpenLootUiS2C(coins, draws));
     }
 
     public static void sendOpenMailCompose(ServerPlayer player) {
@@ -424,9 +346,7 @@ public final class LotteryNetwork {
         if (player == null) {
             return false;
         }
-        RatesConfig rates = LotteryConfigService.get().getRates();
-        int level = rates != null ? rates.opPermissionLevel() : 2;
-        return player.hasPermissions(level);
+        return player.hasPermissions(2);
     }
 
     /** Mod 菜单门控：专用服务器上门控开启且该玩家未授权时拒绝其配置写入请求。 */
@@ -479,87 +399,9 @@ public final class LotteryNetwork {
         }
     }
 
-    private static void handleSave(ServerPlayer player, String json) {
-        if (!isOp(player)) {
-            player.sendSystemMessage(Component.literal("§c[抽奖] 需要 OP 才能修改配置"));
-            sendOpStatus(player);
-            return;
-        }
-        if (gateBlocked(player)) {
-            player.sendSystemMessage(Component.literal("§c当前为未授权的访问：未获得服务器授权修改配置"));
-            sendOpStatus(player);
-            return;
-        }
-        LotteryConfigService cfg = LotteryConfigService.get();
-        if (cfg.isLoadFailed()) {
-            player.sendSystemMessage(Component.literal("§c[抽奖] 配置文件已损坏，拒绝覆盖写入"));
-            return;
-        }
-        try {
-            LotteryConfigService.Snapshot snap =
-                    LotteryConfigService.GSON.fromJson(json, LotteryConfigService.Snapshot.class);
-            if (snap == null || snap.pools == null || snap.pools.Pools == null || snap.pools.Pools.isEmpty()) {
-                player.sendSystemMessage(Component.literal("§c[抽奖] 奖池 JSON 无效或为空"));
-                return;
-            }
-            String poolsJson = LotteryConfigService.GSON.toJson(snap.pools);
-            if (!LotteryManagerBridge.validatePoolsJson(poolsJson)) {
-                player.sendSystemMessage(Component.literal("§c[抽奖] 奖池 JSON 未通过校验"));
-                return;
-            }
-            cfg.importAllJson(json);
-            if (!cfg.saveAll(player.server)) {
-                player.sendSystemMessage(Component.literal("§c[抽奖] 配置保存失败"));
-                return;
-            }
-            if (!LotteryManagerBridge.applyWorldPools(player.server)) {
-                player.sendSystemMessage(Component.literal("§c[抽奖] 配置已保存但奖池重载失败"));
-                return;
-            }
-            player.sendSystemMessage(Component.literal("§a[抽奖] 配置已保存并重载奖池"));
-            broadcastConfigAndPools(player.server);
-        } catch (Exception e) {
-            HabiLotteryMod.LOGGER.error("Config save failed", e);
-            player.sendSystemMessage(Component.literal("§c[抽奖] 配置保存失败: " + e.getMessage()));
-        }
-    }
-
-    private static void handleReload(ServerPlayer player) {
-        if (!isOp(player)) {
-            player.sendSystemMessage(Component.literal("§c[抽奖] 需要 OP 才能重载"));
-            return;
-        }
-        if (gateBlocked(player)) {
-            player.sendSystemMessage(Component.literal("§c当前为未授权的访问：未获得服务器授权"));
-            return;
-        }
-        LotteryManagerBridge.reloadFromDisk(player.server);
-        player.sendSystemMessage(Component.literal("§a[抽奖] 已从磁盘重载配置"));
-        broadcastConfigAndPools(player.server);
-    }
-
-    /**
-     * Push config snapshot to every player. Clients clear+rebuild their SRE
-     * LotteryManager cache from the snapshot via the client snapshot applier.
-     * Do NOT also send SRE's LootPoolsInfoCheckS2CPacket here — that packet opens the
-     * gacha UI when no IDs are missing, which would yank OP out of Mod Menu on save.
-     */
-    public static void broadcastConfigAndPoolsToAll(net.minecraft.server.MinecraftServer server) {
-        broadcastConfigAndPools(server);
-    }
-
-    private static void broadcastConfigAndPools(net.minecraft.server.MinecraftServer server) {
-        if (server == null || server.getPlayerList() == null) {
-            return;
-        }
-        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-            sendSnapshot(p);
-        }
-    }
-
     private static void handlePlayerList(ServerPlayer player) {
         if (!isOp(player)) {
-            ServerPlayNetworking.send(player, new AdminActionResultS2C("需要 OP 才能查看玩家抽数", false));
+            ServerPlayNetworking.send(player, new AdminActionResultS2C("需要 OP 才能查看玩家资产", false));
             return;
         }
         if (gateBlocked(player)) {
@@ -650,9 +492,9 @@ public final class LotteryNetwork {
         }
     }
 
-    private static void handleChanceModify(ServerPlayer player, PlayerChanceModifyC2S payload) {
+    private static void handleGreenApplesModify(ServerPlayer player, PlayerGreenApplesModifyC2S payload) {
         if (!isOp(player)) {
-            ServerPlayNetworking.send(player, new AdminActionResultS2C("需要 OP 才能修改抽数", false));
+            ServerPlayNetworking.send(player, new AdminActionResultS2C("需要 OP 才能修改绿苹果", false));
             return;
         }
         if (gateBlocked(player)) {
@@ -662,58 +504,47 @@ public final class LotteryNetwork {
         try {
             String mode = payload.mode() == null ? "" : payload.mode();
             int value = payload.value();
-            if ("add_all_online".equals(mode) || "add_one".equals(mode)) {
-                value = Math.max(-1000, Math.min(1000, value));
-            } else if ("set_all_online".equals(mode) || "set_one".equals(mode)) {
-                value = Math.max(0, Math.min(100000, value));
+            if (("add_all_online".equals(mode) || "add_one".equals(mode))
+                    && !HabiAssetPolicy.isValidCurrencyOperation(HabiAssetOperation.ADD, value)) {
+                ServerPlayNetworking.send(player, new AdminActionResultS2C("绿苹果增量不能为 0", false));
+                return;
+            }
+            if (("set_all_online".equals(mode) || "set_one".equals(mode))
+                    && !HabiAssetPolicy.isValidCurrencyOperation(HabiAssetOperation.SET, value)) {
+                ServerPlayNetworking.send(player, new AdminActionResultS2C("绿苹果余额不能为负数", false));
+                return;
             }
             String target = payload.targetUuid() == null ? "" : payload.targetUuid();
             String msg;
             switch (mode) {
                 case "add_all_online" -> {
-                    int n = PlayerLotteryStore.get().addLootChanceToOnline(player.server, value);
-                    msg = "已为在线 " + n + " 人调整抽数 " + (value >= 0 ? "+" : "") + value;
+                    int n = HabiLotteryApi.addGreenApplesToOnline(value);
+                    msg = "已为在线 " + n + " 人调整绿苹果 " + (value >= 0 ? "+" : "") + value;
                 }
                 case "set_all_online" -> {
-                    int n = PlayerLotteryStore.get().setLootChanceToOnline(player.server, value);
-                    msg = "已将在线 " + n + " 人抽数设为 " + Math.max(0, value);
+                    int n = HabiLotteryApi.setGreenApplesToOnline(value);
+                    msg = "已将在线 " + n + " 人绿苹果设为 " + Math.max(0, value);
                 }
                 case "add_one" -> {
                     UUID id = UUID.fromString(target);
-                    // 审核 B-19：先快照，flush 失败必须回滚并如实报告失败（不要虚报成功）。
-                    com.habitrain.lottery.storage.PlayerLotteryData snap =
-                            PlayerLotteryStore.get().getOrLoad(id).copy();
-                    boolean wasDirty = PlayerLotteryStore.get().isDirty(id);
-                    PlayerLotteryStore.get().addLootChance(id, value);
-                    if (!PlayerLotteryStore.get().flush(id)) {
-                        PlayerLotteryStore.get().restoreSnapshot(id, snap, wasDirty);
+                    var result = HabiLotteryApi.addGreenApples(id, value);
+                    if (!result.ok()) {
                         ServerPlayNetworking.send(player, new AdminActionResultS2C(
-                                "写入失败：抽数未变更（存档不可写）", false));
+                                result.message(), false));
                         return;
                     }
-                    ServerPlayer online = player.server.getPlayerList().getPlayer(id);
-                    if (online != null) {
-                        EconomyMirror.syncChanceAndCoins(online, PlayerLotteryStore.get().getOrLoad(online));
-                    }
-                    msg = "已调整玩家抽数 " + (value >= 0 ? "+" : "") + value;
+                    msg = "已调整玩家绿苹果 " + (value >= 0 ? "+" : "") + value
+                            + "（现为 " + result.newValue() + "）";
                 }
                 case "set_one" -> {
                     UUID id = UUID.fromString(target);
-                    com.habitrain.lottery.storage.PlayerLotteryData snap =
-                            PlayerLotteryStore.get().getOrLoad(id).copy();
-                    boolean wasDirty = PlayerLotteryStore.get().isDirty(id);
-                    PlayerLotteryStore.get().setLootChance(id, value);
-                    if (!PlayerLotteryStore.get().flush(id)) {
-                        PlayerLotteryStore.get().restoreSnapshot(id, snap, wasDirty);
+                    var result = HabiLotteryApi.setGreenApples(id, value);
+                    if (!result.ok()) {
                         ServerPlayNetworking.send(player, new AdminActionResultS2C(
-                                "写入失败：抽数未变更（存档不可写）", false));
+                                result.message(), false));
                         return;
                     }
-                    ServerPlayer online = player.server.getPlayerList().getPlayer(id);
-                    if (online != null) {
-                        EconomyMirror.syncChanceAndCoins(online, PlayerLotteryStore.get().getOrLoad(online));
-                    }
-                    msg = "已将玩家抽数设为 " + Math.max(0, value);
+                    msg = "已将玩家绿苹果设为 " + result.newValue();
                 }
                 default -> {
                     ServerPlayNetworking.send(player, new AdminActionResultS2C("未知修改模式: " + mode, false));
@@ -928,97 +759,19 @@ public final class LotteryNetwork {
         }
     }
 
-    public static void sendSnapshot(ServerPlayer player) {
-        if (player == null) {
-            return;
-        }
-        // Always send the snapshot. Dedicated clients and LAN guests apply it.
-        // The integrated HOST client skips importAllJson (shared JVM singleton);
-        // see LotteryClientNetwork ConfigSnapshotS2C. Do not gate on
-        // server.isSingleplayer() — that would starve LAN guests.
-        String json = isOp(player) && !gateBlocked(player)
-                ? LotteryConfigService.get().exportAllJson()
-                : LotteryConfigService.get().exportPublicJson();
-        com.google.gson.JsonObject snapshot = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
-        snapshot.add("runtimePools", GSON.toJsonTree(com.habitrain.lottery.skin.SkinPoolInjector.withRegisteredSkins(
-                LotteryConfigService.get().getPools())));
-        ServerPlayNetworking.send(player, new ConfigSnapshotS2C(GSON.toJson(snapshot)));
-        sendOpStatus(player);
-    }
-
     public static void sendOpStatus(ServerPlayer player) {
-        ServerPlayNetworking.send(player, new OpStatusS2C(isOp(player)));
+        if (player != null) {
+            ServerPlayNetworking.send(player, new OpStatusS2C(isOp(player)));
+        }
     }
 
     // ---- packets ----
-
-    public record ConfigSaveC2S(String json) implements CustomPacketPayload {
-        public static final Type<ConfigSaveC2S> TYPE = new Type<>(id("config_save"));
-        public static final StreamCodec<RegistryFriendlyByteBuf, ConfigSaveC2S> CODEC = StreamCodec.of(
-                (buf, value) -> buf.writeUtf(value.json, 1_000_000),
-                buf -> new ConfigSaveC2S(buf.readUtf(1_000_000))
-        );
-
-        @Override
-        public Type<? extends CustomPacketPayload> type() {
-            return TYPE;
-        }
-    }
-
-    public record ConfigReloadC2S() implements CustomPacketPayload {
-        public static final Type<ConfigReloadC2S> TYPE = new Type<>(id("config_reload"));
-        public static final StreamCodec<RegistryFriendlyByteBuf, ConfigReloadC2S> CODEC = StreamCodec.unit(new ConfigReloadC2S());
-
-        @Override
-        public Type<? extends CustomPacketPayload> type() {
-            return TYPE;
-        }
-    }
-
-    public record ConfigRequestC2S() implements CustomPacketPayload {
-        public static final Type<ConfigRequestC2S> TYPE = new Type<>(id("config_request"));
-        public static final StreamCodec<RegistryFriendlyByteBuf, ConfigRequestC2S> CODEC = StreamCodec.unit(new ConfigRequestC2S());
-
-        @Override
-        public Type<? extends CustomPacketPayload> type() {
-            return TYPE;
-        }
-    }
-
-    public record ConfigSnapshotS2C(String json) implements CustomPacketPayload {
-        public static final Type<ConfigSnapshotS2C> TYPE = new Type<>(id("config_snapshot"));
-        public static final StreamCodec<RegistryFriendlyByteBuf, ConfigSnapshotS2C> CODEC = StreamCodec.of(
-                (buf, value) -> buf.writeUtf(value.json, 1_000_000),
-                buf -> new ConfigSnapshotS2C(buf.readUtf(1_000_000))
-        );
-
-        @Override
-        public Type<? extends CustomPacketPayload> type() {
-            return TYPE;
-        }
-    }
 
     public record OpStatusS2C(boolean op) implements CustomPacketPayload {
         public static final Type<OpStatusS2C> TYPE = new Type<>(id("op_status"));
         public static final StreamCodec<RegistryFriendlyByteBuf, OpStatusS2C> CODEC = StreamCodec.of(
                 (buf, value) -> buf.writeBoolean(value.op),
                 buf -> new OpStatusS2C(buf.readBoolean())
-        );
-
-        @Override
-        public Type<? extends CustomPacketPayload> type() {
-            return TYPE;
-        }
-    }
-
-    public record OpenLootUiS2C(int coinNumber, int lotteryChance) implements CustomPacketPayload {
-        public static final Type<OpenLootUiS2C> TYPE = new Type<>(id("open_loot_ui"));
-        public static final StreamCodec<RegistryFriendlyByteBuf, OpenLootUiS2C> CODEC = StreamCodec.of(
-                (buf, value) -> {
-                    buf.writeVarInt(value.coinNumber);
-                    buf.writeVarInt(value.lotteryChance);
-                },
-                buf -> new OpenLootUiS2C(buf.readVarInt(), buf.readVarInt())
         );
 
         @Override
@@ -1051,15 +804,15 @@ public final class LotteryNetwork {
         }
     }
 
-    public record PlayerChanceModifyC2S(String mode, String targetUuid, int value) implements CustomPacketPayload {
-        public static final Type<PlayerChanceModifyC2S> TYPE = new Type<>(id("player_chance_mod"));
-        public static final StreamCodec<RegistryFriendlyByteBuf, PlayerChanceModifyC2S> CODEC = StreamCodec.of(
+    public record PlayerGreenApplesModifyC2S(String mode, String targetUuid, int value) implements CustomPacketPayload {
+        public static final Type<PlayerGreenApplesModifyC2S> TYPE = new Type<>(id("player_green_apples_mod"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, PlayerGreenApplesModifyC2S> CODEC = StreamCodec.of(
                 (buf, value) -> {
                     buf.writeUtf(value.mode == null ? "" : value.mode, 64);
                     buf.writeUtf(value.targetUuid == null ? "" : value.targetUuid, 64);
                     buf.writeVarInt(value.value);
                 },
-                buf -> new PlayerChanceModifyC2S(buf.readUtf(64), buf.readUtf(64), buf.readVarInt())
+                buf -> new PlayerGreenApplesModifyC2S(buf.readUtf(64), buf.readUtf(64), buf.readVarInt())
         );
 
         @Override
@@ -1141,7 +894,6 @@ public final class LotteryNetwork {
             int month,
             int dayOfMonth,
             int streak,
-            int rewardToday,
             int loginDaysMask
     ) implements CustomPacketPayload {
         public static final Type<LoginStateS2C> TYPE = new Type<>(id("login_state"));
@@ -1152,12 +904,10 @@ public final class LotteryNetwork {
                     buf.writeVarInt(value.month);
                     buf.writeVarInt(value.dayOfMonth);
                     buf.writeVarInt(value.streak);
-                    buf.writeVarInt(value.rewardToday);
                     buf.writeInt(value.loginDaysMask);
                 },
                 buf -> new LoginStateS2C(
                         buf.readLong(),
-                        buf.readVarInt(),
                         buf.readVarInt(),
                         buf.readVarInt(),
                         buf.readVarInt(),
@@ -1237,10 +987,6 @@ public final class LotteryNetwork {
     /** Client-side cache (fields only; no client class references). */
     public static final class ClientLotteryState {
         public static boolean op;
-        public static boolean pendingOp;
-        public static boolean hasSnapshot;
-        /** Bumped whenever a ConfigSnapshotS2C is applied so open config UI can rebuild. */
-        public static int configVersion;
         public static PlayerAdminModels.PlayerListSnapshot playerList = new PlayerAdminModels.PlayerListSnapshot();
         public static int playerListVersion;
         public static String lastBackupJson = "";
@@ -1254,9 +1000,7 @@ public final class LotteryNetwork {
         /** Mailbox list JSON from last MailboxListS2C (list of MailJson). */
         public static String mailboxJson = "";
         public static int mailboxVersion;
-        /** Last coin/draw values from OpenLootUiS2C, reused when the loot UI is reopened locally. */
-        public static int lastCoinNumber;
-        public static int lastLotteryChance;
+        public static int greenApples;
         /** Card-use menu state from CardUseMenuS2C (questKey, remaining uses, candidate JSON). */
         public static String cardUseMenuQuestKey = "";
         public static int cardUseRemainingUses;
@@ -1275,7 +1019,6 @@ public final class LotteryNetwork {
         public static int month;
         public static int dayOfMonth;
         public static int streak;
-        public static int rewardToday;
         /** Bit i set => day-of-month (i+1) logged in this month. */
         public static int loginDaysMask;
         public static int version;

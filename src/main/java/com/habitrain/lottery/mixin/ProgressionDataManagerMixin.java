@@ -41,11 +41,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <h2>为什么保留「无条件 cancel」而不是按调用点区分</h2>
  * <p>5 个调用点编译出的字节码形状完全相同（同一个 {@code INVOKESTATIC}，参数都是
  * {@code (player, cardType, 1)}），<b>无法用注入器手段区分</b>「退款」与「发卡」；
- * 而运行期状态（{@code ActiveCardForces} 里有没有待退记录）只能说明「这张卡是不是抽奖侧扣的」，
- * 不能说明「这次调用该不该由抽奖侧接管」——若据此放行上游写入，卡片会落到上游背包/CCA 一侧，
- * 而抽奖的世界权威库（{@code LocalBackpackStore}）并不知情，反而会引入两边账目分叉。
+ * 而运行期状态（{@code ActiveCardForces} 里有没有待退记录）只能说明「这张卡是不是本模组扣的」，
+ * 不能说明「这次调用该不该由本模组接管」——若据此放行上游写入，卡片会落到上游背包/CCA 一侧，
+ * 而本模组的世界权威库（{@code LocalBackpackStore}）并不知情，反而会引入两边账目分叉。
  * 因此这里保持 cancel，并把 {@link CardUseService#refundForcedCard} 的返回值当成探针：
- * 返回 {@code false} 表示「这次调用不是抽奖侧的待退退款」，会被 {@code WARN} 记录下来
+ * 返回 {@code false} 表示「这次调用不是本模组的待退退款」，会被 {@code WARN} 记录下来
  * （此前是完全静默吞掉）。</p>
  *
  * <h2>副作用 / 上游若新增正向调用点会怎样</h2>
@@ -79,7 +79,7 @@ public class ProgressionDataManagerMixin {
         ci.cancel();
         if (!CardUseService.refundForcedCard(player.getUUID())) {
             // 审核 B-16：上游 5 处调用点都应当命中待退记录；返回 false 说明这次 addFactionCard
-            // 并不是抽奖侧的退款（第三方发卡 / 上游新增的正向调用点），而它已经被上面的 cancel
+            // 并不是本模组的退款（第三方发卡 / 上游新增的正向调用点），而它已经被上面的 cancel
             // 吞掉了——必须留痕，否则这种账目丢失只能靠玩家反馈发现。
             HabiLotteryMod.LOGGER.warn(
                     "Cancelled ProgressionDataManager.addFactionCard but no pending forced card existed "

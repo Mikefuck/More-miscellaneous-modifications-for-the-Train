@@ -11,9 +11,6 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
 
 public final class ModBlocks {
-    public static final Block GACHA_TERMINAL = new GachaTerminalBlock();
-    public static final Item GACHA_TERMINAL_ITEM = new BlockItem(GACHA_TERMINAL, new Item.Properties());
-
     public static final Block LOGIN_CALENDAR = new LoginCalendarBlock();
     public static final Item LOGIN_CALENDAR_ITEM = new BlockItem(LOGIN_CALENDAR, new Item.Properties());
 
@@ -27,8 +24,6 @@ public final class ModBlocks {
     }
 
     public static void register() {
-        Registry.register(BuiltInRegistries.BLOCK, id("gacha_terminal"), GACHA_TERMINAL);
-        Registry.register(BuiltInRegistries.ITEM, id("gacha_terminal"), GACHA_TERMINAL_ITEM);
         Registry.register(BuiltInRegistries.BLOCK, id("login_calendar"), LOGIN_CALENDAR);
         Registry.register(BuiltInRegistries.ITEM, id("login_calendar"), LOGIN_CALENDAR_ITEM);
         Registry.register(BuiltInRegistries.BLOCK, id("mailbox"), MAILBOX);
@@ -37,13 +32,11 @@ public final class ModBlocks {
         Registry.register(BuiltInRegistries.ITEM, id("daily_task_board"), DAILY_TASK_BOARD_ITEM);
 
         ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS).register(entries -> {
-            entries.accept(GACHA_TERMINAL_ITEM);
             entries.accept(LOGIN_CALENDAR_ITEM);
             entries.accept(MAILBOX_ITEM);
             entries.accept(DAILY_TASK_BOARD_ITEM);
         });
         ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.OP_BLOCKS).register(entries -> {
-            entries.accept(GACHA_TERMINAL_ITEM);
             entries.accept(LOGIN_CALENDAR_ITEM);
             entries.accept(MAILBOX_ITEM);
             entries.accept(DAILY_TASK_BOARD_ITEM);

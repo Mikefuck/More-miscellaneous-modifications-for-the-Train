@@ -22,7 +22,7 @@ class AtomicJsonFilesTest {
 
     @Test
     void writeJsonReplacesViaTmpAndKeepsBak() throws Exception {
-        Path file = tmp.resolve("pools.json");
+        Path file = tmp.resolve("settings.json");
         Files.writeString(file, "{\"v\":1}", StandardCharsets.UTF_8);
 
         Map<String, Integer> next = new LinkedHashMap<>();
@@ -31,32 +31,32 @@ class AtomicJsonFilesTest {
 
         assertEquals("{\"v\":2}", Files.readString(file, StandardCharsets.UTF_8).trim());
         assertEquals("{\"v\":1}", Files.readString(AtomicJsonFiles.bakPath(file), StandardCharsets.UTF_8).trim());
-        assertFalse(Files.exists(file.resolveSibling("pools.json.tmp")));
+        assertFalse(Files.exists(file.resolveSibling("settings.json.tmp")));
     }
 
     @Test
     void bakCopyFailureAbortsReplace() throws Exception {
         Path file = tmp.resolve("player.json");
-        Files.writeString(file, "{\"lootChance\":9}", StandardCharsets.UTF_8);
+        Files.writeString(file, "{\"greenApples\":9}", StandardCharsets.UTF_8);
         Files.createDirectory(AtomicJsonFiles.bakPath(file));
 
         Map<String, Integer> next = new LinkedHashMap<>();
-        next.put("lootChance", 0);
+        next.put("greenApples", 0);
         assertFalse(AtomicJsonFiles.writeJson(file, next, GSON, true));
-        assertEquals("{\"lootChance\":9}", Files.readString(file, StandardCharsets.UTF_8).trim());
+        assertEquals("{\"greenApples\":9}", Files.readString(file, StandardCharsets.UTF_8).trim());
     }
 
     @Test
     void truncatedPrimaryRestoresBakAndQuarantines() throws Exception {
         Path file = tmp.resolve("u.json");
         Files.writeString(file, "{not-json", StandardCharsets.UTF_8);
-        Files.writeString(AtomicJsonFiles.bakPath(file), "{\"lootChance\":7}", StandardCharsets.UTF_8);
+        Files.writeString(AtomicJsonFiles.bakPath(file), "{\"greenApples\":7}", StandardCharsets.UTF_8);
 
         AtomicJsonFiles.JsonLoad<PlayerLotteryData> load =
                 AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON);
         assertTrue(load.ok());
         assertTrue(load.usedBackup());
-        assertEquals(7, load.value().lootChance);
+        assertEquals(7, load.value().greenApples);
         assertFalse(Files.isRegularFile(file));
         assertNotNull(load.quarantined());
         assertTrue(Files.isRegularFile(load.quarantined()));
@@ -65,14 +65,38 @@ class AtomicJsonFilesTest {
     @Test
     void missingPrimaryStillReadsBak() throws Exception {
         Path file = tmp.resolve("missing.json");
-        Files.writeString(AtomicJsonFiles.bakPath(file), "{\"coinNum\":42}", StandardCharsets.UTF_8);
+        Files.writeString(AtomicJsonFiles.bakPath(file), "{\"greenApples\":42}", StandardCharsets.UTF_8);
 
         AtomicJsonFiles.JsonLoad<PlayerLotteryData> load =
                 AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON);
         assertTrue(load.ok());
         assertTrue(load.usedBackup());
-        assertEquals(42, load.value().coinNum);
+        assertEquals(42, load.value().greenApples);
         assertFalse(load.corrupt());
+    }
+
+    @Test
+    void missingPrimaryWithMalformedBakIsCorrupt() throws Exception {
+        Path file = tmp.resolve("missing-bad-backup.json");
+        Files.writeString(AtomicJsonFiles.bakPath(file), "{not-json", StandardCharsets.UTF_8);
+
+        AtomicJsonFiles.JsonLoad<PlayerLotteryData> load =
+                AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON);
+        assertTrue(load.corrupt());
+        assertFalse(load.ok());
+        assertNull(load.value());
+    }
+
+    @Test
+    void missingPrimaryWithNonRegularBakIsCorrupt() throws Exception {
+        Path file = tmp.resolve("missing-directory-backup.json");
+        Files.createDirectory(AtomicJsonFiles.bakPath(file));
+
+        AtomicJsonFiles.JsonLoad<PlayerLotteryData> load =
+                AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON);
+        assertTrue(load.corrupt());
+        assertFalse(load.ok());
+        assertNull(load.value());
     }
 
     @Test

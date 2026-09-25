@@ -1,27 +1,24 @@
 package com.habitrain.lottery.backpack;
 
-import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
-import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.UUID;
 
-/** Daily faction-card grant and successful-use limit, both using the login UTC day boundary. */
+/**
+ * 每日阵营卡<b>使用次数</b>上限与额外次数。
+ *
+ * <p>1.1.29 起本类不再发放每日登录阵营卡：旧的「登录白送 4 张阵营卡」已取消，
+ * 登录奖励改为在每日任务终端领取 160 绿苹果（见
+ * {@link com.habitrain.lottery.daily.DailyLoginRewardTask}）。这里只保留每日 4 次
+ * 用卡配额、突破上限卡的额外次数与失败返还逻辑。
+ */
 public final class DailyFactionCardService {
     public static final int MAX_DAILY_USES = 4;
     public static final int MAX_BONUS_USES = Integer.MAX_VALUE - MAX_DAILY_USES;
-    public static final int DAILY_LOGIN_CARD_COUNT = 4;
-    private static final FactionCardType[] GRANTABLE = {
-            FactionCardType.KILLER,
-            FactionCardType.CIVILIAN,
-            FactionCardType.NEUTRAL,
-            FactionCardType.NEUTRAL_FOR_KILLER
-    };
 
     private DailyFactionCardService() {}
 
@@ -135,70 +132,6 @@ public final class DailyFactionCardService {
             data.factionCardUsesToday = Math.max(0, data.factionCardUsesToday - 1);
         });
         PlayerLotteryStore.get().flush(uuid);
-    }
-
-    public static void grantLoginCard(ServerPlayer player) {
-        if (player == null || !grantLoginCards(player.getUUID(),
-                new PlayerCardAdminService.ServerOnlineCardAccess(player))) return;
-        FactionCardType[] granted = GRANTABLE.clone();
-        MutableComponent message = Component.literal(
-                "§a[职业卡] 今日上线获得 " + DAILY_LOGIN_CARD_COUNT + " 张：");
-        for (int i = 0; i < granted.length; i++) {
-            if (i > 0) {
-                message.append(Component.literal("、"));
-            }
-            message.append(Component.translatable(granted[i].displayName));
-        }
-        player.sendSystemMessage(message);
-    }
-
-    /** All four grants and the day marker must succeed before reporting a daily reward. */
-    static boolean grantLoginCards(UUID uuid, PlayerCardAdminService.OnlineCardAccess access) {
-        if (uuid == null || access == null || access.storageCorrupt()) return false;
-        var store = PlayerLotteryStore.get();
-        var before = store.getOrLoad(uuid).copy();
-        long today = LoginRewardService.todayEpochDayUtc();
-        if (store.isLoadFailed(uuid) || before.lastFactionCardGrantEpochDay == today) return false;
-        boolean wasDirty = store.isDirty(uuid);
-        var cardsBefore = new java.util.EnumMap<FactionCardType, Integer>(FactionCardType.class);
-        cardsBefore.putAll(access.cards());
-        try {
-            for (FactionCardType type : GRANTABLE) {
-                int count = cardsBefore.getOrDefault(type, 0);
-                if (count == Integer.MAX_VALUE) throw new IllegalStateException("Faction card balance is full");
-                access.add(type, 1);
-                if (access.count(type) != count + 1) throw new IllegalStateException("Daily faction card did not apply");
-            }
-            if (!access.persist()) throw new IllegalStateException("Daily faction cards could not be persisted");
-            store.update(uuid, data -> data.lastFactionCardGrantEpochDay = today);
-            if (!store.flush(uuid)) throw new IllegalStateException("Daily faction card day could not be persisted");
-            return true;
-        } catch (RuntimeException failure) {
-            HabiLotteryMod.LOGGER.error("Daily faction card grant failed for {}, rolling back", uuid, failure);
-            store.restoreSnapshot(uuid, before, wasDirty);
-            boolean restored = true;
-            for (FactionCardType type : GRANTABLE) {
-                try {
-                    int delta = cardsBefore.getOrDefault(type, 0) - access.count(type);
-                    if (delta != 0) access.add(type, delta);
-                } catch (RuntimeException restoreFailure) {
-                    restored = false;
-                    HabiLotteryMod.LOGGER.error("Daily faction card rollback failed for {} / {}", uuid, type, restoreFailure);
-                }
-            }
-            try {
-                restored &= access.persist();
-            } catch (RuntimeException restoreFailure) {
-                restored = false;
-            }
-            if (!restored) {
-                // Block automatic retries for this day until an administrator checks the storage.
-                store.update(uuid, data -> data.lastFactionCardGrantEpochDay = today);
-                store.flush(uuid);
-                HabiLotteryMod.LOGGER.error("Daily faction card grant for {} needs manual recovery", uuid);
-            }
-            return false;
-        }
     }
 
     private static void normalizeUseDay(ServerPlayer player) {

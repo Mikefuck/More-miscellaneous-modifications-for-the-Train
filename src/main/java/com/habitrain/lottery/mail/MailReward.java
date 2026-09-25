@@ -1,16 +1,19 @@
 package com.habitrain.lottery.mail;
 
+import com.habitrain.lottery.crate.CrateCatalog;
+
 /**
  * Structured mail reward applied on claim (encoded into claimCommands).
  */
 public record MailReward(Kind kind, int amount, String factionType) {
     public enum Kind {
-        DRAWS,
-        COINS,
+        GREEN_APPLES,
         FACTION_CARD,
         SELF_SELECT_CARD,
         SKIN,
-        LIMIT_BREAK_CARD
+        LIMIT_BREAK_CARD,
+        CRATE,
+        KEY
     }
 
     /**
@@ -44,12 +47,8 @@ public record MailReward(Kind kind, int amount, String factionType) {
         return skin(parts[0], parts[1]);
     }
 
-    public static MailReward draws(int amount) {
-        return new MailReward(Kind.DRAWS, amount, null);
-    }
-
-    public static MailReward coins(int amount) {
-        return new MailReward(Kind.COINS, amount, null);
+    public static MailReward greenApples(int amount) {
+        return new MailReward(Kind.GREEN_APPLES, amount, null);
     }
 
     public static MailReward factionCard(String typeKey, int amount) {
@@ -62,5 +61,27 @@ public record MailReward(Kind kind, int amount, String factionType) {
 
     public static MailReward limitBreakCard(int amount) {
         return new MailReward(Kind.LIMIT_BREAK_CARD, amount, null);
+    }
+
+    /** A crate from the shared crate catalogue. */
+    public static MailReward crate(String id, int amount) {
+        CrateCatalog.Entry entry = CrateCatalog.find(id);
+        if (entry == null) throw new IllegalArgumentException("Unknown crate: " + id);
+        return new MailReward(Kind.CRATE, amount, entry.id());
+    }
+
+    /** The key matching a crate from the shared crate catalogue. */
+    public static MailReward key(String id, int amount) {
+        CrateCatalog.Entry entry = CrateCatalog.find(id);
+        if (entry == null) throw new IllegalArgumentException("Unknown crate key: " + id);
+        return new MailReward(Kind.KEY, amount, entry.id());
+    }
+
+    public static MailReward crateEntry(String entry, int amount) {
+        return crate(entry, amount);
+    }
+
+    public static MailReward keyEntry(String entry, int amount) {
+        return key(entry, amount);
     }
 }

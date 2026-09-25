@@ -4,9 +4,6 @@
     "plugin": "com.habitrain.lottery.mixin.HabiLotteryMixinPlugin",
     "compatibilityLevel": "JAVA_21",
     "client": [
-        "LootBatchButtonsMixin",
-        "LotteryThemeMixin",
-        "LootInfoCoverMixin",
         "MapIntroduceEmptyMixin",
         "ClientPlayerTitlePrefixMixin",
         "BackpackScreenMixin",

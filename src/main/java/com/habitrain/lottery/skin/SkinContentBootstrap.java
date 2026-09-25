@@ -16,7 +16,7 @@ import java.util.List;
 public final class SkinContentBootstrap {
     /** Metadata key an extension may declare to advertise the skin API version it targets. */
     private static final String API_METADATA_KEY = "habitrain_lottery:skin_api";
-    /** Metadata key for the effects sub-API added in 1.1.18 (skin API v2 + effects v1). */
+    /** Metadata key for the effects sub-API added in 1.1.18 (skin API v3 + effects v1). */
     private static final String EFFECTS_METADATA_KEY = "habitrain_lottery:skin_effects";
     /** {@code depends} / {@code provides} alias usable as a hard version gate. */
     private static final String API_PROVIDES_ID = "habitrain_lottery_skin_api";
@@ -88,7 +88,7 @@ public final class SkinContentBootstrap {
         lastSkippedProviders = List.copyOf(skippedProviders);
         if (!skippedProviders.isEmpty()) {
             HabiLotteryMod.LOGGER.warn(
-                    "Skipped {} broken skin API registrar(s): {} — the lottery, mailbox and titles "
+                    "Skipped {} broken skin API registrar(s): {} — player assets, mailbox and titles "
                             + "still started, but skins registered by those mod(s) are missing. "
                             + "Fix the extension and run /hlt skins reregister, or restart both sides",
                     skippedProviders.size(), String.join(", ", skippedProviders));

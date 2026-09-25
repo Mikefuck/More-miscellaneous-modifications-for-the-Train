@@ -6,9 +6,6 @@ import com.habitrain.lottery.client.gui.MailComposeScreen;
 import com.habitrain.lottery.client.gui.MailboxScreen;
 import com.habitrain.lottery.client.gui.DailyTaskScreen;
 import com.habitrain.lottery.daily.DailyTaskSnapshot;
-import com.habitrain.lottery.config.LotteryConfigService;
-import com.habitrain.lottery.config.PoolConfigModels;
-import com.habitrain.lottery.config.ThemeConfig;
 import com.habitrain.lottery.network.CardUseMenuS2C;
 import com.habitrain.lottery.network.DailyTaskBoardS2C;
 import com.habitrain.lottery.network.DailyTaskClaimC2S;
@@ -24,13 +21,8 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
-import org.agmas.noellesroles.client.screen.LootInfoScreen;
-import org.agmas.noellesroles.packet.Loot.LootDataRefreshS2CPacket;
-import org.agmas.noellesroles.packet.Loot.LootMultiResultS2CPacket;
-import org.agmas.noellesroles.packet.Loot.LootResultS2CPacket;
 
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiConsumer;
 
 /**
  * Client-only networking. Kept out of {@link LotteryNetwork} so dedicated servers never
@@ -40,37 +32,13 @@ import java.util.function.BiConsumer;
 public final class LotteryClientNetwork {
     private static final Gson GSON = new Gson();
 
-    private static BiConsumer<PoolConfigModels.Root, ThemeConfig> clientSnapshotApplier;
-
-    /**
-     * Guards the one-time registration of the lottery's own receivers.
-     * {@link #ensureRegistered()} still re-asserts the SRE loot receivers on every
-     * call, because those are the ones another mod can overwrite.
-     */
+    /** Guards the one-time registration of this mod's receivers. */
     private static final AtomicBoolean REGISTERED = new AtomicBoolean(false);
 
     private LotteryClientNetwork() {
     }
 
-    public static void setClientSnapshotApplier(BiConsumer<PoolConfigModels.Root, ThemeConfig> applier) {
-        clientSnapshotApplier = applier;
-    }
-
-    /**
-     * Idempotent client receiver registration. Safe to call any number of times,
-     * from any thread, and it never throws.
-     *
-     * <p>Fabric Loader does not order client entrypoints by the dependency graph, so
-     * this mod's client entrypoint can run <em>before</em>
-     * {@code noellesroles}/{@code starrailexpress} registers its empty loot stub
-     * receivers. In that case the one-shot registration below would be overwritten
-     * by SRE afterwards (last write wins) and the gacha result screens would never
-     * open. The first call therefore registers everything once (guarded by
-     * {@link #REGISTERED}), and <b>every</b> call re-asserts the SRE loot receivers
-     * with unregister + register so the lottery always wins the last-write race —
-     * including when this is re-invoked from {@code CLIENT_STARTED} and from the
-     * first client tick by {@code HabiLotteryClient}.
-     */
+    /** Idempotent client receiver registration. */
     public static void ensureRegistered() {
         if (REGISTERED.compareAndSet(false, true)) {
             try {
@@ -83,20 +51,6 @@ public final class LotteryClientNetwork {
                 HabiLotteryMod.LOGGER.warn("Client receiver registration failed, will retry: {}", t.toString());
             }
         }
-        try {
-            registerLootClient();
-        } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("Failed re-asserting SRE loot receivers: {}", t.toString());
-        }
-    }
-
-    /**
-     * Backwards-compatible alias for {@link #ensureRegistered()}. Kept so callers
-     * that used to register unconditionally cannot double-register the lottery's own
-     * receivers.
-     */
-    public static void registerClient() {
-        ensureRegistered();
     }
 
     private static void registerCommonReceivers() {
@@ -105,6 +59,7 @@ public final class LotteryClientNetwork {
                     try {
                         DailyTaskSnapshot board = GSON.fromJson(payload.json(), DailyTaskSnapshot.class);
                         if (board == null) return;
+                        LotteryNetwork.ClientLotteryState.greenApples = board.greenApples();
                         Minecraft mc = context.client();
                         if (mc.screen instanceof DailyTaskScreen screen) {
                             screen.applySnapshot(board);
@@ -115,54 +70,9 @@ public final class LotteryClientNetwork {
                         HabiLotteryMod.LOGGER.warn("Failed applying daily task board", error);
                     }
                 }));
-        ClientPlayNetworking.registerGlobalReceiver(com.habitrain.lottery.network.OpenCoinExchangeS2C.TYPE,
-                (payload, context) -> context.client().execute(() -> {
-                    Minecraft mc = context.client();
-                    if (!(mc.screen instanceof com.habitrain.lottery.client.gui.CoinExchangeScreen)) {
-                        mc.setScreen(new com.habitrain.lottery.client.gui.CoinExchangeScreen(mc.screen, payload));
-                    }
-                }));
-        ClientPlayNetworking.registerGlobalReceiver(LotteryNetwork.ConfigSnapshotS2C.TYPE, (payload, context) -> {
-            context.client().execute(() -> {
-                try {
-                    Minecraft mc = Minecraft.getInstance();
-                    // Integrated host shares LotteryConfigService with the server in one JVM.
-                    // Skip importAllJson / SRE pool rebuild so the render thread does not
-                    // replace live server objects. Still mark snapshot applied so Mod Menu
-                    // rebuilds from the already-authoritative singleton. LAN guests and
-                    // dedicated clients do not have a local integrated server, so they apply.
-                    if (mc != null && mc.hasSingleplayerServer()) {
-                        LotteryNetwork.ClientLotteryState.op = LotteryNetwork.ClientLotteryState.pendingOp;
-                        LotteryNetwork.ClientLotteryState.hasSnapshot = true;
-                        LotteryNetwork.ClientLotteryState.configVersion++;
-                        return;
-                    }
-                    LotteryConfigService.get().importAllJson(payload.json());
-                    if (clientSnapshotApplier != null) {
-                        clientSnapshotApplier.accept(
-                                GSON.fromJson(com.google.gson.JsonParser.parseString(payload.json()).getAsJsonObject()
-                                        .get("runtimePools"), PoolConfigModels.Root.class),
-                                LotteryConfigService.get().getTheme());
-                    }
-                    LotteryNetwork.ClientLotteryState.op = LotteryNetwork.ClientLotteryState.pendingOp;
-                    LotteryNetwork.ClientLotteryState.hasSnapshot = true;
-                    LotteryNetwork.ClientLotteryState.configVersion++;
-                } catch (Throwable t) {
-                    HabiLotteryMod.LOGGER.warn("Client failed applying config snapshot: {}", t.toString());
-                }
-            });
-        });
         ClientPlayNetworking.registerGlobalReceiver(LotteryNetwork.OpStatusS2C.TYPE, (payload, context) -> {
             context.client().execute(() -> {
                 LotteryNetwork.ClientLotteryState.op = payload.op();
-                LotteryNetwork.ClientLotteryState.pendingOp = payload.op();
-            });
-        });
-        ClientPlayNetworking.registerGlobalReceiver(LotteryNetwork.OpenLootUiS2C.TYPE, (payload, context) -> {
-            context.client().execute(() -> {
-                LotteryNetwork.ClientLotteryState.lastCoinNumber = payload.coinNumber();
-                LotteryNetwork.ClientLotteryState.lastLotteryChance = payload.lotteryChance();
-                LootUiOpener.openFromServerPacket(payload.coinNumber(), payload.lotteryChance());
             });
         });
         ClientPlayNetworking.registerGlobalReceiver(LotteryNetwork.PlayerListS2C.TYPE, (payload, context) -> {
@@ -199,7 +109,6 @@ public final class LotteryClientNetwork {
                 LotteryNetwork.ClientLoginState.month = payload.month();
                 LotteryNetwork.ClientLoginState.dayOfMonth = payload.dayOfMonth();
                 LotteryNetwork.ClientLoginState.streak = payload.streak();
-                LotteryNetwork.ClientLoginState.rewardToday = payload.rewardToday();
                 LotteryNetwork.ClientLoginState.loginDaysMask = payload.loginDaysMask();
                 LotteryNetwork.ClientLoginState.hasData = true;
                 LotteryNetwork.ClientLoginState.version++;
@@ -260,64 +169,9 @@ public final class LotteryClientNetwork {
         });
     }
 
-    /**
-     * Re-enables the SRE gacha result screens (upstream left the client receivers empty).
-     * SRE registered empty stubs first, so unregister before re-registering — and this
-     * must be re-runnable, because SRE's own client entrypoint may run after ours and
-     * would otherwise put its empty stubs back on top.
-     */
-    private static void registerLootClient() {
-        ClientPlayNetworking.unregisterGlobalReceiver(LootResultS2CPacket.ID.id());
-        ClientPlayNetworking.registerGlobalReceiver(LootResultS2CPacket.ID, (payload, context) -> {
-            context.client().execute(() -> {
-                try {
-                    Minecraft mc = Minecraft.getInstance();
-                    if (mc.player != null && mc.screen != null) {
-                        // Server already sent final coin/draw values via LootDataRefreshS2CPacket,
-                        // so no local decrement needed — just show the result screen.
-                        mc.setScreen(new PagedLootMultiScreen(payload.poolID(), java.util.List.of(new int[]{payload.quality(), payload.ansID()}), mc.screen));
-                    }
-                } catch (Throwable t) {
-                    HabiLotteryMod.LOGGER.warn("Failed showing loot result screen: {}", t.toString());
-                }
-            });
-        });
-
-        ClientPlayNetworking.unregisterGlobalReceiver(LootMultiResultS2CPacket.ID.id());
-        ClientPlayNetworking.registerGlobalReceiver(LootMultiResultS2CPacket.ID, (payload, context) -> {
-            context.client().execute(() -> {
-                try {
-                    Minecraft mc = Minecraft.getInstance();
-                    if (mc.player != null && mc.screen != null) {
-                        if (!payload.results().isEmpty()) {
-                            mc.setScreen(new PagedLootMultiScreen(payload.poolID(), payload.results(), mc.screen));
-                        }
-                    }
-                } catch (Throwable t) {
-                    HabiLotteryMod.LOGGER.warn("Failed showing multi-loot result screen: {}", t.toString());
-                }
-            });
-        });
-
-        ClientPlayNetworking.unregisterGlobalReceiver(LootDataRefreshS2CPacket.ID.id());
-        ClientPlayNetworking.registerGlobalReceiver(LootDataRefreshS2CPacket.ID, (payload, context) -> {
-            context.client().execute(() -> {
-                try {
-                    Minecraft mc = Minecraft.getInstance();
-                    if (mc.screen instanceof LootInfoScreen screen) {
-                        screen.setCoinNumber(payload.coinNumber());
-                        screen.setLotteryChance(payload.lootChance());
-                    }
-                } catch (Throwable t) {
-                    HabiLotteryMod.LOGGER.warn("Failed refreshing loot economy display: {}", t.toString());
-                }
-            });
-        });
-    }
-
     public static boolean canSendPlay() {
         try {
-            return ClientPlayNetworking.canSend(LotteryNetwork.ConfigRequestC2S.TYPE);
+            return ClientPlayNetworking.canSend(LotteryNetwork.PlayerListRequestC2S.TYPE);
         } catch (Throwable t) {
             return false;
         }
@@ -335,42 +189,6 @@ public final class LotteryClientNetwork {
         return true;
     }
 
-    public static boolean clientRequestSnapshot() {
-        if (!canSendPlay()) {
-            return false;
-        }
-        try {
-            ClientPlayNetworking.send(new LotteryNetwork.ConfigRequestC2S());
-            return true;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    public static boolean clientSave(String json) {
-        if (!canSendPlay()) {
-            return false;
-        }
-        try {
-            ClientPlayNetworking.send(new LotteryNetwork.ConfigSaveC2S(json));
-            return true;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    public static boolean clientReload() {
-        if (!canSendPlay()) {
-            return false;
-        }
-        try {
-            ClientPlayNetworking.send(new LotteryNetwork.ConfigReloadC2S());
-            return true;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
     public static boolean clientRequestPlayerList() {
         if (!canSendPlay()) {
             return false;
@@ -383,12 +201,12 @@ public final class LotteryClientNetwork {
         }
     }
 
-    public static boolean clientModifyChance(String mode, String targetUuid, int value) {
+    public static boolean clientModifyGreenApples(String mode, String targetUuid, int value) {
         if (!canSendPlay()) {
             return false;
         }
         try {
-            ClientPlayNetworking.send(new LotteryNetwork.PlayerChanceModifyC2S(
+            ClientPlayNetworking.send(new LotteryNetwork.PlayerGreenApplesModifyC2S(
                     mode, targetUuid == null ? "" : targetUuid, value));
             return true;
         } catch (Throwable t) {

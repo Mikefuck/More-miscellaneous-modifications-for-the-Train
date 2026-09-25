@@ -2,7 +2,7 @@ package com.habitrain.lottery.mail;
 
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.PlayerStateGate;
-import com.habitrain.lottery.bridge.EconomyMirror;
+import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.LocalMailboxStore.MailJson;
 import com.habitrain.lottery.mail.LocalMailboxStore.MailLoad;
 import com.habitrain.lottery.storage.PlayerLotteryData;
@@ -17,6 +17,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -33,7 +34,7 @@ import java.util.function.BooleanSupplier;
  *
  * <h2>Concurrency (audit B-15)</h2>
  * <p>Every read-modify-write of a mailbox file runs under a per-recipient monitor
- * ({@link #mailboxLock(UUID)}), the same pattern {@code LootRollServer} uses for rolls:
+ * ({@link #mailboxLock(UUID)}):
  * <ul>
  *   <li>the monitor is a plain {@code synchronized} object, so it is <b>reentrant</b> —
  *       {@link #claimAll} holds it for the player and calls {@link #claimInternal}, which
@@ -48,7 +49,7 @@ import java.util.function.BooleanSupplier;
  *       briefly blocks a list instead of racing it. Both still complete; neither deadlocks.</li>
  * </ul>
  * <p>{@link #MAILBOX_LOCKS} is never evicted (one small monitor per player UUID ever seen),
- * mirroring {@code LootRollServer.ROLL_LOCKS}.
+ * one small monitor per player UUID ever seen.
  *
  * <h2>Recoverable claims (audit B-14)</h2>
  * <p>The durable "claim in progress" marker is a {@code hltclaim:v1:<mailId>} token inside
@@ -74,7 +75,7 @@ import java.util.function.BooleanSupplier;
 public final class MailService {
     /**
      * Per-recipient mailbox monitor (audit B-15), mirroring
-     * {@code LootRollServer.ROLL_LOCKS}. Reentrant, one entry per player UUID, never evicted.
+     * Reentrant, one entry per player UUID, never evicted.
      */
     private static final ConcurrentHashMap<UUID, Object> MAILBOX_LOCKS = new ConcurrentHashMap<>();
 
@@ -567,9 +568,9 @@ public final class MailService {
                 throw new IllegalArgumentException("Skin provider unavailable: " + reward.factionType());
         }
         UUID uuid = player.getUUID();
-        int drawDelta = 0;
-        int coinDelta = 0;
+        long greenAppleDelta = 0;
         List<CardDelta> cards = new ArrayList<>();
+        Map<String, Integer> systemItemDeltas = new LinkedHashMap<>();
         List<Component> messages = new ArrayList<>();
         for (MailReward r : rewards) {
             if (r == null || r.amount() == 0) {
@@ -584,15 +585,11 @@ public final class MailService {
                         throw new IllegalStateException("Skin reward could not be persisted");
                     messages.add(Component.literal("§a[邮箱] 已解锁皮肤 " + reward.factionType()));
                 }
-                case DRAWS -> {
-                    drawDelta += r.amount();
+                case GREEN_APPLES -> {
+                    greenAppleDelta += r.amount();
                     messages.add(Component.literal(
-                            (r.amount() >= 0 ? "§a" : "§e") + "[邮箱] 抽数 " + (r.amount() >= 0 ? "+" : "") + r.amount()));
-                }
-                case COINS -> {
-                    coinDelta += r.amount();
-                    messages.add(Component.literal(
-                            (r.amount() >= 0 ? "§a" : "§e") + "[邮箱] 金币 " + (r.amount() >= 0 ? "+" : "") + r.amount()));
+                            (r.amount() >= 0 ? "§a" : "§e") + "[邮箱] 绿苹果 "
+                                    + (r.amount() >= 0 ? "+" : "") + r.amount()));
                 }
                 case FACTION_CARD -> {
                     FactionCardType type = FactionCardType.fromString(r.factionType());
@@ -616,21 +613,41 @@ public final class MailService {
                     }
                     messages.add(Component.translatable("message.habitrain_lottery.mail.limit_break", r.amount()));
                 }
+                case CRATE, KEY -> {
+                    CrateCatalog.Entry entry = CrateCatalog.find(r.factionType());
+                    if (entry == null) {
+                        throw new IllegalArgumentException("Unknown crate attachment: " + r.factionType());
+                    }
+                    String itemId = r.kind() == MailReward.Kind.CRATE
+                            ? entry.crateItemId() : entry.keyItemId();
+                    systemItemDeltas.merge(itemId, r.amount(), Integer::sum);
+                    messages.add(Component.literal("§a[邮箱] 获得 "
+                            + (r.kind() == MailReward.Kind.CRATE ? "箱子 " : "钥匙 ")
+                            + entry.id() + " x" + r.amount()));
+                }
             }
         }
-        if (drawDelta != 0) {
-            int d = drawDelta;
-            PlayerLotteryStore.get().update(uuid, data -> data.lootChance = Math.max(0, data.lootChance + d));
+        if (!systemItemDeltas.isEmpty()) {
+            Map<String, Integer> deltas = Map.copyOf(systemItemDeltas);
+            if (!PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> {
+                if (data.systemItems == null) data.systemItems = new LinkedHashMap<>();
+                for (Map.Entry<String, Integer> delta : deltas.entrySet()) {
+                    if (!com.habitrain.lottery.warehouse.SystemItemBalances.change(
+                            data.systemItems, delta.getKey(), delta.getValue())) {
+                        throw new IllegalStateException("System item reward could not be persisted: " + delta.getKey());
+                    }
+                }
+            })) {
+                throw new IllegalStateException("Mail crate/key reward could not be persisted");
+            }
         }
-        if (coinDelta != 0) {
-            int c = coinDelta;
-            PlayerLotteryStore.get().update(uuid, data -> data.coinNum = Math.max(0, data.coinNum + c));
-        }
-        if (drawDelta != 0 || coinDelta != 0) {
+        if (greenAppleDelta != 0) {
+            long delta = greenAppleDelta;
+            PlayerLotteryStore.get().update(uuid, data -> data.greenApples = (int) Math.max(0L,
+                    Math.min(Integer.MAX_VALUE, (long) data.greenApples + delta)));
             if (PlayerLotteryStore.get().isLoadFailed(uuid) || !PlayerLotteryStore.get().flush(uuid)) {
-                throw new IllegalStateException("Mail economy reward could not be persisted");
+                throw new IllegalStateException("Mail green-apple reward could not be persisted");
             }
-            EconomyMirror.syncChanceAndCoins(player, PlayerLotteryStore.get().getOrLoad(player));
         }
         for (CardDelta card : cards) {
             BackpackManager.addCard(player, card.type, card.amount);
@@ -652,7 +669,7 @@ public final class MailService {
         }
         Map<FactionCardType, Integer> cards = new EnumMap<>(FactionCardType.class);
         cards.putAll(BackpackManager.getCards(player));
-        return new RewardSnapshot(data.lootChance, data.coinNum, cards,
+        return new RewardSnapshot(data.greenApples, cards,
                 backpack.selfSelectCards(), backpack.limitBreakCards(), data.copy());
     }
 
@@ -671,15 +688,14 @@ public final class MailService {
             }
         }, () -> {
             PlayerLotteryStore.get().update(uuid, data -> {
-                data.lootChance = Math.max(0, snap.lootChance);
-                data.coinNum = Math.max(0, snap.coinNum);
+                data.greenApples = Math.max(0, snap.greenApples);
+                data.systemItems = snap.skins.copy().systemItems;
                 data.unlocked = snap.skins.copy().unlocked;
                 data.equipped = snap.skins.copy().equipped;
             });
             if (PlayerLotteryStore.get().isLoadFailed(uuid) || !PlayerLotteryStore.get().flush(uuid)) {
-                throw new IllegalStateException("Mail economy rollback could not be persisted");
+                throw new IllegalStateException("Mail asset rollback could not be persisted");
             }
-            EconomyMirror.syncChanceAndCoins(player, PlayerLotteryStore.get().getOrLoad(player));
             com.habitrain.lottery.bridge.SkinStateCoordinator.reassertPlayer(player, "mail_rollback");
         }, () -> {
             Map<FactionCardType, Integer> now = BackpackManager.getCards(player);
@@ -719,7 +735,7 @@ public final class MailService {
     private record CardDelta(FactionCardType type, int amount) {
     }
 
-    private record RewardSnapshot(int lootChance, int coinNum, Map<FactionCardType, Integer> cards,
+    private record RewardSnapshot(int greenApples, Map<FactionCardType, Integer> cards,
                                   int selfSelectCards, int limitBreakCards, PlayerLotteryData skins) {
     }
 }

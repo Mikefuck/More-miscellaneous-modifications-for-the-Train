@@ -6,6 +6,7 @@ import com.habitrain.lottery.mail.MailDraft;
 import com.habitrain.lottery.mail.MailReward;
 import com.habitrain.lottery.mail.MailService;
 import com.habitrain.lottery.mail.MailTargetParse;
+import com.habitrain.lottery.crate.CrateCatalog;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
@@ -54,12 +55,14 @@ public record MailComposeC2SPayload(
             MailComposeC2SPayload::write, MailComposeC2SPayload::read);
 
     public record RewardEntry(int kind, int amount, String factionType) {
-        public static final int DRAWS = 0;
-        public static final int COINS = 1;
+        // Retired wire kinds 0 and 1 stay reserved for protocol compatibility.
         public static final int FACTION_CARD = 2;
         public static final int SELF_SELECT_CARD = 3;
         public static final int LIMIT_BREAK_CARD = 4;
         public static final int SKIN = 5;
+        public static final int GREEN_APPLES = 6;
+        public static final int CRATE = 7;
+        public static final int KEY = 8;
     }
 
     private static void write(RegistryFriendlyByteBuf buf, MailComposeC2SPayload value) {
@@ -120,12 +123,13 @@ public record MailComposeC2SPayload(
             }
             switch (r.kind) {
                 case RewardEntry.SKIN -> list.add(MailReward.skinEntry(r.factionType));
-                case RewardEntry.DRAWS -> list.add(MailReward.draws(r.amount));
-                case RewardEntry.COINS -> list.add(MailReward.coins(r.amount));
+                case RewardEntry.GREEN_APPLES -> list.add(MailReward.greenApples(r.amount));
                 case RewardEntry.FACTION_CARD -> list.add(MailReward.factionCard(
                         r.factionType == null ? "" : r.factionType.toLowerCase(Locale.ROOT), r.amount));
                 case RewardEntry.SELF_SELECT_CARD -> list.add(MailReward.selfSelectCard(r.amount));
                 case RewardEntry.LIMIT_BREAK_CARD -> list.add(MailReward.limitBreakCard(r.amount));
+                case RewardEntry.CRATE -> list.add(MailReward.crate(r.factionType, r.amount));
+                case RewardEntry.KEY -> list.add(MailReward.key(r.factionType, r.amount));
                 default -> {
                 }
             }
@@ -159,6 +163,9 @@ public record MailComposeC2SPayload(
             for (MailReward reward : draft.rewards()) {
                 if (reward.kind() == MailReward.Kind.SKIN && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty())
                     throw new IllegalArgumentException("未注册的皮肤 " + reward.factionType());
+                if ((reward.kind() == MailReward.Kind.CRATE || reward.kind() == MailReward.Kind.KEY)
+                        && CrateCatalog.find(reward.factionType()) == null)
+                    throw new IllegalArgumentException("未注册的箱子或钥匙 " + reward.factionType());
             }
         } catch (IllegalArgumentException invalid) {
             player.sendSystemMessage(Component.literal("§c[邮箱] 附件无效：" + invalid.getMessage()));
