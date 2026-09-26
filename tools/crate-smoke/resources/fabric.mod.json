@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "habitrain_crate_smoke",
+  "version": "1.0.0",
+  "name": "Crate opening recorder",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.habitrain.lottery.test.CrateSmoke"
+    ],
+    "habitrain_lottery_skins": [
+      "com.habitrain.lottery.test.CrateFixtureSkins"
+    ]
+  }
+}

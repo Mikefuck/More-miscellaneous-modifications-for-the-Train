@@ -73,7 +73,7 @@ public final class SkinWardrobeScreen extends Screen {
      * key instead, which left every v1 skin showing its raw id in this wardrobe.
      * The legacy key is probed second so old translations keep working (audit F-06).</p>
      */
-    private static Component skinName(String type, String id) {
+    static Component skinName(String type, String id) {
         String key = "skin.habitrain_lottery." + type + "." + id;
         return key.equals(Component.translatable(key).getString())
                 ? legacySkinName(type, id)
