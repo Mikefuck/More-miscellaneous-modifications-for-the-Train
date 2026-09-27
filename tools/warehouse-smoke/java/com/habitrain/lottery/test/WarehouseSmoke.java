@@ -60,6 +60,13 @@ public final class WarehouseSmoke implements ClientModInitializer {
                     String[] names={"周年纪念晶石","回声碎片","活动兑换券","列车补给凭证","星芒徽记","深海纪念章","虹光碎晶","星之勋章","特典钥匙","经验加成券","限时挑战券","探索纪念章"};
                     for(int i=0;i<items.length;i++) rows.add(new WarehouseEntry("special","test:"+items[i],names[i],"系统发放的特殊道具。保存在账户仓库，可用于对应活动。", "minecraft:"+items[i],i+1,0xFF84A6AD + i*500,false));
                     rows.add(new WarehouseEntry("title","pioneer","列车先驱","已拥有的称号，前往衣柜装备。","minecraft:name_tag",1,0xFFC7B780,true));
+                    // Real catalogue crate/key ids so the crate category, chip and "open" tag are exercised.
+                    rows.add(new WarehouseEntry("special",com.habitrain.lottery.crate.CrateCatalog.crateItemId("gilded"),"镀金武器箱","消耗一把镀金钥匙开启，随机获得一件金色品质皮肤。","minecraft:gold_block",3,0xFFF0BE45,false));
+                    rows.add(new WarehouseEntry("special",com.habitrain.lottery.crate.CrateCatalog.keyItemId("gilded"),"镀金钥匙","用于开启镀金武器箱。","minecraft:gold_nugget",5,0xFFF0BE45,false));
+                    var qualities = com.habitrain.lottery.api.skin.SkinQuality.values();
+                    String[] skinIcons={"iron_sword","golden_sword","diamond_sword","netherite_sword","trident"};
+                    String[] skinNames={"标准左轮 | 原装","经典匕首 | 夜影","列车长佩刀 | 鎏金","星穹长剑 | 深空","赤焰三叉戟 | 限定"};
+                    for (int i=0;i<qualities.length;i++) rows.add(new WarehouseEntry("skin","test/skin_"+i,skinNames[i],"账户已解锁的皮肤，可前往衣柜查看与装备。","minecraft:"+skinIcons[i],1,0,i==2,qualities[i]));
                     set(screen,"loading",true); set(screen,"requestId",73); set(screen,"expectedTotal",-1);
                     screen.receive(new WarehouseNetwork.Snapshot(73,0,rows.size(),"",rows.subList(0,5)));
                     if ((boolean)get(screen,"known")) throw new AssertionError("Partial inventory became visible");
@@ -70,11 +77,9 @@ public final class WarehouseSmoke implements ClientModInitializer {
                     ClientLotteryState.cardUseRemainingUses=3; ClientLotteryState.cardUseRemainingSelfUses=2;
                     set(screen,"cardsKnown",true); set(screen,"error","");
                 }
+                if (ticks == 88) screen.keyPressed(262,0,0); // keyboard focus = hover state (glow + sheen)
                 if (ticks == 95) shot(mc,"warehouse-wide");
-                if (ticks == 96) {
-                    Class<?> p = Class.forName("com.habitrain.lottery.client.gui.WarehouseScreen$Page");
-                    invoke(screen,"switchPage",p,Enum.valueOf((Class)p,"CARDS"));
-                }
+                if (ticks == 96) invoke(screen,"selectCategory",String.class,"cards");
                 if (ticks == 115) shot(mc,"warehouse-cards");
                 if (ticks == 116) {
                     var tiles = (List<?>)get(screen,"tiles");
@@ -83,19 +88,34 @@ public final class WarehouseSmoke implements ClientModInitializer {
                 if (ticks == 135) shot(mc,"warehouse-card-detail");
                 if (ticks == 136) {
                     var m=screen.getClass().getDeclaredMethod("closeDetailImmediately");m.setAccessible(true);m.invoke(screen);
+                    invoke(screen,"selectCategory",String.class,"appearance");
+                }
+                if (ticks == 150) {
+                    var tiles = (List<?>)get(screen,"tiles");
+                    invoke(screen,"openDetail",tiles.get(0).getClass(),tiles.get(0));
+                }
+                if (ticks == 168) shot(mc,"warehouse-skin-detail");
+                if (ticks == 169) {
+                    var m=screen.getClass().getDeclaredMethod("closeDetailImmediately");m.setAccessible(true);m.invoke(screen);
+                    invoke(screen,"selectCategory",String.class,"all");
+                }
+                if (ticks == 178) screen.mouseScrolled(320, 200, 0, -20);
+                if (ticks == 185) shot(mc,"warehouse-all-bottom");
+                if (ticks == 186) {
+                    var m=screen.getClass().getDeclaredMethod("closeDetailImmediately");m.setAccessible(true);m.invoke(screen);
                     mc.options.guiScale().set(3);
                     org.lwjgl.glfw.GLFW.glfwSetWindowSize(mc.getWindow().getWindow(),960,720);
                     mc.resizeDisplay();
                 }
-                if (ticks == 156) shot(mc,"warehouse-small");
-                if (ticks == 157) {
+                if (ticks == 206) shot(mc,"warehouse-small");
+                if (ticks == 207) {
                     var tiles = (List<?>)get(screen,"tiles");
                     invoke(screen,"openDetail",tiles.get(0).getClass(),tiles.get(0));
                 }
-                if (ticks == 178) shot(mc,"warehouse-small-detail");
-                if (ticks == 180) screen.mouseScrolled(900 / 3d, 360 / 3d, 0, -6);
-                if (ticks == 190) shot(mc,"warehouse-small-detail-scrolled");
-                if (ticks == 191) {
+                if (ticks == 228) shot(mc,"warehouse-small-detail");
+                if (ticks == 230) screen.mouseScrolled(900 / 3d, 360 / 3d, 0, -6);
+                if (ticks == 240) shot(mc,"warehouse-small-detail-scrolled");
+                if (ticks == 241) {
                     var m=screen.getClass().getDeclaredMethod("closeDetailImmediately");m.setAccessible(true);m.invoke(screen);
                     mc.options.guiScale().set(2);
                     org.lwjgl.glfw.GLFW.glfwSetWindowSize(mc.getWindow().getWindow(),1280,720);
@@ -110,19 +130,19 @@ public final class WarehouseSmoke implements ClientModInitializer {
                     Class<?> p=Class.forName("com.habitrain.lottery.client.gui.WarehouseScreen$Page");
                     invoke(screen,"switchPage",p,Enum.valueOf((Class)p,"ROLES"));
                 }
-                if (ticks == 211) shot(mc,"warehouse-role-select");
-                if (ticks == 212) {
+                if (ticks == 261) shot(mc,"warehouse-role-select");
+                if (ticks == 262) {
                     screen.keyPressed(264,0,0);
                     screen.keyPressed(264,0,0);
                     screen.keyPressed(257,0,0);
                     if (get(screen,"detail")==null) throw new AssertionError("Keyboard detail activation failed");
                 }
-                if (ticks == 232) shot(mc,"warehouse-role-detail");
-                if (ticks == 233) {
+                if (ticks == 282) shot(mc,"warehouse-role-detail");
+                if (ticks == 283) {
                     screen.keyPressed(256,0,0);
                 }
-                if (ticks == 240 && get(screen,"detail")!=null) throw new AssertionError("Escape did not close detail");
-                if (ticks == 245) { com.habitrain.lottery.HabiLotteryMod.LOGGER.info("WAREHOUSE_SMOKE_OK: chunk correlation, keyboard, scroll, seven-column and compact layouts"); mc.stop(); }
+                if (ticks == 290 && get(screen,"detail")!=null) throw new AssertionError("Escape did not close detail");
+                if (ticks == 295) { com.habitrain.lottery.HabiLotteryMod.LOGGER.info("WAREHOUSE_SMOKE_OK: chunk correlation, keyboard, scroll, seven-column and compact layouts"); mc.stop(); }
             } catch (Exception e) { throw new RuntimeException("Warehouse GUI smoke failed",e); }
         });
     }

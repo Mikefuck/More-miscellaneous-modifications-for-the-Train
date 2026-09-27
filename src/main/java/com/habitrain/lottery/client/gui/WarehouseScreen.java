@@ -18,7 +18,6 @@ import net.minecraft.Util;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
@@ -29,6 +28,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.item.ItemStack;
@@ -43,33 +43,30 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 账户奖励仓库：分页格栅 + 详情抽屉 + 用卡流程。
+ * 账户奖励仓库：与开箱终端同一套视觉语汇。
  *
- * <p>外观按参考视频（Steam 库存风）重建：背景 {@code #101410} + 顶部等高线 + 网格暗场
- * {@code #1A1D1A}；三行顶部 chrome（主导航 / 次级标签 / 三级筛选 + 右侧排序下拉）；
- * 瓦片解剖为图标井 + 说明条 + 物品名。几何全部由 {@link WarehouseLayout} 从 1920×1080
- * 的实测坐标等比换算。录制噪声（水印 / 字幕 / bilibili 头像栏 / 编码残影 / 鼠标指针）不复刻。</p>
+ * <p>失焦庭院舞台 → 居中眉题 / 大标题 / 资产标签 → 玻璃展柜（分类标签 + 搜索 + 品质卡片格栅）
+ * → 底部操作栏（状态 · 关闭 · 账户）。点击卡片从右侧滑出玻璃详情面板：展台光、品质标签、
+ * 说明与操作按钮。几何全部由 {@link WarehouseLayout} 计算。</p>
+ *
+ * <p>只保留有实际作用的控件：分类标签（按数量自动隐藏空分类）、搜索、关闭（职业自选时为返回）、
+ * 同步失败时的重试，以及详情面板里的返回 / 操作按钮（没有可执行操作的物品不显示操作按钮）。</p>
  */
 public final class WarehouseScreen extends Screen {
     private static final String KEY = "screen.habitrain_lottery.warehouse.";
+    /** 分类标签，顺序即显示顺序。 */
+    private static final String[] CATEGORIES = {"all", "crates", "cards", "items", "appearance"};
 
-    private enum Page { WAREHOUSE, CARDS, ROLES }
-    private enum SortMode { QUALITY, NAME, COUNT }
+    /** 仓库本体；职业自选只在使用自选卡后进入，不作为常驻入口。 */
+    private enum Page { WAREHOUSE, ROLES }
 
-    /** chrome 控件类型：决定各自的绘制语言（参考视频里的四类元素）。 */
-    private enum Kind { ICON, NAV, TAB, PILL, SORT, PRIMARY, GHOST }
-
-    /** 26×26 图标行里的小字形。 */
-    private interface Icon {
-        void paint(GuiGraphics g, int x, int y, int size, int color, boolean on);
-    }
+    private enum Kind { TAB, PRIMARY, GHOST }
 
     private final Screen parent;
     private WarehouseLayout layout;
     private Page page = Page.WAREHOUSE;
-    private String filter = "all", state = "all", query = "";
-    private SortMode sortMode = SortMode.QUALITY;
-    private boolean reducedMotion, draggingPreview;
+    private String filter = "all", query = "";
+    private boolean draggingPreview;
     private float previewYaw, previewPitch;
     private BakedModel measuredSkinModel;
     private SkinGeometry skinGeometry;
@@ -78,22 +75,17 @@ public final class WarehouseScreen extends Screen {
     private List<WarehouseRole> roles = List.of();
     private final List<Tile> tiles = new ArrayList<>();
     private List<Tile> outgoing = List.of();
-    private final List<Control> controls = new ArrayList<>();
-    private final List<Control> navControls = new ArrayList<>();
     private final List<Control> tabControls = new ArrayList<>();
-    private final List<Control> stateControls = new ArrayList<>();
-    private final List<Control> iconControls = new ArrayList<>();
-    private Control sortControl, motionControl, detailBack, detailAction;
+    private Control closeControl, retryControl, detailBack, detailAction;
     private EditBox search;
     private int searchX, searchY, searchW, searchH;
     private double scroll;
     private long opened = -1, changed = -1000, lastFrame, requestAt;
-    /** 每次进入本界面（首次打开或从开箱终端返回）的时间，驱动同一套落位动画。 */
+    /** 每次进入本界面（首次打开或从开箱终端返回）的时间，驱动合焦与落位动画。 */
     private long enteredAt = -1;
     /** 前往开箱终端的交接标记，−1 表示没有正在进行的交接。 */
     private long crateDepartAt = -1;
     private String pendingCrate = "";
-    private float departFocusX, departFocusY, departDirX, departDirY;
     private boolean handedOff;
     private float delta = 16, switchDirection = 1;
     private int requestId, requestAttempts, expectedTotal = -1, cardEpoch;
@@ -109,6 +101,9 @@ public final class WarehouseScreen extends Screen {
     private long detailAt;
     private boolean detailClosing;
     private int detailScroll, detailMaxScroll;
+    /** 舞台里缓慢漂浮的浮尘，与开箱终端同一套粒子（参考空间 1920 宽）。 */
+    private final CrateParticles motes = new CrateParticles();
+    private float moteClock;
 
     public WarehouseScreen(Screen parent) { super(text("title")); this.parent = parent; }
     private static Component text(String suffix, Object... args) { return Component.translatable(KEY + suffix, args); }
@@ -116,10 +111,12 @@ public final class WarehouseScreen extends Screen {
     private static long now() { return Util.getMillis(); }
 
     @Override protected void init() {
-        layout = WarehouseLayout.of(width, height);
+        // 像素字体：每个字形像素占整数个屏幕像素才清晰，大标题固定为「字形像素 = 2 屏幕像素」。
+        double guiScale = minecraft == null ? 2 : minecraft.getWindow().getGuiScale();
+        layout = WarehouseLayout.of(width, height, (float) (4 / Math.max(1, guiScale)));
         boolean first = opened < 0;
         if (first) { opened = now(); }
-        // 从开箱终端返回时同样播放一次落位动画，保证两个方向的转场风格一致。
+        // 从开箱终端返回时同样播放一次合焦与落位，保证两个方向的转场风格一致。
         enteredAt = now();
         lastFrame = enteredAt;
         crateDepartAt = -1;
@@ -130,145 +127,144 @@ public final class WarehouseScreen extends Screen {
         if (first || refreshAfterReturn) { refreshAfterReturn = false; refresh(true); }
     }
 
-    /**
-     * 顶部三行 chrome（参考视频 y 20–50 / 66–86 / 113–140）+ 左上角图标行 + 右侧排序下拉。
-     */
+    // =====================================================================
+    // 控件
+    // =====================================================================
+
+    /** 分类标签 + 搜索框（展柜顶行）、底栏按钮、详情面板按钮。 */
     private void rebuildChrome() {
-        clearWidgets(); controls.clear();
-        navControls.clear(); tabControls.clear(); stateControls.clear(); iconControls.clear();
+        boolean searching = search != null && search.isFocused();
+        clearWidgets(); tabControls.clear();
+        int panelW = layout.panelX1() - layout.panelX0();
+        int left = layout.panelX0() + layout.pad(), right = layout.panelX1() - layout.pad();
+        searchH = layout.tabHeight();
+        searchY = layout.tabY();
+        searchW = Mth.clamp(Math.round(panelW * .26F), 64, 150);
 
-        int navY = layout.navY(), navH = layout.navHeight();
-        // 左上角图标行：返回 / 刷新 / 动效 / 关闭（参考视频 x 22、60、98、136 的四个 26×26 字形）
-        int iconSize = WarehouseTheme.iconSize(navH);
-        int iconHit = iconSize + 4;
-        int step = iconHit + 2;
-        int ix = Math.max(2, Math.round(22 * layout.scale()));
-        iconControls.add(control(ix, navY, iconHit, navH, Kind.ICON, Component.empty(), this::onClose, null, null,
-                (g, x, y, s, c, on) -> WarehouseTheme.glyphBack(g, x, y, s, c)));
-        iconControls.get(iconControls.size() - 1).setTooltip(Tooltip.create(Component.translatable("gui.back")));
-        iconControls.add(control(ix + step, navY, iconHit, navH, Kind.ICON, Component.empty(),
-                () -> refresh(true), null, null,
-                (g, x, y, s, c, on) -> WarehouseTheme.glyphRefresh(g, x, y, s, c)));
-        iconControls.get(iconControls.size() - 1).setTooltip(Tooltip.create(text("refresh")));
-        motionControl = control(ix + step * 2, navY, iconHit, navH, Kind.ICON, Component.empty(), () -> {
-            reducedMotion = !reducedMotion; outgoing = List.of(); changed = -1000;
-            rebuildGrid(false);
-        }, null, null, (g, x, y, s, c, on) -> WarehouseTheme.glyphMotion(g, x, y, s, c, on));
-        motionControl.setTooltip(Tooltip.create(text("motion_hint")));
-        iconControls.add(motionControl);
-        iconControls.add(control(ix + step * 3, navY, iconHit, navH, Kind.ICON, Component.empty(), this::onClose, null, null,
-                (g, x, y, s, c, on) -> WarehouseTheme.glyphClose(g, x, y, s, c)));
-        iconControls.get(iconControls.size() - 1).setTooltip(Tooltip.create(text("close")));
+        if (page == Page.WAREHOUSE) {
+            List<String> ids = new ArrayList<>();
+            List<Integer> counts = new ArrayList<>();
+            for (String id : CATEGORIES) {
+                int count = categoryCount(id);
+                if (id.equals("all") || count > 0) { ids.add(id); counts.add(count); }
+            }
+            if (!ids.contains(filter)) { filter = "all"; scroll = 0; }
+            int padX = layout.compact() ? 5 : 7, tabGap = layout.compact() ? 2 : 4;
+            boolean withCounts = tabsWidth(ids, counts, true, padX, tabGap) <= right - searchW - 8 - left;
+            int total = tabsWidth(ids, counts, withCounts, padX, tabGap);
+            // 分类必须完整可见：放不下时让搜索框让位，最窄保留一个放大镜的宽度。
+            if (left + total > right - searchW - 8) searchW = Math.max(36, right - 8 - left - total);
+            int tx = left;
+            for (int i = 0; i < ids.size(); i++) {
+                String id = ids.get(i);
+                Control tab = new Control(tx, layout.tabY(), tabWidth(id, counts.get(i), withCounts, padX), layout.tabHeight(),
+                        Kind.TAB, text("category." + id), () -> selectCategory(id), id);
+                tab.badge = withCounts ? counts.get(i) : -1;
+                tabControls.add(addRenderableWidget(tab));
+                tx += tab.getWidth() + tabGap;
+            }
+        }
+        searchX = right - searchW;
 
-        // 主导航：映射到现有分页（仓库 / 角色卡 / 职业自选），ASCII | 分隔
-        Component[] navLabels = { text("warehouse"), text("cards"), text("roles") };
-        Page[] navPages = Page.values();
-        int navPad = Math.max(5, Math.round(24 * layout.scale()));
-        int sep = Math.max(3, Math.round(14 * layout.scale()));
-        int total = sep * (navLabels.length - 1);
-        int[] navWidth = new int[navLabels.length];
-        for (int i = 0; i < navLabels.length; i++) {
-            navWidth[i] = font.width(navLabels[i]) + navPad * 2;
-            total += navWidth[i];
-        }
-        int nx = Math.max(layout.margin(), (width - total) / 2);
-        for (int i = 0; i < navLabels.length; i++) {
-            Page target = navPages[i];
-            navControls.add(control(nx, navY, navWidth[i], navH, Kind.NAV, navLabels[i],
-                    () -> switchPage(target), target, null, null));
-            nx += navWidth[i] + sep;
-        }
-
-        // 次级标签：分类过滤（参考视频的 全部 装备 艺术作品 武器箱 …）
-        int tabY = layout.tabY(), tabH = layout.tabHeight();
-        String[] tabs = page == Page.WAREHOUSE ? new String[]{"all", "currency", "special", "appearance"}
-                : page == Page.CARDS ? new String[]{"all", "faction", "self_select", "limit_break"}
-                : new String[]{"all", "bound"};
-        int tabPad = Math.max(4, Math.round(16 * layout.scale()));
-        int tabGap = Math.max(2, Math.round(6 * layout.scale()));
-        total = tabGap * (tabs.length - 1);
-        int[] tabWidth = new int[tabs.length];
-        for (int i = 0; i < tabs.length; i++) {
-            tabWidth[i] = font.width(text("filter." + tabs[i])) + tabPad * 2;
-            total += tabWidth[i];
-        }
-        searchW = Math.max(56, Math.round(300 * layout.scale()));
-        searchH = tabH;
-        searchX = layout.margin();
-        searchY = tabY;
-        int tx = Math.max(searchX + searchW + tabGap, (width - total) / 2);
-        if (tx + total > width - layout.margin()) tx = Math.max(searchX + searchW + tabGap, width - layout.margin() - total);
-        for (int i = 0; i < tabs.length; i++) {
-            String id = tabs[i];
-            tabControls.add(control(tx, tabY, tabWidth[i], tabH, Kind.TAB, text("filter." + id), () -> {
-                if (filter.equals(id)) return;
-                filter = id; scroll = 0; rebuildGrid(true);
-            }, null, id, null));
-            tx += tabWidth[i] + tabGap;
-        }
-
-        // 三级筛选：状态过滤（参考视频的 所有 武器箱 印花胶囊 …），活跃项同一套 teal 药丸
-        int filterY = layout.filterY(), filterH = layout.filterHeight();
-        String[] states = page == Page.WAREHOUSE ? new String[]{"all", "owned", "usable", "equipped"}
-                : page == Page.CARDS ? new String[]{"all", "owned", "usable"}
-                : new String[]{"all", "available", "taken"};
-        total = tabGap * (states.length - 1);
-        int[] stateWidth = new int[states.length];
-        for (int i = 0; i < states.length; i++) {
-            stateWidth[i] = font.width(text("state." + states[i])) + tabPad * 2;
-            total += stateWidth[i];
-        }
-        int sx = Math.max(layout.margin(), (width - total) / 2);
-        for (int i = 0; i < states.length; i++) {
-            String id = states[i];
-            stateControls.add(control(sx, filterY, stateWidth[i], filterH, Kind.PILL, text("state." + id), () -> {
-                if (state.equals(id)) return;
-                state = id; scroll = 0; rebuildGrid(true);
-            }, null, id, null));
-            sx += stateWidth[i] + tabGap;
-        }
-
-        // 右侧排序下拉框：field #1A1F1E / 1px #3A4442 / r=4 / ⇅ … ∨
-        sortControl = control(layout.sortFieldX(), layout.sortFieldY(), layout.sortFieldWidth(), layout.sortFieldHeight(),
-                Kind.SORT, text(switch (sortMode) {
-                    case QUALITY -> "quality_sort";
-                    case NAME -> "name_sort";
-                    case COUNT -> "count_sort";
-                }), () -> {
-            sortMode = SortMode.values()[(sortMode.ordinal() + 1) % SortMode.values().length];
-            rebuildChrome(); rebuildGrid(true);
-        }, null, null, null);
-
-        // 搜索框（参考视频次级行左侧的放大镜）
-        int glyph = WarehouseTheme.iconSize(tabH);
-        search = new EditBox(font, searchX + glyph + 5, tabY + (tabH - 8) / 2, Math.max(20, searchW - glyph - 12), 8,
+        int glyph = Math.max(6, searchH - 8);
+        search = new EditBox(font, searchX + glyph + 8, searchY + (searchH - 8) / 2, Math.max(12, searchW - glyph - 12), 8,
                 text("search"));
-        search.setBordered(false); search.setMaxLength(96); search.setHint(text("search"));
+        search.setBordered(false); search.setMaxLength(96);
+        // EditBox 不裁剪提示文字，窄搜索框里要自己截断。
+        search.setHint(Component.literal(trim(text("search").getString(), search.getWidth(), 1)));
+        search.setTextColor(WarehouseTheme.TEXT_BRIGHT);
         search.setValue(query); search.setResponder(value -> { query = value; scroll = 0; rebuildGrid(false); });
         addRenderableWidget(search);
 
-        detailBack = new Control(width - drawerWidth() + 10, 8, 46, 18,
-                Kind.GHOST, Component.translatable("gui.back"), this::closeDetail, null, null, null);
-        detailAction = new Control(width - drawerWidth() + 12, height - 42, drawerWidth() - 24, 24,
-                Kind.PRIMARY, text("use"), this::detailAction, null, null, null);
+        // 底栏：关闭（职业自选时为返回仓库）；同步失败时多一个重试。
+        int buttonH = Mth.clamp(layout.barHeight() - 8, 16, 22);
+        int buttonY = layout.barTop() + (layout.barHeight() - buttonH) / 2 + 1;
+        Component closeLabel = text(page == Page.ROLES ? "back" : "close");
+        int closeW = Math.max(64, font.width(closeLabel) + 28);
+        Component retryLabel = text("retry");
+        int retryW = Math.max(64, font.width(retryLabel) + 28);
+        closeControl = addRenderableWidget(new Control(0, buttonY, closeW, buttonH, Kind.GHOST, closeLabel,
+                () -> { if (page == Page.ROLES) switchPage(Page.WAREHOUSE); else onClose(); }, null));
+        retryControl = addRenderableWidget(new Control(0, buttonY, retryW, buttonH, Kind.PRIMARY, retryLabel,
+                () -> refresh(true), null));
+
+        detailBack = new Control(0, 0, 60, 22, Kind.GHOST, text("back"), this::closeDetail, null);
+        detailAction = new Control(0, 0, 60, 22, Kind.PRIMARY, text("use"), this::detailAction, null);
         addRenderableWidget(detailBack); addRenderableWidget(detailAction);
         detailBack.visible = detailAction.visible = false;
+        if (searching) setFocused(search);
         updateControls();
     }
 
-    private Control control(int x, int y, int w, int h, Kind kind, Component label, Runnable click,
-                            Page target, String value, Icon icon) {
-        Control c = new Control(x, y, w, h, kind, label, click, target, value, icon);
-        controls.add(c);
-        return addRenderableWidget(c);
+    private int tabWidth(String id, int count, boolean withCount, int padX) {
+        int w = font.width(text("category." + id)) + padX * 2;
+        return withCount ? w + 4 + font.width(String.valueOf(count)) : w;
+    }
+
+    private int tabsWidth(List<String> ids, List<Integer> counts, boolean withCounts, int padX, int gap) {
+        int total = gap * Math.max(0, ids.size() - 1);
+        for (int i = 0; i < ids.size(); i++) total += tabWidth(ids.get(i), counts.get(i), withCounts, padX);
+        return total;
+    }
+
+    private void selectCategory(String id) {
+        if (filter.equals(id) || busy()) return;
+        int from = indexOf(filter), to = indexOf(id);
+        switchDirection = to >= from ? 1 : -1;
+        filter = id; scroll = 0;
+        rebuildGrid(true);
+        updateControls();
+    }
+
+    private static int indexOf(String category) {
+        for (int i = 0; i < CATEGORIES.length; i++) if (CATEGORIES[i].equals(category)) return i;
+        return 0;
     }
 
     private void switchPage(Page next) {
         if (next == page || busy()) return;
         switchDirection = next.ordinal() >= page.ordinal() ? 1 : -1;
         captureOutgoing();
-        page = next; filter = "all"; state = "all"; query = ""; scroll = 0; detail = null;
+        // 从职业自选返回时落在「角色卡」分类：那正是进入自选的地方。
+        page = next; filter = next == Page.WAREHOUSE ? "cards" : "all"; query = ""; scroll = 0; detail = null;
         rebuildChrome(); rebuildGrid(false); changed = now();
+    }
+
+    // =====================================================================
+    // 数据 → 卡片
+    // =====================================================================
+
+    /** 合并实时的角色卡余额后的仓库条目。 */
+    private List<WarehouseEntry> entries() {
+        List<WarehouseEntry> out = new ArrayList<>(inventory.size());
+        for (WarehouseEntry entry : inventory) {
+            if ("card".equals(entry.kind()) && cardsKnown) entry = new WarehouseEntry(entry.kind(), entry.id(), entry.name(),
+                    entry.description(), entry.icon(), ClientLotteryState.cardBalances.getOrDefault(entry.id(), entry.count()),
+                    entry.color(), false);
+            out.add(entry);
+        }
+        return out;
+    }
+
+    private static String categoryOf(WarehouseEntry e) {
+        return switch (e.kind()) {
+            case "card" -> "cards";
+            case "skin", "title" -> "appearance";
+            case "special" -> CrateCatalog.isCrateItem(e.id()) || CrateCatalog.isKeyItem(e.id()) ? "crates" : "items";
+            default -> "items";
+        };
+    }
+
+    /** 「全部」只列持有的条目；「角色卡」分类列出全部卡种，余额为 0 的卡以暗色显示。 */
+    private static boolean shown(WarehouseEntry e, String category) {
+        if (!"all".equals(category) && !categoryOf(e).equals(category)) return false;
+        return e.count() > 0 || e.kind().equals("currency") || "cards".equals(category) && e.kind().equals("card");
+    }
+
+    private int categoryCount(String category) {
+        int count = 0;
+        for (WarehouseEntry e : entries()) if (shown(e, category) && (e.count() > 0 || e.kind().equals("currency"))) count++;
+        return count;
     }
 
     private void captureOutgoing() {
@@ -284,37 +280,22 @@ public final class WarehouseScreen extends Screen {
         List<Tile> result = new ArrayList<>();
         if (page == Page.ROLES) {
             for (WarehouseRole role : roles) {
-                if ("bound".equals(filter) && !role.isBound()) continue;
                 WarehouseEntry entry = new WarehouseEntry("role", role.id, role.displayName(),
                         role.isBound() ? text("bound_to", role.boundDisplayName()).getString() : text("role_hint").getString(),
                         "minecraft:paper", role.taken ? 0 : 1, role.color, false);
                 Tile tile = new Tile(entry, role);
-                if (stateMatches(tile) && matches(tile)) result.add(tile);
+                if (matches(tile)) result.add(tile);
             }
         } else {
-            for (WarehouseEntry original : inventory) {
-                WarehouseEntry entry = original;
-                if ("card".equals(entry.kind()) && cardsKnown) entry = new WarehouseEntry(entry.kind(), entry.id(), entry.name(),
-                        entry.description(), entry.icon(), ClientLotteryState.cardBalances.getOrDefault(entry.id(), entry.count()), entry.color(), false);
-                if (page == Page.CARDS) {
-                    if (!entry.kind().equals("card") || !matchesCardGroup(entry)) continue;
-                } else {
-                    if (entry.count() <= 0 && !entry.kind().equals("currency")) continue;
-                    if (!matchesCategory(entry)) continue;
-                }
+            for (WarehouseEntry entry : entries()) {
+                if (!shown(entry, filter)) continue;
                 Tile tile = new Tile(entry, null);
-                if (stateMatches(tile) && matches(tile)) result.add(tile);
+                if (matches(tile)) result.add(tile);
             }
         }
-        Comparator<Tile> byName = Comparator.comparing(t -> t.getMessage().getString(), String.CASE_INSENSITIVE_ORDER);
-        Comparator<Tile> order = switch (sortMode) {
-            // Only skins carry a quality. Keep ungraded entries together after the five grades.
-            case QUALITY -> Comparator.<Tile>comparingInt(t -> t.entry.kind().equals("skin")
-                    ? SkinQuality.values().length - 1 - t.entry.quality().ordinal() : SkinQuality.values().length)
-                    .thenComparing(byName);
-            case NAME -> byName;
-            case COUNT -> Comparator.<Tile>comparingInt(t -> t.entry.count()).reversed().thenComparing(byName);
-        };
+        // 固定顺序：可开启的箱子与钥匙 → 货币 → 角色卡（服务端顺序）→ 皮肤按品质 → 称号 → 其他道具。
+        Comparator<Tile> order = Comparator.<Tile>comparingInt(WarehouseScreen::rank)
+                .thenComparing(t -> "card".equals(t.entry.kind()) ? "" : t.getMessage().getString(), String.CASE_INSENSITIVE_ORDER);
         result.sort(order);
         tiles.addAll(result);
         for (int i = 0; i < tiles.size(); i++) { tiles.get(i).index = i; addWidget(tiles.get(i)); }
@@ -322,47 +303,16 @@ public final class WarehouseScreen extends Screen {
         positionTiles();
     }
 
-    /** 次级标签（分类）：仓库 -- 货币 / 特殊道具 / 外观收藏。 */
-    private boolean matchesCategory(WarehouseEntry entry) {
-        return switch (filter) {
-            case "currency" -> entry.kind().equals("currency");
-            case "special" -> entry.kind().equals("special");
-            case "appearance" -> entry.kind().equals("skin") || entry.kind().equals("title");
-            default -> true;
-        };
-    }
-
-    /** 次级标签（分类）：角色卡 -- 阵营卡 / 自选卡 / 突破卡。 */
-    private boolean matchesCardGroup(WarehouseEntry entry) {
-        return switch (filter) {
-            case "self_select" -> entry.id().equals("self_select");
-            case "limit_break" -> entry.id().equals("limit_break");
-            case "faction" -> !entry.id().equals("self_select") && !entry.id().equals("limit_break");
-            default -> true;
-        };
-    }
-
-    /**
-     * 三级筛选（状态）。参考视频这一行是更细的物品类型；这里映射成与分类正交的可用状态，
-     * 好让它对货币 / 卡牌 / 特殊道具 / 称号 / 角色五种异构内容都成立。
-     */
-    private boolean stateMatches(Tile tile) {
-        if ("all".equals(state)) return true;
-        WarehouseEntry e = tile.entry;
-        if (tile.role != null) {
-            return switch (state) {
-                case "available" -> !tile.role.taken;
-                case "taken" -> tile.role.taken;
-                case "owned" -> !tile.role.taken;
-                default -> true;
-            };
-        }
-        return switch (state) {
-            case "owned" -> e.count() > 0 || e.equipped();
-            case "usable" -> canUse(e) || e.kind().equals("skin") || e.kind().equals("title")
-                    || e.kind().equals("special") && CrateCatalog.isCrateItem(e.id()) && e.count() > 0;
-            case "equipped" -> e.equipped();
-            default -> true;
+    private static int rank(Tile t) {
+        WarehouseEntry e = t.entry;
+        if (t.role != null) return t.role.taken ? 1 : 0;
+        return switch (e.kind()) {
+            case "special" -> CrateCatalog.isCrateItem(e.id()) ? 0 : CrateCatalog.isKeyItem(e.id()) ? 1 : 30;
+            case "currency" -> 2;
+            case "card" -> e.count() > 0 ? 3 : 4;
+            case "skin" -> 10 + (SkinQuality.values().length - 1 - e.quality().ordinal());
+            case "title" -> 20;
+            default -> 40;
         };
     }
 
@@ -381,6 +331,10 @@ public final class WarehouseScreen extends Screen {
             t.active = t.visible && detail == null && !transitioning() && !busy();
         }
     }
+
+    // =====================================================================
+    // 网络
+    // =====================================================================
 
     private void refresh(boolean resetAttempts) {
         if (busy() || loading && now() - requestAt < 1000) return;
@@ -415,6 +369,7 @@ public final class WarehouseScreen extends Screen {
         if (incoming.size() == expectedTotal) {
             inventory = List.copyOf(incoming); loading = false; known = true; error = "";
             knownInventoryRevision = incomingRevision;
+            if (layout != null) rebuildChrome();
             rebuildGrid(false);
         }
     }
@@ -441,7 +396,7 @@ public final class WarehouseScreen extends Screen {
                 closeDetailImmediately(); switchPage(Page.ROLES);
             } catch (RuntimeException e) { notice = "sync_error"; }
         } else {
-            // Faction activation uses an explicit confirmation inside the new detail drawer.
+            // Faction activation uses an explicit confirmation inside the detail panel.
             notice = "";
         }
     }
@@ -456,31 +411,20 @@ public final class WarehouseScreen extends Screen {
     private boolean busy() { return submitAt >= 0 || pendingSince >= 0 || !waitingCard.isEmpty(); }
     private boolean transitioning() {
         if (crateDepartAt >= 0) return true;
-        if (reducedMotion) return false;
-        // 落位动画期间格栅是被缩放绘制的，命中区域却没有缩放，因此同样锁住输入。
+        // 落位动画期间格栅是被位移绘制的，命中区域却没有位移，因此同样锁住输入。
         if (ScreenSwap.arriving(now(), enteredAt)) return true;
         return now() - opened < WarehouseMotion.OPEN_MS || now() - changed < WarehouseMotion.SWITCH_MS;
     }
 
     /**
-     * 前往开箱终端。参考视频里仓库 → 开箱是 <b>0ms 硬切</b>（f041→f042，整帧平均亮度 75.8→50.9，
-     * 无闪白、无淡出、无划像），所以这里不再播 220ms 压暗 / 缩放 / 淡出：记下交接标记后立刻把
-     * Screen 切换交给主线程队列，最快下一帧就完成替换。{@link ScreenSwap} 的调用点保留，
-     * 具体语义由它自己决定（该方向的 {@code bridge} 返回 0，因此不会额外画任何压暗）。
+     * 前往开箱终端：与开箱终端的进场约定一致，是 0ms 硬切（{@link ScreenSwap#bridge} 在该方向返回 0）。
+     * 记下交接标记后把 Screen 切换交给主线程队列，最快下一帧完成替换。
      */
     private void beginCrateDepart(String crateId) {
         if (crateDepartAt >= 0) return;
         pendingCrate = crateId;
         crateDepartAt = now();
         handedOff = false;
-        // 聚焦点取抽屉中的箱子图标，位移方向由屏幕中心指向它。
-        departFocusX = width - drawerWidth() / 2.0F;
-        departFocusY = 75.0F + Math.min(128, Math.max(48, height / 4)) / 2.0F;
-        float dx = departFocusX - width / 2.0F;
-        float dy = departFocusY - height / 2.0F;
-        float length = Math.max(1.0F, (float) Math.sqrt(dx * dx + dy * dy));
-        departDirX = dx / length;
-        departDirY = dy / length;
         closeDetail();
         finishCrateDepart();
     }
@@ -494,18 +438,22 @@ public final class WarehouseScreen extends Screen {
         minecraft.execute(() -> minecraft.setScreen(new CrateOpenScreen(this, crateId)));
     }
 
+    // =====================================================================
+    // 详情面板
+    // =====================================================================
+
     private void openDetail(Tile tile) {
         if (busy() || transitioning()) return;
         detail = tile; detailAt = now(); detailClosing = false; detailScroll = 0; notice = "";
         draggingPreview = false; previewYaw = previewPitch = 0;
         measuredSkinModel = null; skinGeometry = null;
-        setFocused(detailBack); updateControls();
+        updateControls();
+        setFocused(detailAction.visible ? detailAction : detailBack);
     }
 
     private void closeDetail() {
         if (busy()) return;
         detailClosing = true; detailAt = now();
-        if (reducedMotion) closeDetailImmediately();
     }
 
     private void closeDetailImmediately() {
@@ -514,6 +462,18 @@ public final class WarehouseScreen extends Screen {
         detailBack.visible = detailAction.visible = false;
         if (previous != null && tiles.contains(previous)) setFocused(previous); else setFocused(null);
         updateControls();
+    }
+
+    private static boolean isCrate(WarehouseEntry e) {
+        return "special".equals(e.kind()) && CrateCatalog.isCrateItem(e.id());
+    }
+
+    /** 这个条目在详情面板里有没有可执行的操作；没有时只显示返回按钮。 */
+    private static boolean hasAction(WarehouseEntry e) {
+        return switch (e.kind()) {
+            case "card", "role", "skin", "title" -> true;
+            default -> isCrate(e);
+        };
     }
 
     private void detailAction() {
@@ -531,7 +491,7 @@ public final class WarehouseScreen extends Screen {
                     || ClientLotteryState.cardUseRemainingSelfUses <= 0) return;
             prepareSubmit("self_select", "self", detail.role.id);
         } else if ("skin".equals(e.kind()) || "title".equals(e.kind())) minecraft.setScreen(new SkinWardrobeScreen(this));
-        else if ("special".equals(e.kind()) && CrateCatalog.isCrateItem(e.id())) {
+        else if (isCrate(e)) {
             String crateId = e.id().substring((CrateService.NAMESPACE + ":crate_").length());
             beginCrateDepart(crateId);
         }
@@ -546,16 +506,17 @@ public final class WarehouseScreen extends Screen {
         boolean inGame = CardGuiGameState.gameActiveOrStarting();
         if (inGame && (busy() || page == Page.ROLES || detail != null && detail.entry.kind().equals("card"))) {
             submitAt = pendingSince = -1; waitingCard = ""; closeDetailImmediately();
-            if (page == Page.ROLES) switchPage(Page.CARDS);
+            if (page == Page.ROLES) switchPage(Page.WAREHOUSE);
             notice = "lobby_only";
         }
         if (ClientLotteryState.cardInventoryVersion != cardEpoch) {
             cardEpoch = ClientLotteryState.cardInventoryVersion; cardsKnown = true;
             if (pendingSince >= 0) {
                 pendingSince = -1; closeDetailImmediately();
-                if (page == Page.ROLES) switchPage(Page.CARDS);
+                if (page == Page.ROLES) switchPage(Page.WAREHOUSE);
                 notice = "receipt"; refresh(true);
             }
+            rebuildChrome();
             rebuildGrid(false);
         }
         if (!cardsKnown && !busy() && !inGame && cardAttempts < 4 && time - cardRequestAt > 1200
@@ -567,7 +528,7 @@ public final class WarehouseScreen extends Screen {
         if (!loading && expectedInventoryRevision > knownInventoryRevision && requestAttempts < 3
                 && time - requestAt > 600 && !busy()) refresh(false);
         if (!waitingCard.isEmpty() && time - waitingSince > 5000) { waitingCard = ""; notice = "timeout"; }
-        if (submitAt >= 0 && time - submitAt >= (reducedMotion ? 0 : 180)) {
+        if (submitAt >= 0 && time - submitAt >= 180) {
             submitAt = -1;
             if (!inGame) {
                 cardEpoch = ClientLotteryState.cardInventoryVersion;
@@ -587,22 +548,28 @@ public final class WarehouseScreen extends Screen {
     }
 
     private void updateControls() {
+        if (detailBack == null) return;
         boolean modal = detail != null;
         boolean locked = crateDepartAt >= 0;
         boolean usable = !modal && !busy() && !locked;
-        for (Control c : controls) c.active = usable;
-        for (Control c : navControls) { c.on = c.page == page; c.active = usable && c.page != page; }
-        for (Control c : tabControls) c.on = c.value.equals(filter);
-        for (Control c : stateControls) c.on = c.value.equals(state);
-        for (Control c : iconControls) c.active = !busy() && !locked;
-        if (sortControl != null) { sortControl.on = sortMode == SortMode.QUALITY; sortControl.active = usable; }
-        if (motionControl != null) motionControl.glyphOn = !reducedMotion;
+        for (Control c : tabControls) { c.on = c.value.equals(filter); c.active = usable; }
         if (search != null) search.active = usable;
-        if (detailBack == null) return;
-        detailBack.visible = detailAction.visible = modal;
+
+        // 底栏：重试只在同步失败时出现，两个按钮整体居中。
+        boolean retry = !error.isEmpty() && !loading && page == Page.WAREHOUSE;
+        retryControl.visible = retry;
+        closeControl.active = retryControl.active = usable;
+        int gap = 8, total = closeControl.getWidth() + (retry ? retryControl.getWidth() + gap : 0);
+        int bx = (width - total) / 2;
+        if (retry) { retryControl.setX(bx); bx += retryControl.getWidth() + gap; }
+        closeControl.setX(bx);
+
+        detailBack.visible = modal;
+        detailAction.visible = modal && hasAction(detail.entry);
         detailBack.active = modal && !busy() && !detailClosing;
         detailAction.active = false;
         if (modal) {
+            placeDetailButtons();
             var e = detail.entry;
             if (e.kind().equals("card")) {
                 detailAction.setMessage(text(busy() ? "pending" : e.id().equals("self_select") ? "choose_role" : "confirm_use"));
@@ -612,86 +579,66 @@ public final class WarehouseScreen extends Screen {
                 detailAction.active = !busy() && !detail.role.taken && cardsKnown && !CardGuiGameState.gameActiveOrStarting()
                         && ClientLotteryState.cardBalances.getOrDefault("self_select", 0) > 0 && ClientLotteryState.cardUseRemainingUses > 0;
             } else {
-                boolean appearance = e.kind().equals("skin") || e.kind().equals("title");
-                boolean crate = e.kind().equals("special") && CrateCatalog.isCrateItem(e.id());
-                detailAction.setMessage(text(appearance ? "wardrobe" : crate ? "open_crate" : "stored"));
-                detailAction.active = !busy() && (appearance || crate && e.count() > 0);
+                boolean crate = isCrate(e);
+                detailAction.setMessage(text(crate ? "open_crate" : "wardrobe"));
+                detailAction.active = !busy() && (!crate || e.count() > 0);
             }
-            detailAction.active &= !detailClosing && (reducedMotion || now() - detailAt >= 220);
+            detailAction.active &= !detailClosing && now() - detailAt >= 220;
         }
         positionTiles();
     }
 
+    private int drawerInset() { return width >= 480 && height >= 300 ? 8 : 0; }
+    private int drawerWidth() { return Math.min(Math.min(300, width - 24), Math.max(200, width * 2 / 5)); }
+    private int drawerX0() { return width - drawerInset() - drawerWidth(); }
+    private int drawerX1() { return width - drawerInset(); }
+    private int drawerY0() { return drawerInset(); }
+    private int drawerY1() { return height - drawerInset(); }
+    private int artTop() { return drawerY0() + (height < 280 ? 8 : 14); }
+    private int artHeight() { return Math.min(128, Math.max(44, height / 4)); }
+    private int buttonRowY() { return drawerY1() - 32; }
+
+    private void placeDetailButtons() {
+        int x0 = drawerX0() + 12, x1 = drawerX1() - 12, y = buttonRowY();
+        int backW = detailAction.visible ? Math.max(56, font.width(detailBack.getMessage()) + 24) : x1 - x0;
+        detailBack.setRectangle(backW, 22, x0, y);
+        detailAction.setRectangle(Math.max(40, x1 - x0 - backW - 6), 22, x0 + backW + 6, y);
+    }
+
+    // =====================================================================
+    // 绘制
+    // =====================================================================
+
     @Override public void render(GuiGraphics g, int mx, int my, float partialTick) {
         long time = now(); delta = Math.min(80, time - lastFrame); lastFrame = time;
-        float open = reducedMotion ? 1 : WarehouseMotion.ease(WarehouseMotion.progress(time, opened, 380));
-        WarehouseTheme.background(g, width, height, layout.chromeBottom(), open);
-        drawChrome(g, open);
-        boolean switching = !reducedMotion && time - changed < WarehouseMotion.SWITCH_MS;
-        float progress = switching ? WarehouseMotion.progress(time, changed, WarehouseMotion.SWITCH_MS) : 1;
-        // 入场与交接共用 ScreenSwap 的曲线；格栅自身的运动仍然归本界面（参考视频的仓库是静止的）。
-        float arrive = reducedMotion ? 1 : ScreenSwap.arrive(time, enteredAt);
-        float depart = ScreenSwap.depart(time, crateDepartAt);
-        float sceneScale = 1;
-        float sceneAlpha = reducedMotion ? 1 : ScreenSwap.arriveFade(arrive);
-        float focusX = crateDepartAt >= 0 ? departFocusX : width / 2.0F;
-        float focusY = crateDepartAt >= 0 ? departFocusY : height / 2.0F;
-        float shift = ScreenSwap.departShift(depart);
-        g.enableScissor(layout.x(), layout.top(), layout.x() + layout.width(), layout.bottom());
-        g.pose().pushPose();
-        if (sceneScale != 1.0F) {
-            g.pose().translate(focusX, focusY, 0);
-            g.pose().scale(sceneScale, sceneScale, 1);
-            g.pose().translate(-focusX, -focusY, 0);
-        }
-        g.pose().translate(departDirX * shift, departDirY * shift, 0);
-        if (switching && progress < .5f) {
-            float p = WarehouseMotion.ease(progress * 2);
-            g.pose().translate(-switchDirection * 28 * p, 0, 0);
-            for (Tile t : outgoing) t.paint(g, -1, -1, (1 - p) * sceneAlpha, 0);
-        } else {
-            float p = switching ? WarehouseMotion.ease((progress - .5f) * 2) : 1;
-            g.pose().translate(switchDirection * 28 * (1 - p), 0, 0);
-            int firstRow = Math.max(0, (int) scroll / layout.rowHeight());
-            for (Tile t : tiles) if (t.visible) {
-                float enter = reducedMotion ? 1 : WarehouseMotion.reveal(time, opened + 100, Math.max(0, t.index - firstRow * layout.columns()));
-                t.paint(g, detail == null && !transitioning() ? mx : -1, detail == null && !transitioning() ? my : -1,
-                        open * p * enter * sceneAlpha, Math.round((1 - enter) * Math.max(4, layout.pitchY() * .3F)));
-            }
-        }
-        if (tiles.isEmpty() && known && !loading) {
-            g.drawCenteredString(font, text("empty"), width / 2, layout.top() + 24, WarehouseTheme.alpha(WarehouseTheme.TEXT, sceneAlpha));
-            g.drawCenteredString(font, text(query.isBlank() ? "empty_hint" : "search_empty"), width / 2, layout.top() + 40,
-                    WarehouseTheme.alpha(WarehouseTheme.MUTED, sceneAlpha));
-        }
-        if (!known && loading) {
-            for (int i = 0; i < layout.columns(); i++) {
-                int x = layout.tileX(i), y = layout.top();
-                g.fill(x, y, x + layout.tileWidth(), y + layout.iconHeight(), WarehouseTheme.alpha(0xFF33372F, sceneAlpha));
-                g.fill(x, y + layout.iconHeight(), x + layout.tileWidth(), y + layout.iconHeight() + layout.captionHeight(),
-                        WarehouseTheme.alpha(WarehouseTheme.CAPTION_BAR, sceneAlpha * .8F));
-            }
-            g.drawCenteredString(font, text("loading"), width / 2, layout.top() + 24, WarehouseTheme.alpha(WarehouseTheme.TEXT, sceneAlpha));
-        }
-        g.pose().popPose();
-        g.disableScissor();
-        drawScrollbar(g);
-        drawStatusBar(g, open);
-        // Widgets are drawn once. Drawer controls are drawn separately in their translated layer.
+        float arrive = ScreenSwap.arrive(time, enteredAt);
+        float a = ScreenSwap.arriveFade(arrive);
+        WarehouseTheme.stage(g, width, height, arrive);
+        drawMotes(g, a);
+        drawHeader(g, a);
+        drawPanel(g, a);
+        drawGrid(g, mx, my, time, a);
+        drawBar(g, a);
+
+        // 详情按钮画在面板自己的平移层里；控件通道只画标签、搜索与底栏按钮。
+        boolean backShown = detailBack.visible, actionShown = detailAction.visible;
         detailBack.visible = detailAction.visible = false;
+        if (search != null) drawSearchField(g, a);
         super.render(g, detail == null ? mx : -1, detail == null ? my : -1, partialTick);
-        detailBack.visible = detailAction.visible = detail != null;
+        detailBack.visible = backShown; detailAction.visible = actionShown;
+
         if (detail != null) drawDetail(g, mx, my, partialTick);
         else if (!transitioning() && layout.contains(mx, my)) {
             for (Tile t : tiles) if (t.visible && t.isMouseOver(mx, my)) {
-                var tooltip = new ArrayList<>(font.split(t.getMessage(), Math.min(240, width - 24)));
-                tooltip.add(t.captionText().getVisualOrderText());
-                if (t.entry.kind().equals("skin")) tooltip.add(SkinQualityStyle.label(t.entry.quality()).getVisualOrderText());
-                tooltip.add(text("inspect").getVisualOrderText());
+                List<FormattedCharSequence> tooltip = new ArrayList<>(font.split(t.getMessage(), Math.min(240, width - 24)));
+                Component kind = t.kindLabel();
+                tooltip.add(kind.copy().withColor(t.accent & 0xFFFFFF).getVisualOrderText());
+                if (t.role == null && (t.entry.count() > 1 || t.entry.kind().equals("currency"))) {
+                    tooltip.add(text("quantity", t.entry.count()).getVisualOrderText());
+                }
                 g.renderTooltip(font, tooltip, mx, my); break;
             }
         }
-        // 交接给开箱终端：参考视频此处是 0ms 硬切，ScreenSwap.bridge 在该方向返回 0，不画任何压暗。
         if (crateDepartAt >= 0) {
             float bridge = ScreenSwap.bridge(time, crateDepartAt, -1L);
             if (bridge > 0.005F) {
@@ -706,60 +653,235 @@ public final class WarehouseScreen extends Screen {
 
     @Override public void renderBackground(GuiGraphics g, int mx, int my, float pt) { /* Single background in render. */ }
 
-    /** 顶部三行 chrome：主导航分隔符、搜索框、账号名。控件本体由控件通道绘制。 */
-    private void drawChrome(GuiGraphics g, float open) {
-        g.hLine(0, width, layout.chromeBottom(), WarehouseTheme.alpha(0x802E332F, open));
-        for (int i = 1; i < navControls.size(); i++) {
-            Control previous = navControls.get(i - 1), current = navControls.get(i);
-            int cx = (previous.getX() + previous.getWidth() + current.getX()) / 2;
-            String bar = "|";
-            g.drawString(font, bar, cx - font.width(bar) / 2, layout.navY() + (layout.navHeight() - 8) / 2,
-                    WarehouseTheme.alpha(0xFF4A5450, open), false);
+    /** 舞台浮尘：在 1920 宽的参考空间里发射与绘制，与开箱终端的尘埃同尺度。 */
+    private void drawMotes(GuiGraphics g, float a) {
+        float unit = width / 1920F;
+        moteClock += delta;
+        while (moteClock > 110) {
+            moteClock -= 110;
+            motes.motes(160, 80, 1760, height / unit - 80, 1, 0xFFFFE9C4);
         }
-        int glyph = WarehouseTheme.iconSize(layout.tabHeight());
-        WarehouseTheme.field(g, searchX, searchY, searchX + searchW, searchY + searchH, 4, open);
-        WarehouseTheme.glyphSearch(g, searchX + 4, searchY + (searchH - glyph) / 2, glyph,
-                WarehouseTheme.alpha(WarehouseTheme.TAB_OFF, open));
-        String account = minecraft == null || minecraft.player == null ? "" : minecraft.player.getGameProfile().getName();
-        if (!account.isEmpty() && width > 420) {
-            drawTrim(g, Component.literal(account), width - layout.margin() - 110,
-                    layout.navY() + (layout.navHeight() - 8) / 2, 110, WarehouseTheme.alpha(WarehouseTheme.TAB_OFF, open));
+        motes.tick(delta);
+        g.pose().pushPose();
+        g.pose().scale(unit, unit, 1);
+        motes.render(g, .8F * a, false);
+        g.pose().popPose();
+    }
+
+    /** 居中眉题 + 大标题 + 资产标签，构图与开箱终端的 header 一致。 */
+    private void drawHeader(GuiGraphics g, float a) {
+        if (a <= .02F) return;
+        float cx = width / 2F;
+        int gold = CrateArt.GOLD_LINE;
+        if (layout.eyebrowY() >= 0) {
+            float ew = spacedWidth(text("eyebrow").getString(), 1, 2);
+            spaced(g, text("eyebrow").getString(), cx, layout.eyebrowY(), 1, 2,
+                    GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_DIM, gold, .5F), a));
+            float y = layout.eyebrowY() + 4;
+            CrateFx.hairline(g, cx - ew / 2 - 90, cx - ew / 2 - 10, y, 1, 40, GuiFx.fade(gold, .75F * a), false);
+            CrateFx.hairline(g, cx + ew / 2 + 10, cx + ew / 2 + 90, y, 1, 40, GuiFx.fade(gold, .75F * a), false);
+        }
+        String title = text(page == Page.ROLES ? "roles" : "title").getString();
+        float s = layout.titleScale();
+        float tw = font.width(title) * s;
+        CrateFx.glow(g, cx, layout.titleY() + 4.5F * s, tw * .7F + 30, 11 * s, gold, .18F * a, true);
+        draw(g, title, cx - tw / 2, layout.titleY(), s, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, a), true);
+
+        // 资产标签：绿苹果 / 箱子 / 今日用卡次数；放不下时从后往前省略。
+        List<Chip> chips = new ArrayList<>();
+        if (page == Page.WAREHOUSE) {
+            WarehouseEntry apples = null;
+            int crates = 0;
+            ItemStack crateIcon = ItemStack.EMPTY;
+            for (WarehouseEntry e : inventory) {
+                if (e.kind().equals("currency") && e.id().equals("green_apples")) apples = e;
+                if (isCrate(e) && e.count() > 0) {
+                    crates += e.count();
+                    if (crateIcon.isEmpty()) crateIcon = itemOf(e.icon());
+                }
+            }
+            if (apples != null) chips.add(new Chip(text("chip.apples", apples.count()).getString(), WarehouseTheme.APPLE,
+                    ItemStack.EMPTY, ResourceLocation.tryParse(apples.icon())));
+            if (crates > 0) chips.add(new Chip(text("chip.crates", crates).getString(), gold, crateIcon, null));
+        } else {
+            chips.add(new Chip(text("chip.self_select", Math.max(0, ClientLotteryState.cardBalances.getOrDefault("self_select", 0))).getString(),
+                    WarehouseTheme.ACCENT_SELF_SELECT, ItemStack.EMPTY, null));
+        }
+        if (cardsKnown) chips.add(new Chip(text("chip.quota", Math.max(0, ClientLotteryState.cardUseRemainingUses),
+                Math.max(0, ClientLotteryState.cardUseRemainingSelfUses)).getString(), WarehouseTheme.TEAL, ItemStack.EMPTY, null));
+        float gap = 6, total;
+        while (true) {
+            total = -gap;
+            for (Chip c : chips) total += c.width() + gap;
+            if (chips.isEmpty() || total <= width - 16) break;
+            chips.remove(chips.size() - 1);
+        }
+        float x = cx - total / 2;
+        for (Chip c : chips) {
+            c.draw(g, x, layout.chipY(), layout.chipHeight(), a);
+            x += c.width() + gap;
         }
     }
 
-    private void drawScrollbar(GuiGraphics g) {
+    private ItemStack itemOf(String id) {
+        ResourceLocation item = ResourceLocation.tryParse(id);
+        ItemStack stack = item == null ? ItemStack.EMPTY : new ItemStack(BuiltInRegistries.ITEM.get(item));
+        return stack.isEmpty() ? new ItemStack(Items.CHEST) : stack;
+    }
+
+    /** 头部标签：暗色斜切底 + 左侧图标（或品质菱形）+ 文字。 */
+    private final class Chip {
+        final String label;
+        final int accent;
+        final ItemStack icon;
+        final ResourceLocation art;
+
+        Chip(String label, int accent, ItemStack icon, ResourceLocation art) {
+            this.label = label; this.accent = accent; this.icon = icon;
+            this.art = art != null && minecraft.getResourceManager().getResource(art).isPresent() ? art : null;
+        }
+
+        float width() { return font.width(label) + 28; }
+
+        void draw(GuiGraphics g, float x, float y, int h, float a) {
+            float w = width();
+            chip(g, x, y, x + w, y + h, accent, a);
+            float iy = y + h / 2F;
+            if (art != null) {
+                g.setColor(1, 1, 1, a);
+                int s = h - 4;
+                g.blit(art, Math.round(x + 11 - s / 2F), Math.round(iy - s / 2F), s, s, 0, 0, 32, 32, 32, 32);
+                g.setColor(1, 1, 1, 1);
+            } else if (!icon.isEmpty()) {
+                CrateArt.item(g, icon, x + 11, iy, (h - 3) / 16F, 0, 0, 1, a);
+            } else {
+                CrateFx.diamond(g, x + 11, iy, 3, 3, GuiFx.fade(accent, a), false);
+                CrateFx.glow(g, x + 11, iy, 8, accent, .4F * a);
+            }
+            g.pose().pushPose(); g.pose().translate(0, 0, 200);
+            WarehouseScreen.this.draw(g, label, x + 21, Math.round(iy - 4), 1, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, a), false);
+            g.pose().popPose();
+        }
+    }
+
+    /** 玻璃展柜：开箱终端物品条的底板、细描边与金色分隔线。 */
+    private void drawPanel(GuiGraphics g, float a) {
+        int x0 = layout.panelX0(), y0 = layout.panelY0(), x1 = layout.panelX1(), y1 = layout.panelY1();
+        CrateArt.stripPanel(g, x0, y0, x1, y1, .95F * a);
+        GuiFx.outline(g, x0, y0, x1, y1, GuiFx.fade(0x26FFFFFF, a));
+        CrateFx.hairline(g, x0, x1, y0, 1, (x1 - x0) * .3F, GuiFx.fade(CrateArt.GOLD_LINE, .55F * a), false);
+        CrateFx.hairline(g, x0, x1, y0 - 3, 7, (x1 - x0) * .35F, GuiFx.fade(CrateArt.GOLD_LINE, .16F * a), true);
+        float sep = layout.top() - (layout.compact() ? 3 : 4);
+        CrateFx.hairline(g, x0 + layout.pad(), x1 - layout.pad(), sep, 1, 60, GuiFx.fade(0x33FFFFFF, a), false);
+        if (page == Page.ROLES) {
+            String hint = text("role_page_hint").getString();
+            int max = searchX - 8 - (x0 + layout.pad());
+            draw(g, trim(hint, max, 1), x0 + layout.pad(), layout.tabY() + (layout.tabHeight() - 8) / 2F, 1,
+                    GuiFx.fade(WarehouseTheme.TEXT_GOLD, a), false);
+        }
+    }
+
+    private void drawSearchField(GuiGraphics g, float a) {
+        boolean focused = search.isFocused();
+        chip(g, searchX, searchY, searchX + searchW, searchY + searchH,
+                focused ? CrateArt.GOLD_LINE : 0xFF8A9490, a * (search.active ? 1 : .5F));
+        int glyph = Math.max(6, searchH - 8);
+        WarehouseTheme.glyphSearch(g, searchX + 5, searchY + (searchH - glyph) / 2, glyph,
+                GuiFx.fade(focused ? CrateArt.GOLD_LINE : WarehouseTheme.TEXT_DIM, a));
+    }
+
+    private void drawGrid(GuiGraphics g, int mx, int my, long time, float sceneAlpha) {
+        boolean switching = time - changed < WarehouseMotion.SWITCH_MS;
+        float progress = switching ? WarehouseMotion.progress(time, changed, WarehouseMotion.SWITCH_MS) : 1;
+        // 留出悬停上浮与外发光的空间，但不压到分类行。
+        g.enableScissor(layout.panelX0() + 1, layout.top() - 3, layout.panelX1() - 1, layout.bottom());
+        g.pose().pushPose();
+        boolean interactive = detail == null && !transitioning();
+        if (switching && progress < .5F) {
+            float p = WarehouseMotion.ease(progress * 2);
+            g.pose().translate(-switchDirection * 24 * p, 0, 0);
+            for (Tile t : outgoing) t.paint(g, -1, -1, (1 - p) * sceneAlpha, 0);
+        } else {
+            float p = switching ? WarehouseMotion.ease((progress - .5F) * 2) : 1;
+            g.pose().translate(switchDirection * 24 * (1 - p), 0, 0);
+            int firstRow = Math.max(0, (int) scroll / layout.rowHeight());
+            for (Tile t : tiles) if (t.visible) {
+                float enter = WarehouseMotion.reveal(time, Math.max(opened, enteredAt) + 120,
+                        Math.max(0, t.index - firstRow * layout.columns()));
+                t.paint(g, interactive ? mx : -1, interactive ? my : -1, p * enter * sceneAlpha,
+                        Math.round((1 - enter) * 10));
+            }
+        }
+        g.pose().popPose();
+        if (!known && loading) drawSkeleton(g, time, sceneAlpha);
+        else if (tiles.isEmpty() && (known || page == Page.ROLES)) drawEmpty(g, sceneAlpha);
+        g.disableScissor();
+        drawScrollbar(g, sceneAlpha);
+    }
+
+    /** 首次同步中：一行暗色卡片呼吸。 */
+    private void drawSkeleton(GuiGraphics g, long time, float a) {
+        for (int i = 0; i < layout.columns(); i++) {
+            float breathe = .35F + .25F * (float) Math.sin(time / 260.0 - i * .5);
+            int x = layout.tileX(i);
+            ref(g, x, layout.top(), x + layout.tileWidth(), layout.top() + layout.tileHeight(),
+                    (w, h) -> CrateArt.rarityCard(g, 0, 0, w, h, WarehouseTheme.NEUTRAL, .6F, 0, breathe * a));
+        }
+        centeredText(g, text("loading").getString(), layout.top() + layout.tileHeight() + 12, 1, WarehouseTheme.TEXT_DIM, a);
+    }
+
+    private void drawEmpty(GuiGraphics g, float a) {
+        float cx = (layout.panelX0() + layout.panelX1()) / 2F;
+        float cy = layout.top() + Math.min(60, layout.viewportHeight() / 2F) - 10;
+        CrateFx.glow(g, cx, cy, 70, 26, CrateArt.GOLD_LINE, .10F * a, true);
+        CrateFx.diamond(g, cx, cy - 12, 4, 4, GuiFx.fade(CrateArt.GOLD_LINE, .8F * a), false);
+        centeredText(g, text("empty").getString(), cy - 2, 1, WarehouseTheme.TEXT_BODY, a);
+        centeredText(g, text(query.isBlank() ? "empty_hint" : "search_empty").getString(), cy + 12, .8F, WarehouseTheme.TEXT_MUTED, a);
+    }
+
+    private void centeredText(GuiGraphics g, String s, float y, float scale, int color, float a) {
+        float cx = (layout.panelX0() + layout.panelX1()) / 2F;
+        draw(g, s, cx - font.width(s) * scale / 2, y, scale, GuiFx.fade(color, a), false);
+    }
+
+    private void drawScrollbar(GuiGraphics g, float a) {
         int max = layout.maxScroll(tiles.size());
         if (max <= 0) return;
-        int h = Math.max(16, layout.viewportHeight() * layout.viewportHeight() / (layout.viewportHeight() + max));
-        int x = layout.x() + layout.width() - 3;
-        int y = layout.top() + (int) ((layout.viewportHeight() - h) * scroll / max);
-        g.fill(x, layout.top(), x + 2, layout.bottom(), WarehouseTheme.alpha(0x802E332F, 1));
-        g.fill(x, y, x + 2, y + h, WarehouseTheme.alpha(0xFF7A8480, 1));
+        int view = layout.viewportHeight();
+        int h = Math.max(16, view * view / (view + max));
+        int x = layout.panelX1() - 4;
+        int y = layout.top() + (int) ((view - h) * scroll / max);
+        g.fill(x, layout.top(), x + 2, layout.bottom(), GuiFx.fade(0x22FFFFFF, a));
+        g.fill(x, y, x + 2, y + h, GuiFx.fade(CrateArt.GOLD_LINE, .8F * a));
     }
 
-    /**
-     * 底部状态条：借用参考视频结尾那条底部导航的语汇（{@code rgba(0,0,0,0.45)} 遮罩 +
-     * 1px 白色发丝线 + 20px {@code #EAEAEA}）；它是现有功能（同步状态 / 错误 / 提示）的落点。
-     */
-    private void drawStatusBar(GuiGraphics g, float open) {
-        int barTop = height - layout.statusHeight();
-        g.fill(0, barTop, width, height, WarehouseTheme.alpha(0x73000000, open));
-        g.hLine(0, width, barTop, WarehouseTheme.alpha(0x2EFFFFFF, open));
+    /** 底部操作栏：开箱终端的暗带 + 发丝线；左侧状态，右侧账户，中间按钮由控件通道绘制。 */
+    private void drawBar(GuiGraphics g, float a) {
+        int top = layout.barTop();
+        CrateFx.vGradient(g, 0, top - 18, width, top, 0x00030404, GuiFx.fade(0xB0030404, a), false);
+        g.fill(0, top, width, height, GuiFx.fade(0xD8030404, a));
+        CrateFx.hairline(g, 0, width, top, 1, width * .35F, GuiFx.fade(0x70FFFFFF, a), false);
+        CrateFx.hairline(g, width * .3F, width * .7F, top, 1, width * .12F, GuiFx.fade(WarehouseTheme.TEAL, .8F * a), false);
         Component status = !error.isEmpty() ? text(error) : !notice.isEmpty() ? text(notice) : loading ? text("loading")
-                : page == Page.WAREHOUSE ? text("asset_count", tiles.size())
-                : cardsKnown ? text("quotas", Math.max(0, ClientLotteryState.cardUseRemainingUses), Math.max(0, ClientLotteryState.cardUseRemainingSelfUses)) : text("card_sync");
-        int ty = barTop + (layout.statusHeight() - 8) / 2;
-        int right = width < 520 ? 0 : Math.min(150, font.width(text("inspect")) + 4);
-        drawTrim(g, status, layout.margin(), ty, Math.max(40, width - layout.margin() * 2 - right - 6),
-                error.isEmpty() ? WarehouseTheme.alpha(WarehouseTheme.BODY, open) : WarehouseTheme.alpha(WarehouseTheme.WARN, open));
-        if (right > 0) {
-            drawTrim(g, text("inspect"), width - layout.margin() - right, ty, right,
-                    WarehouseTheme.alpha(WarehouseTheme.TAB_OFF, open));
+                : text(page == Page.ROLES ? "role_count" : "item_count", tiles.size());
+        int buttonsLeft = Math.min(closeControl.getX(), retryControl.visible ? retryControl.getX() : closeControl.getX());
+        int ty = top + (layout.barHeight() - 8) / 2 + 1;
+        int margin = Math.max(8, layout.panelX0());
+        boolean warn = !error.isEmpty() || "timeout".equals(notice) || "sync_error".equals(notice) || "lobby_only".equals(notice);
+        draw(g, trim(status.getString(), buttonsLeft - margin - 8, 1), margin, ty, 1,
+                GuiFx.fade(warn ? WarehouseTheme.DANGER : WarehouseTheme.TEXT_BODY, a), false);
+        String account = minecraft == null || minecraft.player == null ? "" : minecraft.player.getGameProfile().getName();
+        int right = width - margin;
+        int room = right - (closeControl.getX() + closeControl.getWidth()) - 8;
+        if (!account.isEmpty() && room > 40) {
+            String s = trim(text("account", account).getString(), room, 1);
+            draw(g, s, right - font.width(s), ty, 1, GuiFx.fade(WarehouseTheme.TEXT_DIM, a), false);
         }
     }
 
-    private int drawerWidth() { return Math.min(280, Math.max(226, width * 2 / 5)); }
-    private int detailArtTop() { return Math.max(36, Math.max(20, Math.round(30 * layout.scale())) + 8); }
+    // ---------------------------------------------------------------------
+    // 详情面板
+    // ---------------------------------------------------------------------
 
     private record SkinGeometry(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {}
 
@@ -819,14 +941,15 @@ public final class WarehouseScreen extends Screen {
     }
 
     /** Draw only the selected skin's item model, without the local player or equipped gear. */
-    private void drawSkinModel(GuiGraphics g, ItemStack skin, int x1, int y1, int x2, int y2) {
+    private void drawSkinModel(GuiGraphics g, ItemStack skin, int x1, int y1, int x2, int y2, float slide) {
         if (skin.isEmpty()) return;
         BakedModel model = SkinClient.model(skin, false,
                 minecraft.getItemRenderer().getModel(skin, minecraft.level, minecraft.player, 0));
         PreviewFit fit = previewFit(model);
         float size = Math.min((x2 - x1 - 20) / (2 * fit.radius),
                 (y2 - y1 - 16) / (2 * fit.radius));
-        g.enableScissor(x1, y1 - detailScroll, x2, y2 - detailScroll);
+        int sx = Math.round(slide);
+        g.enableScissor(x1 + sx, y1 - detailScroll, x2 + sx, y2 - detailScroll);
         g.pose().pushPose();
         try {
             g.pose().translate((x1 + x2) / 2.0F, (y1 + y2) / 2.0F, 150);
@@ -842,91 +965,212 @@ public final class WarehouseScreen extends Screen {
         }
     }
 
-    /** 详情抽屉：沿用参考视频确认弹窗的语汇（全屏 ~18% 黑洗 + 实心面板 + 稀有度条 + 绿色主按钮）。 */
+    /**
+     * 详情面板：开箱终端确认弹窗的语汇——压暗整屏、右侧玻璃面板滑入、品质色展台光与符文环、
+     * 品质标签、名称与品质横条、说明，底部返回 + 主按钮。
+     */
     private void drawDetail(GuiGraphics g, int mx, int my, float partialTick) {
-        float p = reducedMotion ? 1 : WarehouseMotion.ease(WarehouseMotion.progress(now(), detailAt, detailClosing ? 180 : 240));
+        long time = now();
+        float p = WarehouseMotion.ease(WarehouseMotion.progress(time, detailAt, detailClosing ? 180 : 240));
         if (detailClosing) p = 1 - p;
-        int w = drawerWidth(), x = width - w;
-        int rule = Math.max(2, Math.round(3 * layout.scale()));
-        // Item rendering adds 150/200 to Z: both the scrim and drawer must cover those items.
+        int x0 = drawerX0(), y0 = drawerY0(), x1 = drawerX1(), y1 = drawerY1(), w = x1 - x0;
+        int accent = detail.accent;
+        // Item rendering adds 150/200 to Z: both the scrim and panel must cover those items.
         g.pose().pushPose(); g.pose().translate(0, 0, 350);
-        g.fill(0, 0, width, height, WarehouseTheme.alpha(0x40000000, p));
+        g.fill(0, 0, width, height, GuiFx.fade(0x70000000, p));
+        CrateFx.hGradient(g, width * .4F, 0, width, height, 0x00000000, GuiFx.fade(0x60000000, p), false);
         g.pose().popPose();
-        g.pose().pushPose(); g.pose().translate((1 - p) * w, 0, 400);
-        g.fill(x, 0, width, height, WarehouseTheme.alpha(WarehouseTheme.SURFACE, p));
-        g.fill(x, 0, x + 1, height, WarehouseTheme.alpha(WarehouseTheme.BORDER, p));
-        g.fill(x + 1, 0, width, rule, WarehouseTheme.alpha(detail.accent, p));
-        int artH = Math.min(128, Math.max(44, height / 4));
-        int artTop = detailArtTop();
-        boolean clip = height - 56 > artTop + 2;
-        if (clip) g.enableScissor(x + 2, artTop, width, height - 56);
+        float slide = (1 - p) * (w + drawerInset());
+        g.pose().pushPose(); g.pose().translate(slide, 0, 400);
+        final float alpha = p;
+        ref(g, x0, y0, x1, y1, (rw, rh) -> {
+            CrateFx.rectGlow(g, 0, 0, rw, rh, 60, accent, .16F * alpha);
+            // 玻璃面板本身半透明；先垫一层实底，身后的卡片与文字不会透出来干扰阅读。
+            CrateFx.bevelPanel(g, 0, 0, rw, rh, 14, GuiFx.fade(0xFF161B1D, alpha), GuiFx.fade(0xFF0B0E10, alpha));
+            CrateArt.glassPanel(g, 0, 0, rw, rh, 14, accent, alpha);
+        });
+
+        int artTop = artTop(), artH = artHeight();
+        int contentBottom = buttonRowY() - 16;
+        g.enableScissor(x0 + 2 + Math.round(slide), artTop - 6, x1 - 2 + Math.round(slide), contentBottom);
         g.pose().pushPose(); g.pose().translate(0, -detailScroll, 0);
+        float cx = (x0 + x1) / 2F, cy = artTop + artH / 2F - 3;
+        float pedY = artTop + artH - 6, pedR = w * .30F;
+        CrateFx.glow(g, cx, cy, w * .44F, artH * .56F, accent, .30F * p, true);
+        CrateFx.glow(g, cx, pedY, pedR, 7, 0xFF000000, .55F * p, false);
+        CrateFx.dashRing(g, cx, pedY, pedR, 7, 30, .55F, time / 1400F, 1.4F, accent, .55F * p);
+        CrateFx.ring(g, cx, pedY, pedR * 1.04F, 2, 7 / pedR, accent, .25F * p);
         if (detail.entry.kind().equals("skin") && !detail.icon.isEmpty()) {
-            g.fillGradient(x + 8, artTop, width - 8, artTop + artH,
-                    WarehouseTheme.alpha(SkinQualityStyle.top(detail.entry.quality(), 0), p),
-                    WarehouseTheme.alpha(SkinQualityStyle.bottom(detail.entry.quality()), p));
-            drawSkinModel(g, detail.icon, x + 8, artTop, width - 8, artTop + artH);
+            drawSkinModel(g, detail.icon, x0 + 8, artTop, x1 - 8, artTop + artH - 4, slide);
         } else {
-            detail.drawIcon(g, x + w / 2, artTop + artH / 2, artH - 10, p);
+            float bob = (float) Math.sin(time / 520.0) * 1.5F;
+            detail.drawIcon(g, cx, cy + bob, artH - 22, p);
         }
-        int y = artTop + artH + 4;
-        drawTrim(g, detail.getMessage(), x + 14, y, w - 28, WarehouseTheme.alpha(WarehouseTheme.TITLE, p));
-        g.drawString(font, text("quantity", detail.entry.count()), x + 14, y + 14,
-                WarehouseTheme.alpha(WarehouseTheme.BODY, p), false);
+
+        int tx = x0 + 14, tw = w - 28;
+        float y = artTop + artH + 8;
+        // 品质 / 种类标签 + 数量标签
+        String kind = detail.kindLabel().getString();
+        float kw = font.width(kind) + 24;
+        chip(g, tx, y, tx + kw, y + 14, accent, p);
+        CrateFx.diamond(g, tx + 8, y + 7, 2.5F, 2.5F, GuiFx.fade(accent, p), false);
+        CrateFx.glow(g, tx + 8, y + 7, 7, accent, .5F * p);
+        draw(g, kind, tx + 15, y + 3, 1, GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_BRIGHT, accent, .4F), p), false);
+        if (detail.role == null) {
+            String count = text("quantity", detail.entry.count()).getString();
+            float qx = tx + kw + 5, qw = font.width(count) + 14;
+            chip(g, qx, y, qx + qw, y + 14, 0xFF8A9490, p);
+            draw(g, count, qx + 7, y + 3, 1, GuiFx.fade(WarehouseTheme.TEXT_BODY, p), false);
+        }
+        y += 20;
+
+        // 名称一行放得下时用大标题的清晰倍率，否则回到 1 倍换行。
+        float nameScale = font.width(detail.getMessage()) * layout.titleScale() <= tw ? layout.titleScale() : 1F;
+        List<FormattedCharSequence> name = font.split(detail.getMessage(), Math.max(20, (int) (tw / nameScale)));
+        for (int i = 0; i < Math.min(2, name.size()); i++) {
+            g.pose().pushPose(); g.pose().translate(tx, y, 0); g.pose().scale(nameScale, nameScale, 1);
+            g.drawString(font, name.get(i), 0, 0, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, p), true);
+            g.pose().popPose();
+            y += 10 * nameScale + 1;
+        }
+        y += 4;
+        final float ruleAlpha = p;
+        ref(g, tx, y, tx + tw, y + 1, (rw, rh) -> CrateArt.rarityRule(g, 0, 0, Math.round(rw), accent, ruleAlpha));
+        y += 8;
+
         String description = translated(detail.entry.description()).getString();
-        if (detail.entry.kind().equals("skin")) description = SkinQualityStyle.label(detail.entry.quality()).getString()
-                + "\n" + description;
-        if (detail.entry.equipped()) description += "\n" + text("equipped").getString();
-        if (detail.entry.kind().equals("card")) {
-            description += "\n" + text(!cardsKnown ? "card_sync" : CardGuiGameState.gameActiveOrStarting() ? "lobby_only"
-                    : detail.entry.count() <= 0 ? "not_owned" : !canUse(detail.entry) && !busy() ? "no_uses" : "cost_one").getString();
-        }
         if (detail.role != null && detail.role.taken) description += "\n" + text("taken").getString();
-        var wrapped = font.split(Component.literal(description), w - 28);
-        for (int i = 0; i < wrapped.size(); i++) g.drawString(font, wrapped.get(i), x + 14, y + 30 + i * 11,
-                WarehouseTheme.alpha(WarehouseTheme.BODY, p), false);
-        detailMaxScroll = Math.max(0, y + 30 + wrapped.size() * 11 - (height - 76));
-        detailScroll = Math.min(detailScroll, detailMaxScroll);
-        g.pose().popPose(); if (clip) g.disableScissor();
-        if (detailMaxScroll > 0) {
-            int sy = artTop + (height - 168) * detailScroll / detailMaxScroll;
-            g.fill(width - 4, sy, width - 2, sy + 18, WarehouseTheme.alpha(WarehouseTheme.TEAL, p));
+        for (FormattedCharSequence line : font.split(Component.literal(description), tw)) {
+            g.drawString(font, line, tx, Math.round(y), GuiFx.fade(WarehouseTheme.TEXT_BODY, p), false);
+            y += 11;
         }
-        g.hLine(x + 2, width, height - 52, WarehouseTheme.alpha(WarehouseTheme.BORDER, p));
-        if (!notice.isEmpty()) drawTrim(g, text(notice), x + 14, height - 68, w - 28, WarehouseTheme.alpha(WarehouseTheme.WARN, p));
-        if (submitAt >= 0) g.fill(x + 12, height - 44, x + 12 + Math.round((w - 24) * WarehouseMotion.progress(now(), submitAt, 180)),
-                height - 42, WarehouseTheme.alpha(WarehouseTheme.GREEN, p));
-        detailBack.render(g, p == 1 ? mx : -1, p == 1 ? my : -1, partialTick);
-        detailAction.render(g, p == 1 ? mx : -1, p == 1 ? my : -1, partialTick);
+        Component state = detailState();
+        if (state != null) {
+            y += 3;
+            boolean ok = detailAction.active;
+            for (FormattedCharSequence line : font.split(state, tw)) {
+                g.drawString(font, line, tx, Math.round(y), GuiFx.fade(ok ? WarehouseTheme.TEXT_GOLD : WarehouseTheme.DANGER, p), false);
+                y += 11;
+            }
+        }
+        detailMaxScroll = Math.max(0, Math.round(y + detailScroll) - contentBottom + 4);
+        detailScroll = Math.min(detailScroll, detailMaxScroll);
+        g.pose().popPose();
+        g.disableScissor();
+        if (detailMaxScroll > 0) {
+            int track = contentBottom - artTop - 18;
+            int sy = artTop + track * detailScroll / detailMaxScroll;
+            g.fill(x1 - 5, sy, x1 - 3, sy + 18, GuiFx.fade(accent, .8F * p));
+        }
+
+        CrateFx.hairline(g, x0 + 10, x1 - 10, buttonRowY() - 8, 1, 50, GuiFx.fade(0x40FFFFFF, p), false);
+        if (!notice.isEmpty()) {
+            draw(g, trim(text(notice).getString(), tw, 1), tx, buttonRowY() - 20, 1, GuiFx.fade(WarehouseTheme.DANGER, p), false);
+        }
+        if (submitAt >= 0) {
+            float fill = WarehouseMotion.progress(time, submitAt, 180);
+            CrateFx.hairline(g, detailAction.getX(), detailAction.getX() + detailAction.getWidth() * fill,
+                    buttonRowY() - 5, 2, 10, GuiFx.fade(CrateArt.GOLD_LINE, p), false);
+        }
+        int hx = p == 1 ? mx : -1, hy = p == 1 ? my : -1;
+        detailBack.render(g, hx, hy, partialTick);
+        if (detailAction.visible) detailAction.render(g, hx, hy, partialTick);
         g.pose().popPose();
     }
 
-    private void drawTrim(GuiGraphics g, Component value, int x, int y, int w, int color) {
-        String raw = value.getString();
-        String trimmed = font.width(raw) <= w ? raw : font.plainSubstrByWidth(raw, Math.max(0, w - font.width("…"))) + "…";
-        g.drawString(font, trimmed, x, y, color, false);
+    /** 面板里的状态行：角色卡能否使用、为什么不能；自选职业是否已被占用。 */
+    private Component detailState() {
+        WarehouseEntry e = detail.entry;
+        if (e.kind().equals("card")) {
+            return text(!cardsKnown ? "card_sync" : CardGuiGameState.gameActiveOrStarting() ? "lobby_only"
+                    : e.count() <= 0 ? "not_owned" : !canUse(e) && !busy() ? "no_uses" : "cost_one");
+        }
+        if (e.equipped()) return text("equipped");
+        if (isCrate(e) && e.count() <= 0) return text("caption_spent");
+        return null;
     }
+
+    // ---------------------------------------------------------------------
+    // 参考画布：开箱终端的斜切角、发光、品质卡都是按 1920×1080 调的，
+    // 这里按同一比例缩放后绘制，两边的线宽、光晕与倒角观感一致。
+    // ---------------------------------------------------------------------
+
+    private float unit() { return Math.max(.15F, Math.min(width / 1920F, height / 1080F)); }
+
+    private interface RefPainter { void paint(float w, float h); }
+
+    private void ref(GuiGraphics g, float x0, float y0, float x1, float y1, RefPainter painter) {
+        float u = unit();
+        g.pose().pushPose();
+        g.pose().translate(x0, y0, 0);
+        g.pose().scale(u, u, 1);
+        painter.paint((x1 - x0) / u, (y1 - y0) / u);
+        g.pose().popPose();
+    }
+
+    private void chip(GuiGraphics g, float x0, float y0, float x1, float y1, int accent, float a) {
+        ref(g, x0, y0, x1, y1, (w, h) -> CrateArt.chip(g, 0, 0, w, h, accent, a));
+    }
+
+    // ---------------------------------------------------------------------
+    // 文字工具
+    // ---------------------------------------------------------------------
+
+    private void draw(GuiGraphics g, String s, float x, float y, float scale, int color, boolean shadow) {
+        if ((color >>> 24) < 5 || s.isEmpty()) return;
+        g.pose().pushPose();
+        g.pose().translate(x, y, 0);
+        if (scale != 1) g.pose().scale(scale, scale, 1);
+        g.drawString(font, s, 0, 0, color, shadow);
+        g.pose().popPose();
+    }
+
+    private String trim(String raw, float maxWidth, float scale) {
+        int allowed = Math.max(1, (int) (maxWidth / scale));
+        return font.width(raw) <= allowed ? raw : font.plainSubstrByWidth(raw, Math.max(0, allowed - font.width("…"))) + "…";
+    }
+
+    private float spacedWidth(String s, float scale, float spacing) {
+        return (font.width(s) + spacing * Math.max(0, s.length() - 1)) * scale;
+    }
+
+    /** 带字距的居中文字（眉题）。 */
+    private void spaced(GuiGraphics g, String s, float cx, float y, float scale, float spacing, int color) {
+        if ((color >>> 24) < 5) return;
+        g.pose().pushPose();
+        g.pose().translate(cx - spacedWidth(s, scale, spacing) / 2, y, 0);
+        g.pose().scale(scale, scale, 1);
+        for (int i = 0; i < s.length(); i++) {
+            String ch = s.substring(i, i + 1);
+            g.drawString(font, ch, 0, 0, color, false);
+            g.pose().translate(font.width(ch) + spacing, 0, 0);
+        }
+        g.pose().popPose();
+    }
+
+    // =====================================================================
+    // 输入
+    // =====================================================================
 
     @Override public boolean mouseClicked(double x, double y, int button) {
         if (button != 0) return false;
         if (detail != null) {
-            if (busy() || detailClosing || !reducedMotion && now() - detailAt < 240) return true;
+            if (busy() || detailClosing || now() - detailAt < 240) return true;
             if (detailBack.mouseClicked(x, y, button)) { setFocused(detailBack); return true; }
-            if (detailAction.mouseClicked(x, y, button)) { setFocused(detailAction); return true; }
-            int artTop = detailArtTop();
-            int artH = Math.min(128, Math.max(44, height / 4));
+            if (detailAction.visible && detailAction.mouseClicked(x, y, button)) { setFocused(detailAction); return true; }
             if (detail.entry.kind().equals("skin") && !detail.icon.isEmpty()
-                    && x >= width - drawerWidth() + 8 && x < width - 8
-                    && y >= artTop - detailScroll && y < artTop + artH - detailScroll) {
+                    && x >= drawerX0() + 8 && x < drawerX1() - 8
+                    && y >= artTop() - detailScroll && y < artTop() + artHeight() - detailScroll) {
                 draggingPreview = true;
                 return true;
             }
-            if (x < width - drawerWidth()) closeDetail();
+            if (x < drawerX0()) closeDetail();
             return true;
         }
         if (transitioning() || busy()) return true;
         if (layout.contains(x, y)) {
-            if (x >= layout.x() + layout.width() - 6 && layout.maxScroll(tiles.size()) > 0) { dragScroll(y); return true; }
+            if (search != null) search.setFocused(false);
+            if (x >= layout.panelX1() - 8 && layout.maxScroll(tiles.size()) > 0) { dragScroll(y); return true; }
             for (Tile t : tiles) if (t.visible && t.isMouseOver(x, y)) { setFocused(t); openDetail(t); return true; }
             return true;
         }
@@ -943,7 +1187,8 @@ public final class WarehouseScreen extends Screen {
             previewPitch = Mth.clamp(previewPitch - (float) dy * PITCH_SENSITIVITY, -PITCH_LIMIT, PITCH_LIMIT);
             return true;
         }
-        if (button == 0 && detail == null && !busy() && x >= layout.x() + layout.width() - 8 && x <= layout.x() + layout.width()) {
+        if (button == 0 && detail == null && !busy() && x >= layout.panelX1() - 8 && x <= layout.panelX1()
+                && y >= layout.top() && y < layout.bottom()) {
             dragScroll(y); return true;
         }
         return super.mouseDragged(x, y, button, dx, dy);
@@ -953,7 +1198,7 @@ public final class WarehouseScreen extends Screen {
         return super.mouseReleased(x, y, button);
     }
     @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
-        if (detail != null && x >= width - drawerWidth()) {
+        if (detail != null && x >= drawerX0()) {
             detailScroll = Mth.clamp(detailScroll - (int) (vertical * 22), 0, detailMaxScroll); return true;
         }
         if (detail != null || busy() || transitioning() || !layout.contains(x, y)) return false;
@@ -964,7 +1209,7 @@ public final class WarehouseScreen extends Screen {
     @Override public boolean keyPressed(int key, int scan, int modifiers) {
         if (key == 256) {
             if (detail != null) { closeDetail(); return true; }
-            if (page == Page.ROLES) { switchPage(Page.CARDS); return true; }
+            if (page == Page.ROLES) { switchPage(Page.WAREHOUSE); return true; }
             onClose(); return true;
         }
         if (busy() || transitioning()) return true;
@@ -972,7 +1217,10 @@ public final class WarehouseScreen extends Screen {
             if (key == 264 || key == 265 || key == 266 || key == 267) {
                 detailScroll = Mth.clamp(detailScroll + (key == 264 || key == 267 ? 1 : -1) * (key >= 266 ? 66 : 22), 0, detailMaxScroll); return true;
             }
-            if (key == 258) { setFocused(getFocused() == detailBack && detailAction.active ? detailAction : detailBack); return true; }
+            if (key == 258) {
+                setFocused(getFocused() == detailBack && detailAction.visible && detailAction.active ? detailAction : detailBack);
+                return true;
+            }
             return getFocused() instanceof Control c && c.keyPressed(key, scan, modifiers);
         }
         if (search != null && search.isFocused()) return super.keyPressed(key, scan, modifiers);
@@ -998,69 +1246,59 @@ public final class WarehouseScreen extends Screen {
     @Override public void removed() { refreshAfterReturn = true; }
     @Override public boolean isPauseScreen() { return false; }
 
-    /** chrome 控件：四种绘制语言（图标 / 主导航 / 药丸标签 / 下拉框 / 主按钮 / 幽灵按钮）。 */
+    // =====================================================================
+    // 控件与卡片
+    // =====================================================================
+
+    /** 分类标签（选中时金色斜切底）、主按钮（绿色斜切）与次级按钮（暗色玻璃），与开箱终端同款。 */
     private final class Control extends AbstractWidget {
         private final Runnable action;
         private final Kind kind;
-        private final Page page;
         private final String value;
-        private final Icon icon;
-        private boolean on, glyphOn;
+        private boolean on;
+        private int badge = -1;
+        private float hover;
 
-        Control(int x, int y, int w, int h, Kind kind, Component message, Runnable action,
-                Page page, String value, Icon icon) {
+        Control(int x, int y, int w, int h, Kind kind, Component message, Runnable action, String value) {
             super(x, y, w, h, message);
-            this.kind = kind; this.action = action; this.page = page; this.value = value; this.icon = icon;
+            this.kind = kind; this.action = action; this.value = value;
         }
 
         @Override protected void renderWidget(GuiGraphics g, int mx, int my, float pt) {
             int x = getX(), y = getY(), w = width, h = height;
-            boolean hover = isHoveredOrFocused() && active;
+            hover = GuiFx.approach(hover, isHoveredOrFocused() && active ? 1 : 0, delta, 45);
             switch (kind) {
-                case ICON -> {
-                    if (hover) GuiFx.roundRect(g, x, y, x + w, y + h, 3, 0x22FFFFFF);
-                    int s = Math.max(6, Math.min(w, h) - 4);
-                    int color = active ? WarehouseTheme.NAV_OFF : WarehouseTheme.alpha(WarehouseTheme.TAB_OFF, .6F);
-                    if (icon != null) icon.paint(g, x + (w - s) / 2, y + (h - s) / 2, s, color, glyphOn);
+                case TAB -> {
+                    if (on) {
+                        chip(g, x, y, x + w, y + h, CrateArt.GOLD_LINE, 1);
+                        CrateFx.hairline(g, x + 3, x + w - 3, y + h - 1, 1, w * .3F, GuiFx.fade(CrateArt.GOLD_LINE, .9F), false);
+                    } else if (hover > .02F) {
+                        chip(g, x, y, x + w, y + h, 0xFF8A9490, .8F * hover);
+                    }
+                    int color = on ? WarehouseTheme.TEXT_BRIGHT
+                            : GuiFx.mix(WarehouseTheme.TEXT_DIM, WarehouseTheme.TEXT_BRIGHT, hover);
+                    String label = getMessage().getString();
+                    int padX = layout.compact() ? 5 : 7;
+                    int ty = y + (h - 8) / 2;
+                    g.drawString(font, label, x + padX, ty, active ? color : GuiFx.fade(color, .5F), on);
+                    if (badge >= 0) {
+                        draw(g, String.valueOf(badge), x + padX + font.width(label) + 4, ty, 1,
+                                on ? WarehouseTheme.TEXT_GOLD : WarehouseTheme.TEXT_MUTED, false);
+                    }
                 }
-                case NAV -> {
-                    centered(g, on ? WarehouseTheme.TEAL : WarehouseTheme.NAV_OFF, x, w, y, h, hover);
-                    if (on) g.fill(x + 1, y + h - 1, x + w - 1, y + h, WarehouseTheme.TEAL);
-                }
-                case TAB, PILL -> {
-                    if (on) WarehouseTheme.pill(g, x, y, x + w, y + h, 1F);
-                    else if (hover) GuiFx.roundRect(g, x, y, x + w, y + h, 3, 0x1AFFFFFF);
-                    centered(g, on ? 0xFF101410 : WarehouseTheme.TAB_OFF, x, w, y, h, hover);
-                }
-                case SORT -> {
-                    WarehouseTheme.field(g, x, y, x + w, y + h, 4, active ? 1F : .6F);
-                    int s = Math.max(6, h - 8);
-                    int gy = y + (h - s) / 2;
-                    WarehouseTheme.glyphSort(g, x + 6, gy, s, WarehouseTheme.TAB_OFF);
-                    WarehouseTheme.glyphCaretDown(g, x + w - 6 - s / 2, gy + 1, s, WarehouseTheme.TAB_OFF);
-                    drawTrim(g, getMessage(), x + 6 + s + 4, y + (h - 8) / 2, Math.max(8, w - s * 2 - 20),
-                            WarehouseTheme.NAV_OFF);
-                }
-                case PRIMARY -> {
-                    GuiFx.roundRect(g, x, y, x + w, y + h, 3, active ? WarehouseTheme.GREEN : 0xFF2E332F);
-                    if (hover) GuiFx.roundRect(g, x, y, x + w, y + h, 3, 0x24FFFFFF);
-                    centered(g, active ? 0xFFFFFFFF : WarehouseTheme.MUTED, x, w, y, h, false);
-                }
-                case GHOST -> {
-                    if (hover) GuiFx.roundRect(g, x, y, x + w, y + h, 3, 0x1AFFFFFF);
-                    GuiFx.roundOutline(g, x, y, x + w, y + h, 3, active ? 0x59FFFFFF : 0x33FFFFFF);
-                    centered(g, active ? 0xFFE0E0E0 : WarehouseTheme.MUTED, x, w, y, h, false);
+                case PRIMARY, GHOST -> {
+                    float a = active ? 1 : .45F;
+                    float lift = -hover;
+                    float hv = hover;
+                    if (kind == Kind.PRIMARY) ref(g, x, y + lift, x + w, y + h + lift,
+                            (rw, rh) -> CrateArt.primaryButton(g, 0, 0, rw, rh, a, hv, active ? .6F : 0, now()));
+                    else ref(g, x, y + lift, x + w, y + h + lift,
+                            (rw, rh) -> CrateArt.ghostButton(g, 0F, 0, rw, rh, active ? 1 : .55F, hv));
+                    String s = trim(getMessage().getString(), w - 8, 1);
+                    g.drawString(font, s, x + (w - font.width(s)) / 2, Math.round(y + (h - 8) / 2F + lift),
+                            active ? 0xFFFFFFFF : 0xFFBDBDBD, true);
                 }
             }
-            if (isFocused() && kind != Kind.PRIMARY) {
-                GuiFx.roundOutline(g, x, y, x + w, y + h, 3, WarehouseTheme.alpha(WarehouseTheme.TEAL, .55F));
-            }
-        }
-
-        private void centered(GuiGraphics g, int color, int x, int w, int y, int h, boolean hover) {
-            int tint = hover && kind != Kind.PRIMARY ? GuiFx.mix(color, 0xFFFFFFFF, .25F) : color;
-            String s = font.plainSubstrByWidth(getMessage().getString(), Math.max(1, w - 4));
-            g.drawString(font, s, x + (w - font.width(s)) / 2, y + (h - 8) / 2, tint, false);
         }
 
         @Override public void onClick(double x, double y) { if (active) action.run(); }
@@ -1070,6 +1308,7 @@ public final class WarehouseScreen extends Screen {
         @Override protected void updateWidgetNarration(NarrationElementOutput out) { defaultButtonNarrationText(out); }
     }
 
+    /** 品质卡片：开箱物品条同款（暗玻璃底、底部品质光与品质条），角标显示数量与可执行状态。 */
     private final class Tile extends AbstractWidget {
         final WarehouseEntry entry;
         final WarehouseRole role;
@@ -1078,11 +1317,18 @@ public final class WarehouseScreen extends Screen {
         final int accent;
         int index;
         float hover;
+        long hoverAt;
+
         Tile(WarehouseEntry entry, WarehouseRole role) {
             super(0, 0, layout.tileWidth(), layout.tileHeight(), entryName(entry));
             this.entry = entry; this.role = role;
-            accent = 0xFF000000 | (entry.kind().equals("skin") ? entry.quality().color()
-                    : entry.kind().equals("card") ? WarehouseTheme.cardColor(entry.id()) : entry.color());
+            int color = switch (entry.kind()) {
+                case "skin" -> entry.quality().color();
+                case "card" -> WarehouseTheme.cardColor(entry.id());
+                case "currency" -> WarehouseTheme.APPLE;
+                default -> (entry.color() & 0xFFFFFF) != 0 ? entry.color() : WarehouseTheme.NEUTRAL;
+            };
+            accent = 0xFF000000 | color;
             String artId = role != null ? role.cardArt() : entry.kind().equals("card") ? entry.id() : null;
             ResourceLocation candidate = artId != null ? ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/cards/" + artId + ".png") : null;
             if (entry.kind().equals("currency") && entry.id().equals("green_apples")) {
@@ -1097,6 +1343,7 @@ public final class WarehouseScreen extends Screen {
             }
             icon = stack.isEmpty() ? new ItemStack(Items.CHEST) : stack;
         }
+
         private static Component entryName(WarehouseEntry entry) {
             if (entry.kind().equals("skin")) {
                 String s = translated(entry.name()).getString();
@@ -1109,112 +1356,97 @@ public final class WarehouseScreen extends Screen {
             return translated(entry.name());
         }
 
-        /**
-         * 说明条的文案。参考视频这里是「锁形图标 + 可租赁」；仓库内容异构，于是换成有意义的
-         * 等价状态：卡牌「可领取 / 已拥有」、箱子「可开启 / 已消耗」、角色「可自选 / 已被占用」。
-         */
-        Component captionText() {
-            if (role != null) return text(role.taken ? "taken" : "caption.selectable");
+        /** 种类 / 品质标签（详情面板与悬停提示）。 */
+        Component kindLabel() {
+            if (role != null) return text("kind.role");
             return switch (entry.kind()) {
-                case "card" -> text(canUse(entry) ? "caption.claimable"
-                        : entry.count() > 0 ? "caption.owned" : "caption.locked");
-                case "special" -> CrateCatalog.isCrateItem(entry.id())
-                        ? text(entry.count() > 0 ? "caption.openable" : "caption.spent")
-                        : text(entry.count() > 0 ? "caption.owned" : "caption.locked");
-                case "skin", "title" -> text(entry.equipped() ? "equipped" : "caption.owned");
-                default -> text(entry.count() > 0 ? "caption.owned" : "caption.locked");
+                case "skin" -> Component.translatable("skin.habitrain_lottery.quality.label",
+                        Component.translatable(entry.quality().translationKey()));
+                case "special" -> text(CrateCatalog.isCrateItem(entry.id()) ? "kind.crate"
+                        : CrateCatalog.isKeyItem(entry.id()) ? "kind.key" : "kind.special");
+                case "card", "currency", "title" -> text("kind." + entry.kind());
+                default -> text("kind.special");
             };
         }
 
-        /** 锁形图标：灰色 = 不可操作，浅灰 = 可操作（§1 的 locked / openable 语义）。 */
-        boolean captionOpen() {
-            if (role != null) return !role.taken;
-            return switch (entry.kind()) {
-                case "card" -> canUse(entry);
-                case "special" -> CrateCatalog.isCrateItem(entry.id()) && entry.count() > 0;
-                case "skin", "title" -> true;
-                default -> false;
-            };
+        /** 左上角状态角标：只标出「现在能做点什么」的卡片，其余保持干净。 */
+        String tag() {
+            if (role != null) return role.taken ? text("tag.taken").getString() : null;
+            if (entry.equipped()) return text("tag.equipped").getString();
+            if (entry.kind().equals("card") && canUse(entry)) return text("tag.usable").getString();
+            if (isCrate(entry) && entry.count() > 0) return text("tag.openable").getString();
+            return null;
         }
 
-        Component quantityText() {
-            if (role != null) return Component.empty();
-            return entry.kind().equals("currency") || entry.count() > 1
-                    ? text("quantity_compact", entry.count()) : Component.empty();
+        boolean dimmed() {
+            return role != null ? role.taken : entry.kind().equals("card") && entry.count() <= 0;
+        }
+
+        String quantity() {
+            if (role != null) return "";
+            return entry.kind().equals("currency") || entry.count() > 1 ? text("quantity_compact", entry.count()).getString() : "";
         }
 
         void paint(GuiGraphics g, int mx, int my, float opacity, int drop) {
-            if (opacity < .01) return;
-            hover = GuiFx.approach(hover, isMouseOver(mx, my) || isFocused() && detail == null ? 1 : 0, delta, 90);
-            int x = getX(), y = getY() + drop;
-            int wellH = layout.iconHeight(), capH = layout.captionHeight();
-            float scale = layout.scale();
-            // Skin quality colors the whole item well; ungraded rewards retain the neutral palette.
-            if (entry.kind().equals("skin")) {
-                g.fillGradient(x, y, x + width, y + wellH,
-                        WarehouseTheme.alpha(SkinQualityStyle.top(entry.quality(), hover), opacity),
-                        WarehouseTheme.alpha(SkinQualityStyle.bottom(entry.quality()), opacity));
-                g.hLine(x, x + width, y, WarehouseTheme.alpha(entry.quality().color(), opacity));
-                g.fill(x, y + Math.max(2, wellH - 2), x + width, y + wellH,
-                        WarehouseTheme.alpha(GuiFx.mix(WarehouseTheme.WELL_EDGE, entry.quality().color(), .48F), opacity));
-            } else {
-                g.fill(x, y, x + width, y + wellH, WarehouseTheme.alpha(WarehouseTheme.WELL, opacity));
-                g.hLine(x, x + width, y, WarehouseTheme.alpha(WarehouseTheme.WELL_TOP, opacity));
-                g.fill(x, y + Math.max(2, wellH - 2), x + width, y + wellH, WarehouseTheme.alpha(WarehouseTheme.WELL_EDGE, opacity));
+            if (opacity < .01F) return;
+            boolean over = isMouseOver(mx, my) || isFocused() && detail == null;
+            if (over && hover < .05F) hoverAt = now();
+            hover = GuiFx.approach(hover, over ? 1 : 0, delta, 60);
+            float x = getX(), y = getY() + drop - 2 * hover;
+            int w = width, h = height;
+            boolean dim = dimmed();
+            float glow = .12F + .88F * hover;
+            ref(g, x, y, x + w, y + h, (rw, rh) -> CrateArt.rarityCard(g, 0, 0, rw, rh, accent, dim ? .55F : 1, glow, opacity));
+            if (hover > .05F) {
+                float sweep = WarehouseMotion.progress(now(), hoverAt, 560);
+                if (sweep < 1) CrateArt.sheen(g, x, y, w, h, sweep, hover * opacity);
             }
-            if (hover > .02F) g.fill(x, y, x + width, y + wellH, WarehouseTheme.alpha(0x1FFFFFFF, opacity * hover));
-            int margin = Math.max(2, Math.round(10 * scale));
-            drawIcon(g, x + width / 2, y + wellH / 2,
-                    Math.max(8, Math.min(width, wellH) - margin * 2 + Math.round(hover * 2)), opacity);
-            // 说明条：12×12 锁形图标 + 文案 + 右端数量
-            int capY = y + wellH;
-            g.fill(x, capY, x + width, capY + capH, WarehouseTheme.alpha(WarehouseTheme.CAPTION_BAR, opacity));
-            int glyph = Math.max(6, Math.min(capH - 2, Math.round(12 * scale)));
-            int gx = x + Math.max(2, Math.round(8 * scale));
-            boolean open = captionOpen();
-            WarehouseTheme.glyphLock(g, gx, capY + (capH - glyph) / 2, glyph,
-                    WarehouseTheme.alpha(open ? 0xFFC8CFCB : 0xFF8A9490, opacity), open);
-            int textX = gx + glyph + 3;
-            int pad = Math.max(2, Math.round(8 * scale));
-            int textY = capY + (capH - 8) / 2;
-            drawTrim(g, captionText(), textX, textY, Math.max(8, width - (textX - x) - pad),
-                    WarehouseTheme.alpha(WarehouseTheme.CAPTION_TEXT, opacity));
-            // 数量徽标落在图标井右下角：参考视频的武器箱没有堆叠数量，这是为异构内容补的信息。
-            Component quantity = quantityText();
-            if (!quantity.getString().isEmpty()) {
-                int quantityWidth = font.width(quantity) + 4;
-                g.fill(x + width - quantityWidth - 1, y + wellH - 10, x + width - 1, y + wellH - 1,
-                        WarehouseTheme.alpha(0xCC101410, opacity));
-                g.drawString(font, quantity.getString(), x + width - quantityWidth + 1, y + wellH - 9,
-                        WarehouseTheme.alpha(WarehouseTheme.TEXT, opacity), false);
-            }
-            // 物品名 18px #959492
-            drawTrim(g, getMessage(), x + Math.max(1, Math.round(4 * scale)),
-                    capY + capH + Math.max(0, (layout.nameHeight() - 9) / 2), width - 2,
-                    WarehouseTheme.alpha(WarehouseTheme.NAME, opacity));
-            if (hover > .05F || isFocused()) {
-                GuiFx.roundOutline(g, x, y, x + width, y + wellH + capH, 0,
-                        WarehouseTheme.alpha(accent, opacity * Math.max(.5F, hover)));
-            }
-        }
+            float wellBottom = y + h - 16;
+            // 图标落在角标行（数量 / 状态）之下，与名称之间居中。
+            float wellTop = y + 13;
+            float size = Math.min(w * .58F, wellBottom - wellTop - 2) + 2 * hover;
+            drawIcon(g, x + w / 2F, (wellTop + wellBottom) / 2F, size, opacity * (dim ? .55F : 1));
 
-        void drawIcon(GuiGraphics g, int cx, int cy, int size, float opacity) {
-            g.pose().pushPose();
-            if (art != null) {
-                g.setColor(1, 1, 1, opacity);
-                int pixels = entry.kind().equals("currency") ? 32 : 128;
-                g.blit(art, cx - size / 2, cy - size / 2, size, size, 0, 0, pixels, pixels, pixels, pixels);
-                g.setColor(1, 1, 1, 1);
-            } else {
-                float scale = size / 16f;
-                g.pose().translate(cx - size / 2f, cy - size / 2f, 0); g.pose().scale(scale, scale, 1);
-                g.renderFakeItem(icon, 0, 0);
+            g.pose().pushPose(); g.pose().translate(0, 0, 200);
+            String name = trim(getMessage().getString(), w - 6, 1);
+            int nameColor = dim ? WarehouseTheme.TEXT_MUTED : GuiFx.mix(WarehouseTheme.TEXT_BODY, WarehouseTheme.TEXT_BRIGHT, hover);
+            draw(g, name, Math.round(x + (w - font.width(name)) / 2F), Math.round(y + h - 15), 1,
+                    GuiFx.fade(nameColor, opacity), true);
+            String quantity = quantity();
+            int quantityW = quantity.isEmpty() ? 0 : font.width(quantity);
+            if (quantityW > 0) {
+                draw(g, quantity, Math.round(x + w - 3 - quantityW), Math.round(y + 3), 1, GuiFx.fade(WarehouseTheme.TEXT_GOLD, opacity), true);
+            }
+            String tag = tag();
+            if (tag != null) {
+                int color = role != null ? WarehouseTheme.DANGER : entry.equipped() ? WarehouseTheme.TEAL : CrateArt.GOLD_LINE;
+                float tw = font.width(tag) + 13;
+                // 放不下文字时只留状态菱形，完整状态在悬停提示与详情面板里。
+                boolean label = tw + quantityW + 8 <= w;
+                if (label) chip(g, x + 2, y + 2, x + 2 + tw, y + 13, color, opacity);
+                CrateFx.diamond(g, x + 7, y + 7.5F, 2.2F, 2.2F, GuiFx.fade(color, opacity), false);
+                CrateFx.glow(g, x + 7, y + 7.5F, 6, color, .5F * opacity);
+                if (label) draw(g, tag, Math.round(x + 11), Math.round(y + 4), 1,
+                        GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_BRIGHT, color, .35F), opacity), false);
             }
             g.pose().popPose();
         }
+
+        void drawIcon(GuiGraphics g, float cx, float cy, float size, float opacity) {
+            if (size < 4 || opacity < .01F) return;
+            if (art != null) {
+                g.setColor(1, 1, 1, opacity);
+                int pixels = entry.kind().equals("currency") ? 32 : 128;
+                int s = Math.round(size);
+                g.blit(art, Math.round(cx - s / 2F), Math.round(cy - s / 2F), s, s, 0, 0, pixels, pixels, pixels, pixels);
+                g.setColor(1, 1, 1, 1);
+            } else {
+                CrateArt.item(g, icon, cx, cy, size / 16F, 0, 0, 1, opacity);
+            }
+        }
+
         @Override protected void renderWidget(GuiGraphics g, int x, int y, float pt) {
-            // 格栅由 render 的统一绘制通道处理（它要带入场/切换/交接动画），
-            // 控件通道若再画一次会把动画整体盖掉，因此这里保持空实现。
+            // 格栅由 render 的统一绘制通道处理（它要带入场/切换动画），控件通道保持空实现。
         }
         @Override public void onClick(double x, double y) { openDetail(this); }
         @Override public boolean mouseClicked(double x, double y, int button) {
@@ -1223,8 +1455,7 @@ public final class WarehouseScreen extends Screen {
         @Override protected void updateWidgetNarration(NarrationElementOutput out) {
             out.add(NarratedElementType.TITLE, getMessage());
             out.add(NarratedElementType.POSITION, text("quantity", entry.count()));
-            out.add(NarratedElementType.HINT, entry.kind().equals("skin")
-                    ? SkinQualityStyle.label(entry.quality()).copy().append(" · ").append(text("inspect")) : captionText());
+            out.add(NarratedElementType.HINT, kindLabel());
         }
     }
 }
