@@ -37,7 +37,7 @@ class CrateStageTest {
         assertEquals(333L, CrateStage.DISMISS_MS);
         assertEquals(1634L, CrateStage.HOLD_MS);
         assertEquals(6033L, CrateStage.SPIN_MS);
-        assertEquals(100L, CrateStage.STOP_HOLD_MS);
+        assertEquals(700L, CrateStage.STOP_HOLD_MS);
         assertEquals(266L, CrateStage.BRIDGE_MS);
         assertEquals(1533L, CrateStage.REVEAL_MS);
         assertEquals(0L, stage.openedAt());
@@ -45,10 +45,10 @@ class CrateStageTest {
         assertEquals(1967L, stage.spinAt());
         assertEquals(1967L, stage.decayAt());
         assertEquals(8000L, stage.stopAt());
-        assertEquals(8100L, stage.swapAt());
+        assertEquals(8700L, stage.swapAt());
         // The item arrives while the world fades back, not after that fade has finished.
-        assertEquals(8233L, stage.revealAt());
-        assertEquals(9766L, stage.finishAt());
+        assertEquals(8833L, stage.revealAt());
+        assertEquals(10366L, stage.finishAt());
     }
 
     @Test void phasesFollowTheReferenceOrder() {

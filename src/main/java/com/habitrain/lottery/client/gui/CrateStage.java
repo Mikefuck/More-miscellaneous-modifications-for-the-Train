@@ -27,10 +27,10 @@ package com.habitrain.lottery.client.gui;
  *   <tr><td>333</td><td>f110</td><td>箱子大字持握、盖子仍关闭，镜头继续推近到 1.75×</td></tr>
  *   <tr><td>1967</td><td>f159</td><td>开盖 + 转盘由黄线向两侧擦入 + 圆形暗角收拢；转盘以 13 件/秒起手</td></tr>
  *   <tr><td>1967→8000</td><td>f159→f340</td><td>三次速度曲线减速：{@code v(u)=(V0−V1)(1−u)³+V1}，V0=13.0、V1=0.02</td></tr>
- *   <tr><td>8000</td><td>f340</td><td>速度归零，中奖卡片停在黄线正中，保持 100ms</td></tr>
- *   <tr><td>8100</td><td>f343</td><td>一帧撤卡 + 近黑暗场 100ms + 133ms 淡回（无白光）</td></tr>
- *   <tr><td>8366</td><td>f348</td><td>选中物品登场：0→1.52× 放大、偏航解开 25°，1533ms 缓出</td></tr>
- *   <tr><td>9899</td><td>f394</td><td>落位，之后只剩 ±4px／0.5Hz 的呼吸</td></tr>
+ *   <tr><td>8000</td><td>f340</td><td>速度归零，中奖卡片停在光标正中；卡片按品质绽放 700ms</td></tr>
+ *   <tr><td>8700</td><td>—</td><td>撤卡 + 近黑暗场 133ms + 133ms 淡回</td></tr>
+ *   <tr><td>8833</td><td>—</td><td>选中物品登场：品质闪光 + 冲击环，1533ms 放大缓出</td></tr>
+ *   <tr><td>10366</td><td>—</td><td>落位，之后只剩缓慢漂浮</td></tr>
  * </table>
  */
 public final class CrateStage {
@@ -95,8 +95,8 @@ public final class CrateStage {
     public static final long HOLD_MS = 1634L;
     /** 转盘减速锁定的时长（f159→f340，6.033s）。 */
     public static final long SPIN_MS = 6033L;
-    /** 减速到零后保持的时长（f340→f343）。 */
-    public static final long STOP_HOLD_MS = 100L;
+    /** 减速到零后中奖卡片按品质绽放的时长，给结果一个可读的停顿。 */
+    public static final long STOP_HOLD_MS = 700L;
     /** 暗场总时长（一帧撤卡 + 100ms 暗场 + 133ms 淡回）。 */
     public static final long BRIDGE_MS = ScreenSwap.SWAP_MS;
     /** 选中物品放大到位的时长（f348→f385）。 */
@@ -403,14 +403,16 @@ public final class CrateStage {
     /** 卡片距光标的距离，绘制时用来推算缩放、亮度与景深虚化。 */
     public static float distance(float offset) { return Math.abs(offset); }
 
-    /** 距光标越远越小：光标 1.0，两侧线性衰减到 0.82。 */
+    /** 距光标越远越小：光标 1.0，平滑收到两侧 0.84，读出弧形转盘的透视。 */
     public static float cardScale(float offset) {
-        return 1.0F;
+        float d = clamp01(Math.abs(offset) / 2.6F);
+        return 1.0F - 0.16F * d * d * (3 - 2 * d);
     }
 
-    /** 距光标越远越暗。 */
+    /** 距光标越远越暗：光标 1.0，两侧收到 0.42。 */
     public static float cardTint(float offset) {
-        return 1.0F;
+        float d = clamp01(Math.abs(offset) / 3.0F);
+        return 1.0F - 0.58F * d * (2 - d);
     }
 
     /**

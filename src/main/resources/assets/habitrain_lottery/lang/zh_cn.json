@@ -613,5 +613,14 @@
   "screen.habitrain_lottery.crate_manage.overview": "箱子目录：%s 种 · 已启用 %s 种",
   "screen.habitrain_lottery.crate_manage.overview_hint": "进入箱子管理，选择箱子后编辑外观、奖励和抽取规则。",
   "screen.habitrain_lottery.crate_manage.source_server": "当前服务器配置 · 保存后同步到开箱页面",
-  "screen.habitrain_lottery.crate_manage.overview_offline": "连接服务器后显示当前箱子目录与启用状态"
+  "screen.habitrain_lottery.crate_manage.overview_offline": "连接服务器后显示当前箱子目录与启用状态",
+  "screen.habitrain_lottery.crate.modal.eyebrow": "确认开启",
+  "screen.habitrain_lottery.crate.nav.crates": "库存箱子 ×%s",
+  "screen.habitrain_lottery.crate.chip.crates": "箱子 ×%s",
+  "screen.habitrain_lottery.crate.chip.keys": "钥匙 ×%s",
+  "screen.habitrain_lottery.crate.status.charging": "正在解锁…",
+  "screen.habitrain_lottery.crate.status.waiting": "等待服务器结果…",
+  "screen.habitrain_lottery.crate.status.rolling": "命运之轮转动中…",
+  "screen.habitrain_lottery.crate.reveal.eyebrow": "恭喜获得",
+  "screen.habitrain_lottery.crate.reveal.from": "来自 %s"
 }

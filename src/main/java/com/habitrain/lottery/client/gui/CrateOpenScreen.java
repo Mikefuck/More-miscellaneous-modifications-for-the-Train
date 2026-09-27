@@ -7,93 +7,84 @@ import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.network.CrateNetwork;
 import com.google.gson.Gson;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.Util;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Reference-timed crate animation on a fitted 1920×1080 canvas.
- * Background, case, modal, strip, carousel, dark bridge and HUD have explicit depth layers.
- * Narrow windows keep the complete canvas and its hit targets visible.
+ * 开箱界面：固定 1920×1080 参考画布，按 {@link CrateStage} 的时间轴逐层绘制。
+ *
+ * <p>分层：庭院背景 → 背景粒子 → 箱子与展台（或展示舞台）→ 奖励橱窗 / 转盘 → 暗场 →
+ * 展示物品 → 前景粒子 → 确认弹窗 → 标题与操作栏 → 按钮。发光件全部走 {@link CrateFx} 的加色混合。</p>
+ *
+ * <p>节奏：落箱扶正 → 确认 → 蓄力（箱体震颤、缝隙漏光、能量汇聚）→ 爆开（闪白、冲击环、火花、光柱）→
+ * 转盘减速 → 中奖卡按品质绽放 → 暗场 → 物品登场（品质闪光、射线、星芒；金 / 红追加彩屑与震屏）。</p>
  */
 public final class CrateOpenScreen extends Screen {
     private static final String KEY = "screen.habitrain_lottery.crate.";
 
     // =====================================================================
-    // 参考视频的基准画布
+    // 画布与分层
     // =====================================================================
 
-    /** 参考视频分辨率。所有布局常量都写在这个空间里。 */
     private static final float REF_W = 1920.0F, REF_H = 1080.0F;
+    /** 物品渲染自身会再加 150 的深度，因此覆盖层必须高出物品层。 */
+    private static final float Z_PARTICLES_BACK = 10, Z_SCENE = 20, Z_STRIP = 100, Z_REEL = 100,
+            Z_REEL_LIGHT = 105, Z_REEL_OVER = 300, Z_BRIDGE = 400, Z_REVEAL_ITEM = 420,
+            Z_MODAL = 480, Z_PARTICLES_FRONT = 600, Z_UI = 650, Z_HOTSPOT = 700;
 
-    // 分层
-    private static final float MODAL_Z = 310.0F;
-    private static final float SCENE_Z = 200.0F;
-    private static final float STRIP_Z = 320.0F;
-    private static final float CARD_Z = 420.0F;
-    private static final float CURSOR_Z = 540.0F;
-    private static final float UI_Z = 620.0F;
-    private static final float HOTSPOT_Z = 660.0F;
-    private static final float BRIDGE_Z = 600.0F;
-    /** 暗场最浓时的强度：参考视频只把世界压到约 10%，不是纯黑。 */
-    private static final float BRIDGE_MAX = 0.88F;
+    // ---- 顶部标题 ----
+    private static final float HEAD_EYEBROW_Y = 34, HEAD_TITLE_Y = 58, HEAD_TITLE_SIZE = 42,
+            HEAD_CHIP_Y0 = 120, HEAD_CHIP_Y1 = 154;
 
-    // 顶部三行标题（参考 f050–f060 淡入、f348 起换成选中物品的名牌）
-    private static final float HUD_TITLE_Y = 48.0F, HUD_UNLOCK_Y = 96.0F, HUD_NOTE_Y = 132.0F;
-
-    // 底部物品条（参考 f074：x 40–1590、y 795–965）
-    private static final float STRIP_X0 = 180.0F, STRIP_X1 = 1740.0F,
-            STRIP_Y0 = 780.0F, STRIP_Y1 = 978.0F;
+    // ---- 奖励橱窗 ----
+    private static final float STRIP_X0 = 150, STRIP_X1 = 1770, STRIP_Y0 = 778, STRIP_Y1 = 996;
+    private static final float STRIP_CARD_Y = 822, STRIP_CARD_W = 170, STRIP_CARD_H = 164, STRIP_GAP = 14;
     private static final int STRIP_SLOTS = 8;
+    private static final float STRIP_ARROW_Y0 = 870, STRIP_ARROW_Y1 = 918,
+            STRIP_PREV_X = 160, STRIP_NEXT_X = 1716, ARROW_W = 44;
 
-    // 确认弹窗（参考 f104：772×204px）
-    private static final float MODAL_X0 = 566.0F, MODAL_X1 = 1338.0F,
-            MODAL_Y0 = 440.0F, MODAL_Y1 = 690.0F;
-    private static final float MODAL_THUMB_X = 605.0F, MODAL_THUMB_Y = 385.0F,
-            MODAL_THUMB_W = 240.0F, MODAL_THUMB_H = 180.0F;
-    private static final float MODAL_TEXT_X = 895.0F, MODAL_TITLE_Y = 480.0F, MODAL_BODY_Y = 537.0F;
-    private static final float MODAL_BTN_Y0 = 623.0F, MODAL_BTN_Y1 = 675.0F;
-    private static final float MODAL_OK_X0 = 1105.0F, MODAL_OK_X1 = 1243.0F;
-    private static final float MODAL_CANCEL_X0 = 1255.0F, MODAL_CANCEL_X1 = 1325.0F;
+    // ---- 底部操作栏 ----
+    private static final float NAV_Y0 = 1008, BTN_Y0 = 1022, BTN_Y1 = 1068;
+    private static final float PRIMARY_X0 = 730, PRIMARY_X1 = 950, CLOSE_X0 = 970, CLOSE_X1 = 1150;
 
-    // 转盘（参考 phase 10：卡片 360×280、间距 360、带宽 y 395–675、圆心 (960,505)）
-    private static final float REEL_CENTER_X = REF_W * 0.5F, REEL_CENTER_Y = 535.0F;
-    private static final float CARD_W = 360.0F, CARD_H = 280.0F;
-    private static final float CURSOR_Y0 = 400.0F, CURSOR_Y1 = 660.0F;
-    private static final float VIGNETTE_INNER = 400.0F, VIGNETTE_OUTER = 460.0F, VIGNETTE_ALPHA = 0.65F;
-    private static final int GOLD_LINE = 0xFFE8D44D;
+    // ---- 确认弹窗 ----
+    private static final float MODAL_X0 = 540, MODAL_X1 = 1380, MODAL_Y0 = 400, MODAL_Y1 = 680;
+    private static final float MODAL_TEXT_X = 850, MODAL_BTN_Y0 = 610, MODAL_BTN_Y1 = 660,
+            MODAL_OK_X0 = 1090, MODAL_OK_X1 = 1250, MODAL_CANCEL_X0 = 1264, MODAL_CANCEL_X1 = 1360;
 
-    // 展示页（参考 phase 13）
-    private static final float BADGE_X = 600.0F, BADGE_Y = 30.0F, BADGE_SIZE = 86.0F;
-    private static final float PLATE_X = 712.0F, PLATE_NAME_Y = 48.0F, PLATE_SUB_Y = 118.0F;
-    private static final float RARITY_RULE_Y = 175.0F, RARITY_RULE_X0 = 578.0F, RARITY_RULE_X1 = 1345.0F;
-    private static final float TIP_X = 520.0F, TIP_Y = 818.0F, TIP_LINE = 34.0F;
-    private static final float TIP_HAIRLINE_X = 1390.0F, TIP_HAIRLINE_Y0 = 780.0F, TIP_HAIRLINE_Y1 = 980.0F;
-    private static final float REVEAL_ITEM_X = 1005.0F, REVEAL_ITEM_Y = 570.0F;
+    // ---- 转盘 ----
+    private static final float REEL_CY = 520, REEL_CARD_W = 300, REEL_CARD_H = 236, REEL_PITCH = 318,
+            BAND_Y0 = 384, BAND_Y1 = 656;
 
-    // 底部导航条（参考 y 1020–1080）
-    private static final float NAV_Y0 = 1020.0F;
-    private static final float CLOSE_X0 = 970, CLOSE_X1 = 1150,
-            CLOSE_Y0 = 1030, CLOSE_Y1 = 1070;
-    private static final float AGAIN_X0 = 770, AGAIN_X1 = 950,
-            AGAIN_Y0 = 1030, AGAIN_Y1 = 1070;
+    // ---- 展示页 ----
+    private static final float REVEAL_X = 960, REVEAL_Y = 478, PEDESTAL_Y = 712;
+    private static final float PANEL_X0 = 460, PANEL_X1 = 1460, PANEL_Y0 = 796, PANEL_Y1 = 992;
+    private static final float MINI_W = 100, MINI_H = 118, MINI_GAP = 12, MINI_Y = 836;
+    private static final int MINI_SLOTS = 8;
+    private static final float PANEL_PREV_X = 404, PANEL_NEXT_X = 1472;
 
-    // 颜色（全部取自参考视频 §4 的实测表）
-    private static final int TEXT_BRIGHT = 0xFFEDEDED, TEXT_TITLE = 0xFFF2F2F2,
-            TEXT_BODY = 0xFFD2D2D2, TEXT_DIM = 0xFFCFCFCF, TEXT_MUTED = 0xFFB0B0B0,
-            TEXT_NAV = 0xFFEAEAEA,
-            TEXT_GOLD = 0xFFE7D06A, DANGER = 0xFFFF8A8A,
-            NAV_SCRIM = 0x73000000;
+    // ---- 配色 ----
+    private static final int TEXT_BRIGHT = 0xFFF2F2F2, TEXT_BODY = 0xFFD2D2D2, TEXT_DIM = 0xFFA9B3B1,
+            TEXT_GOLD = 0xFFF0D36E, DANGER = 0xFFFF8A8A, TEAL = WarehouseTheme.TEAL;
+
+    // =====================================================================
+    // 状态
+    // =====================================================================
 
     private final Screen parent;
     private final String crateId;
@@ -113,27 +104,33 @@ public final class CrateOpenScreen extends Screen {
     private List<ItemStack> strip = List.of();
     private List<SkinQuality> stripQuality = List.of();
     private String message = "";
+    private long toastAt = -1;
     private boolean failure;
     private boolean modalCancelled = true;
     private int catalogVersion = -1, stripPage, rewardPage;
 
     private long enteredAt = -1;
     private long departAt = -1;
+    private long modalShownAt = -1;
     private boolean leaving;
     private long lastFrame;
 
-    /** 画布缩放：GUI 单位 / 参考像素。每个渲染帧重新计算。 */
     private float unit = 1.0F;
-    /** 画布在参考空间里的宽度；16:9 时正好是 1920。 */
-    private float canvasW = REF_W;
     private float canvasX, canvasY;
+    private float mouseX = -1, mouseY = -1;
     private int keyboardFocus = -1;
-    /** 上一帧到这一帧的毫秒数，用于与帧率无关的趋近动画。 */
     private float frameDelta = 16.0F;
 
     private final List<Hotspot> hotspots = new ArrayList<>();
+    private final Map<String, Float> hoverAnim = new HashMap<>();
+    private final Map<Integer, Float> stripHover = new HashMap<>();
     private final CrateParticles particles = new CrateParticles();
-    private long lastParticleSpawn = 0;
+    private float emitClock;
+
+    // ---- 一次性事件（每轮开箱重置） ----
+    private boolean firedHold, firedOpen, firedStop, firedReveal, firedLanding;
+    private int lastTickSlot = Integer.MIN_VALUE;
+    private long lastTickAt;
 
     public CrateOpenScreen(Screen parent, String crateId) {
         super(Component.translatable(KEY + "hud.title"));
@@ -151,8 +148,7 @@ public final class CrateOpenScreen extends Screen {
         lastFrame = now;
         if (inventoryVersion < 0) {
             // 仓库可能早就把库存拉下来了；这里连同版本号一起接管，
-            // 否则 refreshFromState() 会因为版本没变而永远不填 inventory，
-            // 箱子与钥匙数量就一直是 0（离线/无服务端时尤其明显）。
+            // 否则 refreshFromState() 会因为版本没变而永远不填 inventory。
             inventoryVersion = CrateClientNetwork.STATE.inventoryVersion;
             inventory = CrateClientNetwork.STATE.inventory;
         }
@@ -162,74 +158,20 @@ public final class CrateOpenScreen extends Screen {
         if (strip.isEmpty()) buildStrip();
     }
 
-    /** 背景只在 {@link #render} 里画一次，避免 {@code super.render} 重复叠一层世界模糊。 */
+    /** 背景只在 {@link #render} 里画一次。 */
     @Override public void renderBackground(GuiGraphics g, int mx, int my, float partialTick) {
-        /* 由 render 显式调用 super.renderBackground。 */
     }
 
     @Override public void tick() {
         super.tick();
         refreshFromState();
         long time = now();
-        particles.tick(frameDelta);
-        
-        // 粒子生成逻辑
-        spawnParticles(time);
-        
         // 与服务端等待上限一致：超时后停下转盘，允许玩家重试。
         if (stage.active() && !stage.hasResult() && !failure
                 && time - stage.openedAt() > CrateStage.SPIN_TIMEOUT_MS) {
             fail("screen.habitrain_lottery.crate.timeout");
         }
         if (departAt >= 0 && !leaving) finishLeaving();
-    }
-    
-    private void spawnParticles(long time) {
-        if (time - lastParticleSpawn < 33) return; // 30 FPS 粒子生成
-        lastParticleSpawn = time;
-        
-        CrateStage.Phase phase = stage.phase(time);
-        int qualityColor = CrateEffects.qualityColor(resultQuality());
-        float cx = canvasW * 0.5F;
-        float cy = 570.0F;
-        float width = 330.0F * stage.crateScale(time, enteredAt);
-        
-        // 箱子周围环境粒子
-        if (!stage.cardsGone(time) && phase != CrateStage.Phase.BRIDGE) {
-            particles.spawnAmbientDust(cx, cy - width * 0.3F, width * 0.6F, 
-                GuiFx.alpha(qualityColor, 180), 0.3F);
-        }
-        
-        // 开盖爆发
-        if (phase == CrateStage.Phase.CAROUSEL && stage.lid(time) > 0.1F && stage.lid(time) < 0.3F) {
-            if (time % 100 < 50) { // 只在开盖初期生成
-                particles.spawnOpenBurst(cx, cy - width * 0.4F, qualityColor, 3);
-            }
-        }
-        
-        // 转盘运动拖尾
-        if (phase == CrateStage.Phase.CAROUSEL && stage.hasResult()) {
-            float cardW = cardWidth();
-            float pitch = cardW * CrateStage.CARD_PITCH;
-            for (int i = 0; i < 3; i++) {
-                int index = resultSlot + i - 1;
-                float offset = stage.reelOffset(time, index);
-                if (Math.abs(offset) < 1.5F) {
-                    float x = cx + offset * pitch;
-                    particles.spawnCardTrail(x, REEL_CENTER_Y, 
-                        GuiFx.alpha(qualityColor, 120), 0.5F);
-                }
-            }
-        }
-        
-        // 物品展示光环
-        if (phase == CrateStage.Phase.REVEAL && stage.revealing(time) > 0.5F) {
-            float reveal = stage.revealing(time);
-            if (reveal > 0.85F && time % 200 < 50) {
-                particles.spawnItemHalo(REVEAL_ITEM_X, REVEAL_ITEM_Y, 
-                    REF_H * 0.25F, qualityColor, 8);
-            }
-        }
     }
 
     public void refreshFromState() {
@@ -262,8 +204,7 @@ public final class CrateOpenScreen extends Screen {
         stage = stage.result(now);
         resultStack = previewReward(payload.skinType(), payload.skin());
         SkinQuality quality = SkinQuality.fromId(payload.quality());
-        // 结果固定落在「转盘停稳」那一刻光标正中的槽位：把中奖卡片换掉，
-        // 玩家只会看到转盘停在这一件上，随后它从这个位置起飞到台前。
+        // 结果固定落在「转盘停稳」那一刻光标正中的槽位。
         resultSlot = stage.cursorSlot(stage.stopAt());
         if (!reel.isEmpty()) {
             int index = Math.floorMod(resultSlot, reel.size());
@@ -279,6 +220,7 @@ public final class CrateOpenScreen extends Screen {
     private void fail(String key) {
         failure = true;
         message = key;
+        toastAt = now();
         stage = stage.active() ? stage.failure() : CrateStage.idle();
         if (!stage.active()) result = null;
     }
@@ -288,19 +230,22 @@ public final class CrateOpenScreen extends Screen {
         leaving = true;
         if (minecraft != null) {
             Screen target = parent;
-            // 在渲染中直接 setScreen 会打断当前帧，交给主线程队列更稳妥。
             minecraft.execute(() -> minecraft.setScreen(target));
         }
+    }
+
+    private boolean locked(long time) {
+        CrateStage.Phase phase = stage.phase(time);
+        return !failure && (phase == CrateStage.Phase.DISMISS || phase == CrateStage.Phase.HOLD
+                || phase == CrateStage.Phase.CAROUSEL || phase == CrateStage.Phase.BRIDGE);
     }
 
     @Override public void onClose() {
         if (departAt >= 0) return;
         // 开盖与锁定过程中不允许半途离开；物品已经登场后就可以直接返回仓库。
-        CrateStage.Phase phase = stage.phase(now());
-        boolean locked = phase == CrateStage.Phase.DISMISS || phase == CrateStage.Phase.HOLD
-                || phase == CrateStage.Phase.CAROUSEL || phase == CrateStage.Phase.BRIDGE;
-        if (locked && !failure) {
+        if (locked(now())) {
             message = KEY + "busy";
+            toastAt = now();
             return;
         }
         depart();
@@ -333,8 +278,22 @@ public final class CrateOpenScreen extends Screen {
         return definition == null ? 0xFF57C6D6 : 0xFF000000 | definition.color();
     }
 
+    /** 箱内光：强调色与暖白混合，开箱前不泄露结果品质。 */
+    private int crateLight() {
+        return GuiFx.mix(CrateArt.WARM_LIGHT, accent(), 0.45F);
+    }
+
     private SkinQuality resultQuality() {
         return result == null ? SkinQuality.WHITE : SkinQuality.fromId(result.quality());
+    }
+
+    /** 品质档位 0..1（白 0、红 1），用于按品质放大展示效果。 */
+    private float tier() {
+        return resultQuality().ordinal() / (float) (SkinQuality.values().length - 1);
+    }
+
+    private int rarityColor(SkinQuality quality) {
+        return quality.color() | 0xFF000000;
     }
 
     private String crateName() {
@@ -342,19 +301,38 @@ public final class CrateOpenScreen extends Screen {
         return Component.translatable(entry == null ? KEY + crateId : entry.nameKey()).getString();
     }
 
-    private void drawCrate(GuiGraphics g, float x, float baseY, float width, float lid, float intensity) {
+    private String keyName() {
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return Component.translatable(entry == null ? KEY + "key." + crateId : entry.keyName()).getString();
+    }
+
+    private ItemStack iconStack(String id, net.minecraft.world.item.Item fallback) {
+        try {
+            var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(ResourceLocation.parse(id));
+            if (item != Items.AIR) return new ItemStack(item);
+        } catch (RuntimeException ignored) { }
+        return new ItemStack(fallback);
+    }
+
+    private ItemStack crateIcon() {
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return iconStack(entry == null ? "minecraft:chest" : entry.icon(), Items.CHEST);
+    }
+
+    private ItemStack keyIcon() {
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return iconStack(entry == null ? "minecraft:tripwire_hook" : entry.keyIcon(), Items.TRIPWIRE_HOOK);
+    }
+
+    private void drawCrate(GuiGraphics g, float x, float baseY, float width, float lid,
+                           int ambient, float glow, float alpha) {
         CrateCatalog.Entry entry = CrateCatalog.find(crateId);
         CrateCatalog.Entry builtin = CrateCatalog.builtin(crateId);
         boolean styled = entry != null && (builtin == null || entry.color() != builtin.color()
                 || !crateId.equals(entry.appearancePreset()) || !"star".equals(entry.badge()));
-        if (styled) CrateArt.crateStyled(g, x, baseY, width, lid, accent(), intensity,
-                entry.appearancePreset(), entry.badge());
-        else CrateArt.crate(g, x, baseY, width, lid, accent(), intensity);
-    }
-
-    private String keyName() {
-        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
-        return Component.translatable(entry == null ? KEY + "key." + crateId : entry.keyName()).getString();
+        if (styled) CrateArt.crateStyledLit(g, x, baseY, width, lid, accent(), entry.appearancePreset(), entry.badge(),
+                ambient, glow, crateLight(), alpha);
+        else CrateArt.crateLit(g, x, baseY, width, lid, ambient, glow, crateLight(), alpha);
     }
 
     private static ItemStack previewReward(String type, String id) {
@@ -396,6 +374,17 @@ public final class CrateOpenScreen extends Screen {
         return stack;
     }
 
+    /** 奖励的品质：主结果用服务端品质，其余按公开奖池查找。 */
+    private SkinQuality qualityOf(CrateService.Reward reward) {
+        if (result != null && "skin".equals(reward.kind())
+                && reward.id().equals(result.skinType() + "/" + result.skin())) return resultQuality();
+        for (var candidate : candidates()) {
+            if (candidate.kind().equals(reward.kind()) && candidate.id().equals(reward.id()))
+                return SkinQuality.fromId(candidate.quality());
+        }
+        return SkinQuality.WHITE;
+    }
+
     /** Decorative order only; every card must belong to the server's published candidates. */
     private void buildReel() {
         List<ItemStack> out = new ArrayList<>();
@@ -423,12 +412,14 @@ public final class CrateOpenScreen extends Screen {
         }
         ResourceLocation texture = ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/"
                 + ("green_apples".equals(reward.kind()) ? "green_apple" : "cards/" + reward.id()) + ".png");
-        g.pose().pushPose(); g.pose().translate(x, y, 0);
+        g.pose().pushPose();
+        g.pose().translate(x, y, 150);
         g.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(roll));
         g.pose().scale(scale, scale, 1);
         g.setColor(tint, tint, tint, alpha);
         g.blit(texture, -8, -8, 0, 0, 16, 16, 16, 16);
-        g.setColor(1, 1, 1, 1); g.pose().popPose();
+        g.setColor(1, 1, 1, 1);
+        g.pose().popPose();
     }
 
     private CrateCatalog.RewardPreview resultPreview() {
@@ -445,17 +436,19 @@ public final class CrateOpenScreen extends Screen {
     }
 
     private ItemStack stackAt(int index) {
-        if (index < 0 || index >= reel.size()) return ItemStack.EMPTY;
-        return reel.get(index);
+        return index < 0 || index >= reel.size() ? ItemStack.EMPTY : reel.get(index);
     }
 
     private SkinQuality qualityAt(int index) {
-        if (index < 0 || index >= reelQuality.size()) return SkinQuality.WHITE;
-        return reelQuality.get(index);
+        return index < 0 || index >= reelQuality.size() ? SkinQuality.WHITE : reelQuality.get(index);
+    }
+
+    private static void sound(SoundEvent event, float pitch, float volume) {
+        Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(event, pitch, volume));
     }
 
     // =====================================================================
-    // 渲染
+    // 渲染：驱动
     // =====================================================================
 
     @Override public void render(GuiGraphics g, int mx, int my, float partialTick) {
@@ -464,257 +457,406 @@ public final class CrateOpenScreen extends Screen {
         lastFrame = time;
         g.flush();
         // A hard screen cut must not inherit the previous drawer's depth buffer.
-        com.mojang.blaze3d.systems.RenderSystem.clear(256, net.minecraft.client.Minecraft.ON_OSX);
-        // 世界模糊只应用一次（本类的 renderBackground 是空实现）。
-        g.fill(0, 0, width, height, 0xFF171913);
+        com.mojang.blaze3d.systems.RenderSystem.clear(256, Minecraft.ON_OSX);
+        g.fill(0, 0, width, height, 0xFF0B0D0C);
         unit = Math.min(width / REF_W, height / REF_H);
-        canvasW = REF_W;
         canvasX = (width - REF_W * unit) * .5F;
         canvasY = (height - REF_H * unit) * .5F;
+        mouseX = (mx - canvasX) / unit;
+        mouseY = (my - canvasY) / unit;
+
+        driveEvents(time);
+        particles.tick(frameDelta);
+
+        float[] shake = shake(time);
+        g.enableScissor((int) canvasX, (int) canvasY, (int) Math.ceil(canvasX + REF_W * unit),
+                (int) Math.ceil(canvasY + REF_H * unit));
         g.pose().pushPose();
         g.pose().translate(canvasX, canvasY, 0);
         g.pose().scale(unit, unit, 1.0F);
-        renderCanvas(g, time, (mx - canvasX) / unit, (my - canvasY) / unit);
+        g.pose().pushPose();
+        g.pose().translate(shake[0], shake[1], 0);
+        renderWorld(g, time);
         g.pose().popPose();
-        if (!stage.active() && modalCancelled) {
-            float cx = (mx - canvasX) / unit, cy = (my - canvasY) / unit;
-            int count = Math.min(STRIP_SLOTS, strip.size() - stripPage * STRIP_SLOTS);
-            float left = (REF_W - (count * 160 + Math.max(0, count - 1) * 16)) / 2;
-            for (int i = 0; i < count; i++) if (cx >= left + i * 176 && cx < left + i * 176 + 160 && cy >= 826 && cy <= 965) {
-                g.renderTooltip(font, java.util.List.of(strip.get(stripPage * STRIP_SLOTS + i).getHoverName().getVisualOrderText(),
-                        Component.translatable(KEY + "preview_note").getVisualOrderText()), mx, my);
-            }
+        renderInterface(g, time);
+        g.pose().popPose();
+        g.disableScissor();
+
+        int hovered = hoveredStripCard(time);
+        if (hovered >= 0) {
+            g.renderTooltip(font, List.of(strip.get(hovered).getHoverName().getVisualOrderText(),
+                    Component.translatable(KEY + "preview_note").getVisualOrderText()), mx, my);
         }
         if (departAt >= 0) finishLeaving();
     }
 
-    private void renderCanvas(GuiGraphics g, long time, float mx, float my) {
-        float focus = ScreenSwap.arrive(time, enteredAt);
+    /** 画面里会动的部分（跟着震屏一起晃）。 */
+    private void renderWorld(GuiGraphics g, long time) {
+        boolean revealEnv = stage.cardsGone(time) && !failure;
         float reveal = CrateStage.clamp01(stage.revealing(time));
-        float nameplate = stage.cardsGone(time) ? 1.0F : 0.0F;
-        boolean cardsVisible = stage.openedAt() >= 0 && !stage.cardsGone(time) && !failure;
 
-        // ---- 1. 背景场景 ----
-        // 参考视频的「世界」是一处暖色石砌庭院；这里用同一套暖调自绘场景，
-        // 保持在 0.94 的不透明度上，让真实世界的模糊画面只透出一点点。
-        CrateArt.backdrop(g, (int) canvasW, (int) REF_H, focus,
-                CrateStage.easeInOutCubic(CrateStage.progress(time, enteredAt + 1000, 1966)),
-                CrateStage.easeOutCubic(reveal));
+        if (revealEnv) renderRevealStage(g, time, reveal);
+        else renderCourtyard(g, time);
 
-        // ---- 2. 合焦薄雾：硬切之后的 533ms ----
+        layer(g, Z_PARTICLES_BACK, () -> particles.render(g, 1, false));
 
-        // ---- 3. 粒子层（背景） ----
-        g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, SCENE_Z - 50.0F);
-        particles.render(g, 0.85F);
-        g.pose().popPose();
+        if (!revealEnv) layer(g, Z_SCENE, () -> renderCrate(g, time));
+        else layer(g, Z_SCENE, () -> renderRevealBack(g, time, reveal));
 
-        // ---- 4. 场景（箱子 + 接地阴影）----
-        // 入场动作取自参考视频：箱子从画面上缘线性落下，同时从 65° 侧倾、−40° 偏航自行扶正。
-        g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, SCENE_Z);
-        renderScene(g, time, reveal);
-        g.pose().popPose();
+        layer(g, Z_STRIP, () -> renderStrip(g, time));
 
-        g.flush();
-        g.pose().pushPose();
-        g.pose().translate(0, 0, MODAL_Z);
-        renderModal(g, time);
-        g.pose().popPose();
-        g.flush();
+        boolean cardsVisible = stage.openedAt() >= 0 && !stage.cardsGone(time) && !failure
+                && time >= stage.spinAt();
+        if (cardsVisible) renderReel(g, time);
 
-        // ---- 4b. 底部十连物品条 ----
-        g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, STRIP_Z);
-        renderStrip(g, time);
-        g.pose().popPose();
-
-        // ---- 5. 卡片转盘（只在开盖之后）----
-        if (cardsVisible) {
-            g.pose().pushPose();
-            g.pose().translate(0.0F, 0.0F, CARD_Z);
-            renderReel(g, time, reveal);
-            g.pose().popPose();
-        }
-
-        // ---- 6. 暗场：内容互换（转盘 → 展示）----
-        // 参考视频在这一帧把卡片与圆形暗角一起撤掉、把世界压到约 10%，
-        // 但顶部名牌与说明文字仍然可读，所以暗场画在 chrome 之下。
         float bridge = stage.bridge(time);
-        if (bridge > 0.01F) {
-            g.pose().pushPose();
-            g.pose().translate(0.0F, 0.0F, BRIDGE_Z);
-            CrateArt.bridge(g, (int) canvasW, (int) REF_H, ScreenSwap.BRIDGE_COLOR,
-                    BRIDGE_MAX * bridge);
-            g.pose().popPose();
-        }
+        if (bridge > 0.01F) layer(g, Z_BRIDGE, () ->
+                CrateArt.bridge(g, (int) REF_W, (int) REF_H, ScreenSwap.BRIDGE_COLOR, 0.94F * bridge));
 
-        // ---- 7. 界面 chrome ----
-        g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, UI_Z);
-        renderChrome(g, time, nameplate, reveal);
-        g.pose().popPose();
+        if (revealEnv && reveal > 0) layer(g, Z_REVEAL_ITEM, () -> renderRevealItem(g, time, reveal));
+        layer(g, Z_PARTICLES_FRONT, () -> {
+            particles.render(g, 1, true);
+            renderFlashes(g, time);
+        });
+    }
 
-        // ---- 8. 按钮 ----
+    /** 不跟着震屏的界面件：弹窗、标题、操作栏与按钮。 */
+    private void renderInterface(GuiGraphics g, long time) {
+        layer(g, Z_MODAL, () -> renderModal(g, time));
+        layer(g, Z_UI, () -> renderChrome(g, time));
+        layer(g, Z_HOTSPOT, () -> {
+            buildHotspots(time);
+            for (Hotspot hotspot : hotspots) hotspot.render(g, time);
+        });
+    }
+
+    private static void layer(GuiGraphics g, float z, Runnable body) {
+        g.flush();
         g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, HOTSPOT_Z);
-        buildHotspots(time);
-        for (Hotspot hotspot : hotspots) hotspot.render(g, font, mx, my, frameDelta);
+        g.pose().translate(0, 0, z);
+        body.run();
+        g.flush();
         g.pose().popPose();
     }
 
     // ---------------------------------------------------------------------
-    // 场景
+    // 时间轴上的一次性事件：声音与粒子爆发
     // ---------------------------------------------------------------------
 
-    private void renderScene(GuiGraphics g, long time, float reveal) {
-        // 参考视频 f344（暗场那一帧）起箱子永久消失，只剩展台上的物品。
-        if (!stage.cardsGone(time)) {
-            renderCrate(g, time, reveal);
+    private void driveEvents(long time) {
+        emitClock += frameDelta;
+        boolean emit = emitClock >= 33;
+        if (emit) emitClock = 0;
+        CrateStage.Phase phase = stage.phase(time);
+        float cx = REF_W * .5F;
+        int light = crateLight();
+
+        // 落地：扶正结束时一圈尘土与一声闷响
+        if (!firedLanding && time >= enteredAt + CrateStage.DROP_DELAY_MS + CrateStage.DROP_MS) {
+            firedLanding = true;
+            particles.burst(cx, 720, 26, 60, 220, 40, 0xFFD8C6A4, false);
+            sound(SoundEvents.ARMOR_EQUIP_NETHERITE.value(), 0.7F, 0.5F);
         }
-        // ---- 选中物品：暗场之后从卡片位置升到台前并放大 ----
-        if (reveal > 0.0F && resultSlot >= 0) {
-            renderRevealItem(g, time, reveal);
+        if (emit && !stage.cardsGone(time)) {
+            // 光里的浮尘
+            particles.motes(560, 160, 1360, 760, 1, 0xFFFFE9C4);
+        }
+        if (failure) return;
+
+        if (stage.active() && !firedHold && time >= stage.holdAt()) {
+            firedHold = true;
+            sound(SoundEvents.RESPAWN_ANCHOR_CHARGE, 0.75F, 0.45F);
+        }
+        if (phase == CrateStage.Phase.HOLD && emit) {
+            float p = stage.hold(time);
+            int n = 1 + (int) (p * 4);
+            particles.charge(cx, 560, 520, n, light);
+        }
+        if (stage.active() && !firedOpen && time >= stage.spinAt()) {
+            firedOpen = true;
+            particles.burst(cx, 690, 90, 280, 920, 260, light, true);
+            particles.stars(cx, 600, 360, 140, 10, light, true);
+            sound(SoundEvents.VAULT_OPEN_SHUTTER, 1.0F, 0.9F);
+            sound(SoundEvents.FIREWORK_ROCKET_BLAST, 0.8F, 0.35F);
+        }
+        if (phase == CrateStage.Phase.CAROUSEL && emit) {
+            particles.embers(cx - 240, cx + 240, 700, 1, light);
+        }
+        // 转盘经过光标的滴答声：越慢音调越高
+        if (phase == CrateStage.Phase.CAROUSEL && time > stage.spinAt() + 120) {
+            int slot = Math.round(stage.reelPosition(time));
+            if (slot != lastTickSlot && time - lastTickAt >= 38) {
+                if (lastTickSlot != Integer.MIN_VALUE) {
+                    float settle = stage.settling(time);
+                    sound(SoundEvents.UI_BUTTON_CLICK.value(), 1.55F + 0.45F * settle, 0.16F);
+                }
+                lastTickSlot = slot;
+                lastTickAt = time;
+            }
+        }
+        if (stage.hasResult() && !firedStop && time >= stage.stopAt()) {
+            firedStop = true;
+            int rarity = rarityColor(resultQuality());
+            particles.burst(cx, REEL_CY, 30 + (int) (70 * tier()), 200, 700, 120, rarity, true);
+            particles.stars(cx, REEL_CY, 200, 130, 6 + (int) (10 * tier()), rarity, true);
+            sound(SoundEvents.NOTE_BLOCK_BELL.value(), 0.8F + 0.5F * tier(), 0.55F);
+        }
+        if (stage.hasResult() && !firedReveal && time >= stage.revealAt()) {
+            firedReveal = true;
+            int rarity = rarityColor(resultQuality());
+            float t = tier();
+            particles.burst(REVEAL_X, REVEAL_Y, 60 + (int) (140 * t), 260, 1100, 200, rarity, true);
+            particles.stars(REVEAL_X, REVEAL_Y, 420, 260, 10 + (int) (22 * t), rarity, true);
+            if (resultQuality().ordinal() >= SkinQuality.GOLD.ordinal()) {
+                particles.confetti(200, 1720, 0, 90, new int[]{rarity, 0xFFFFFFFF, CrateArt.GOLD_LINE,
+                        GuiFx.shade(rarity, 0.3F), 0xFF57D5C8});
+            }
+            switch (resultQuality()) {
+                case WHITE -> sound(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.9F, 0.6F);
+                case BLUE -> sound(SoundEvents.AMETHYST_BLOCK_CHIME, 1.1F, 1.0F);
+                case PURPLE -> {
+                    sound(SoundEvents.AMETHYST_BLOCK_CHIME, 0.8F, 1.0F);
+                    sound(SoundEvents.BEACON_POWER_SELECT, 1.2F, 0.6F);
+                }
+                case GOLD -> {
+                    sound(SoundEvents.PLAYER_LEVELUP, 1.0F, 0.7F);
+                    sound(SoundEvents.FIREWORK_ROCKET_TWINKLE, 1.0F, 0.6F);
+                }
+                case RED -> {
+                    sound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, 1.0F, 0.7F);
+                    sound(SoundEvents.FIREWORK_ROCKET_TWINKLE, 0.9F, 0.7F);
+                }
+            }
+        }
+        if (stage.cardsGone(time) && emit) {
+            int rarity = rarityColor(resultQuality());
+            float t = tier();
+            particles.embers(REVEAL_X - 260, REVEAL_X + 260, PEDESTAL_Y, t > 0.4F ? 2 : 1, rarity);
+            if (particles.random().nextFloat() < 0.15F + 0.35F * t)
+                particles.stars(REVEAL_X, REVEAL_Y, 300, 220, 1, rarity, true);
         }
     }
 
-    private void renderCrate(GuiGraphics g, long time, float reveal) {
-        float bandCenter = REF_H * CrateStage.CARD_BAND_CENTER;
-        // 箱子底面：参考视频里落位后箱体中心约在 (967, 603)，高约 640px
-        float width = 330.0F * stage.crateScale(time, enteredAt);
-        float baseY = 570.0F + (width - 330.0F) * .67F;
-        // Follow the same easing as the zoom, avoiding a one-frame vertical jump at reel entry.
-        float back = CrateStage.easeInOutCubic(CrateStage.progress(time, stage.spinAt(), CrateStage.BACKDROP_MS));
-        baseY = CrateStage.lerp(baseY, 745.0F, back);
-        float centreX = canvasW * 0.5F;
+    /** 震屏：蓄力时越来越强，开盖时猛震，金 / 红登场时再震一次。 */
+    private float[] shake(long time) {
+        if (failure || !stage.active()) return new float[]{0, 0};
+        float amp = 0;
+        if (stage.phase(time) == CrateStage.Phase.HOLD) {
+            float p = stage.hold(time);
+            amp = 4.0F * p * p;
+        }
+        long sinceOpen = time - stage.spinAt();
+        if (sinceOpen >= 0 && sinceOpen < 380) amp = Math.max(amp, 16 * (1 - sinceOpen / 380F));
+        if (stage.hasResult()) {
+            long sinceReveal = time - stage.revealAt();
+            float strength = Math.max(0, tier() - 0.5F) * 2;
+            if (sinceReveal >= 0 && sinceReveal < 450) amp = Math.max(amp, 12 * strength * (1 - sinceReveal / 450F));
+        }
+        if (amp <= 0.05F) return new float[]{0, 0};
+        return new float[]{(float) (Math.sin(time * 0.091) + Math.sin(time * 0.057)) * 0.5F * amp,
+                (float) (Math.sin(time * 0.073 + 1.3) + Math.sin(time * 0.049)) * 0.5F * amp};
+    }
+
+    // ---------------------------------------------------------------------
+    // 庭院背景：调色、聚光、光柱与暗角
+    // ---------------------------------------------------------------------
+
+    private void renderCourtyard(GuiGraphics g, long time) {
+        float focus = ScreenSwap.arrive(time, enteredAt);
+        float hold = failure ? 0 : stage.hold(time);
+        boolean spinning = !failure && stage.active() && time >= stage.spinAt();
+        float dolly = CrateStage.easeInOutCubic(CrateStage.progress(time, enteredAt + 1000, 1966));
+        CrateArt.backdrop(g, (int) REF_W, (int) REF_H, focus, dolly, 0, spinning ? 0.55F : hold * 0.35F);
+
+        // 电影调色：上下压暗，中部保留
+        CrateFx.vGradient(g, 0, 0, REF_W, 300, 0xB0050606, 0x00050606, false);
+        CrateFx.vGradient(g, 0, 640, REF_W, REF_H, 0x00050606, 0xD0050606, false);
+        CrateFx.hGradient(g, 0, 0, 420, REF_H, 0x90050606, 0x00050606, false);
+        CrateFx.hGradient(g, REF_W - 420, 0, REF_W, REF_H, 0x00050606, 0x90050606, false);
+
+        // 顶部聚光锥与斜射光柱
+        float sway = (float) Math.sin(time / 2600.0) * 18;
+        CrateFx.spotlight(g, 960, -60, 780, 110, 560, 0xFFFFE2B0, 0.16F + 0.10F * hold);
+        CrateFx.skewBand(g, 700 + sway, -40, 820, 70, 260, 0x16FFE7C0);
+        CrateFx.skewBand(g, 900 - sway * 0.6F, -40, 820, 44, 260, 0x10FFE7C0);
+        CrateFx.skewBand(g, 1180 + sway * 0.4F, -40, 820, 90, 260, 0x0CFFE7C0);
+
+        // 蓄力：暗角收拢、画面整体压暗，只留箱子周围
+        float dim = Math.max(hold * 0.55F, spinning ? 0.62F : 0);
+        CrateFx.vignette(g, REF_W, REF_H, 960, 560, 520 - 160 * dim, 360 - 90 * dim, 1180, 760,
+                0xFF020303, 0.55F + 0.35F * dim);
+        if (dim > 0.01F) g.fill(0, 0, (int) REF_W, (int) REF_H, GuiFx.fade(0xFF020303, dim * 0.55F));
+    }
+
+    // ---------------------------------------------------------------------
+    // 箱子、展台与开盖光柱
+    // ---------------------------------------------------------------------
+
+    private void renderCrate(GuiGraphics g, long time) {
+        float cx = REF_W * .5F;
+        float dollyScale = CrateStage.idle().crateScale(time, enteredAt);
+        float hold = failure ? 0 : stage.hold(time);
+        float push = CrateStage.easeInOutCubic(hold);
+        float back = failure || !stage.active() ? 0
+                : CrateStage.easeInOutCubic(CrateStage.progress(time, stage.spinAt(), CrateStage.BACKDROP_MS));
+        float width = 330 * CrateStage.lerp(dollyScale * (1 + 0.07F * push), 1.6F, back);
+        float baseY = CrateStage.lerp(560 + (width - 330) * .62F + 12 * push, 1010, back);
 
         float drop = -REF_H * 1.15F * (1.0F - CrateStage.dropProgress(time, enteredAt));
         float roll = CrateStage.entryRoll(time, enteredAt);
         float yaw = CrateStage.entryYaw(time, enteredAt);
-        float lid = stage.lidAngle(time);
+        // 蓄力震颤
+        float tremble = hold * hold;
+        roll += (float) Math.sin(time * 0.083) * 1.6F * tremble;
+        float jitterX = (float) Math.sin(time * 0.121) * 3.5F * tremble;
+
+        float lid = failure ? 0 : stage.lidAngle(time);
         float open = CrateStage.clamp01(lid / 100.0F);
-        
-        int qualityColor = CrateEffects.qualityColor(resultQuality());
+        long sinceOpen = stage.active() && !failure ? time - stage.spinAt() : -1;
+        float burst = sinceOpen >= 0 && sinceOpen < 500 ? 1 - sinceOpen / 500F : 0;
+        float glow = Math.max(hold * 0.9F, open > 0 ? 0.72F + 0.28F * burst : 0);
+        int ambient = GuiFx.mix(0xFFFFFFFF, 0xFF6A6A6A, Math.max(hold * 0.35F, back * 0.55F));
+        int light = crateLight();
+        boolean landed = drop > -1;
 
-        // 增强地面光效 - 替代简单阴影
-        if (open < .01F && drop > -1) {
-            float glowIntensity = .7F * CrateStage.righting(time, enteredAt);
-            CrateEffects.crateGlow(g, centreX, baseY, width, qualityColor, glowIntensity, time);
-        } else if (open > .01F) {
-            // 开盖后的强光效
-            CrateEffects.crateGlow(g, centreX, baseY, width, qualityColor, 
-                open * (1.0F - reveal * 0.7F), time);
+        // ---- 展台：接触阴影、暖色光池、旋转符文环 ----
+        if (landed) {
+            float settle = CrateStage.righting(time, enteredAt);
+            float ringR = width * 0.72F, ringRy = width * 0.10F;
+            float groundY = baseY + width * 0.02F;
+            CrateFx.glow(g, cx, groundY, width * 0.62F, width * 0.10F, 0xFF000000, 0.75F * settle, false);
+            CrateFx.glow(g, cx, groundY, width * 0.95F, width * 0.20F, light, (0.20F + 0.45F * glow) * settle, true);
+            float spin = time / 1000.0F * (0.35F + 2.4F * hold * hold);
+            CrateFx.dashRing(g, cx, groundY, ringR, ringRy, 36, 0.55F, spin, 3.2F, light, (0.30F + 0.6F * glow) * settle);
+            CrateFx.dashRing(g, cx, groundY, ringR * 0.8F, ringRy * 0.8F, 14, 0.3F, -spin * 1.6F, 2.4F, TEAL,
+                    (0.18F + 0.4F * glow) * settle);
+            CrateFx.ring(g, cx, groundY, ringR * 1.05F, 6, 0.14F, light, (0.12F + 0.35F * glow) * settle);
         }
 
         g.pose().pushPose();
-        g.pose().translate(centreX, baseY + drop, 0.0F);
+        g.pose().translate(cx + jitterX, baseY + drop, 0.0F);
         if (Math.abs(roll) > 0.01F) g.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(roll));
-        if (Math.abs(yaw) > 0.01F) {
-            g.pose().scale(Math.max(0.35F, (float) Math.cos(Math.toRadians(yaw))), 1.0F, 1.0F);
+        if (Math.abs(yaw) > 0.01F) g.pose().scale(Math.max(0.35F, (float) Math.cos(Math.toRadians(yaw))), 1.0F, 1.0F);
+        g.pose().translate(-cx, -baseY, 0.0F);
+        drawCrate(g, cx, baseY, width, lid, ambient, glow, 1);
+        // 缓慢掠过箱面的高光，让静止的箱子也在「呼吸」
+        if (!stage.active() && landed) {
+            CrateArt.Iso iso = new CrateArt.Iso(cx, baseY, width);
+            float sweep = ((time - enteredAt) % 4200L) / 4200.0F;
+            float x = iso.px(0, 0, 0) + (iso.px(1, 0, 0) - iso.px(0, 0, 0) + width * 0.4F) * sweep - width * 0.2F;
+            g.enableScissor((int) (canvasX + iso.px(0, 1, 0) * unit), (int) (canvasY + iso.py(0, 1, 0) * unit),
+                    (int) (canvasX + iso.px(1, 0, 0) * unit), (int) (canvasY + iso.py(1, 0, 0) * unit));
+            CrateFx.skewBand(g, x, iso.py(0, 1, 0), iso.py(0, 0, 0) + width * 0.06F, width * 0.05F, width * 0.12F, 0x1CFFFFFF);
+            g.disableScissor();
         }
-        g.pose().translate(-centreX, -baseY, 0.0F);
-
-        // Shadow belongs to the ground, not the rotating model.
-        drawCrate(g, centreX, baseY, width, lid, open * (1.0F - 0.55F * reveal));
-        
-        // 箱子边缘辉光
-        if (open > 0.1F && reveal < 0.5F) {
-            CrateEffects.crateEdgeGlow(g, centreX, baseY, width, qualityColor, 
-                open * (1.0F - reveal));
-        }
-        
         g.pose().popPose();
-    }
 
-    /** 选中物品从卡片位置起飞、放大到占据 0.31 屏高，随后只剩呼吸。 */
-    private void renderRevealItem(GuiGraphics g, long time, float reveal) {
-        float morph = CrateStage.easeOutCubic(reveal);
-        float settled = CrateStage.clamp01((reveal - 0.85F) / 0.15F);
-
-        float cardW = cardWidth();
-        float cardH = cardW * CrateStage.CARD_ASPECT;
-        float fromX = REEL_CENTER_X;
-        float fromY = REEL_CENTER_Y;
-        float fromScale = Math.min(cardW, cardH) * 0.88F / 16.0F;
-        float stageScale = REF_H * .38F / 16.0F;
-
-        float px = CrateStage.lerp(fromX, REVEAL_ITEM_X, morph);
-        float py = CrateStage.lerp(fromY, REVEAL_ITEM_Y, morph);
-        float size = CrateStage.lerp(fromScale, stageScale, morph);
-        // 出场时从侧面转正（实测偏航收拢约 25°），随后极缓慢地呼吸
-        float idlePhase = (time - Math.max(0L, stage.revealAt())) / 1000.0F;
-        float yaw = CrateStage.lerp(-CrateStage.REVEAL_YAW, 0.0F, morph)
-                + 2.0F * (float) Math.sin(idlePhase * Math.PI) * settled;
-        float roll = 1.5F * (float) Math.sin(idlePhase * Math.PI) * settled;
-        py += 4.0F * (float) Math.sin(idlePhase * Math.PI) * settled;
-        
-        int qualityColor = CrateEffects.qualityColor(resultQuality());
-        int qualityGlow = CrateEffects.qualityGlow(resultQuality());
-        
-        // 背景光环特效
-        if (settled > 0.1F) {
-            CrateEffects.itemHalo(g, px, py, REF_H * 0.25F, qualityGlow, 
-                settled * 0.9F, time, 12);
+        // ---- 开盖光：箱口辉光与冲天光柱 ----
+        if (open > 0.01F) {
+            CrateArt.Iso iso = new CrateArt.Iso(cx, baseY, width);
+            float mouthY = iso.py(.5F, 1, .5F);
+            CrateFx.glow(g, cx, mouthY, width * 0.55F, width * 0.13F, light, 0.85F * open, true);
+            CrateFx.glow(g, cx, mouthY, width * 0.28F, width * 0.07F, 0xFFFFFFFF, 0.55F * open, true);
+            CrateFx.beam(g, cx, -40, mouthY, width * 0.62F, width * 0.30F, light, (0.30F + 0.5F * burst) * open);
+            CrateFx.beam(g, cx, -40, mouthY, width * 0.20F, width * 0.10F, 0xFFFFFFFF, (0.18F + 0.5F * burst) * open);
         }
-        
-        // 登场能量波纹
-        if (morph < 0.8F) {
-            CrateEffects.itemPulse(g, px, py, REF_H * 0.35F, qualityColor, 
-                morph, 0.8F);
-        }
-        
-        // 射线特效（金色/红色品质）
-        if (settled > 0.3F && (resultQuality() == SkinQuality.GOLD || resultQuality() == SkinQuality.RED)) {
-            CrateEffects.itemRays(g, px, py, REF_H * 0.3F, qualityGlow, 
-                settled * 0.7F, time, 8);
-        }
-        
-        // 镜头光晕（高品质物品）
-        if (settled > 0.5F && resultQuality().ordinal() >= SkinQuality.PURPLE.ordinal()) {
-            CrateEffects.lensFlare(g, px - 100, py - 50, qualityGlow, 
-                settled * 0.6F, time);
-        }
-
-        g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, 20.0F);
-        drawReward(g, resultPreview(), resultStack, px, py, size, yaw, roll, 1.0F, 1.0F);
-        g.pose().popPose();
     }
 
     // ---------------------------------------------------------------------
-    // 底部十连物品条
+    // 奖励橱窗
     // ---------------------------------------------------------------------
+
+    private float stripAlpha(long time) {
+        float in = CrateStage.stripIn(time, enteredAt);
+        if (failure) return in;
+        return in * (1 - stage.dismiss(time));
+    }
+
+    private int stripCount() {
+        return Math.max(0, Math.min(STRIP_SLOTS, strip.size() - stripPage * STRIP_SLOTS));
+    }
+
+    private float stripLeft(int count) {
+        return (REF_W - (count * STRIP_CARD_W + Math.max(0, count - 1) * STRIP_GAP)) / 2;
+    }
+
+    private int hoveredStripCard(long time) {
+        if (stage.active() && !failure || !modalCancelled || stripAlpha(time) < 0.5F) return -1;
+        int count = stripCount();
+        float left = stripLeft(count);
+        for (int i = 0; i < count; i++) {
+            float x = left + i * (STRIP_CARD_W + STRIP_GAP);
+            if (mouseX >= x && mouseX < x + STRIP_CARD_W && mouseY >= STRIP_CARD_Y && mouseY < STRIP_CARD_Y + STRIP_CARD_H)
+                return stripPage * STRIP_SLOTS + i;
+        }
+        return -1;
+    }
 
     private void renderStrip(GuiGraphics g, long time) {
-        float alpha = CrateStage.stripIn(time, enteredAt) * (1 - stage.dismiss(time));
+        float alpha = stripAlpha(time);
         if (alpha <= .02F) return;
-        float rise = -CrateStage.stripOffset(time, enteredAt);
-        CrateArt.stripPanel(g, (int) STRIP_X0, (int) (STRIP_Y0 - rise), (int) STRIP_X1,
-                (int) (STRIP_Y1 - rise), alpha);
-        textCentered(g, Component.translatable(KEY + "strip.header"), REF_W / 2, 790 - rise,
-                24, GuiFx.fade(TEXT_BRIGHT, alpha), true);
+        float rise = CrateStage.stripOffset(time, enteredAt) + 30 * (failure ? 0 : stage.dismiss(time));
+        CrateArt.stripPanel(g, (int) STRIP_X0, (int) (STRIP_Y0 + rise), (int) STRIP_X1, (int) (STRIP_Y1 + rise), alpha);
+        float headY = STRIP_Y0 + 12 + rise;
+        textSpaced(g, Component.translatable(KEY + "strip.header"), REF_W / 2, headY, 20, 1.2F,
+                GuiFx.fade(TEXT_BRIGHT, alpha), true);
+        CrateFx.hairline(g, REF_W / 2 - 330, REF_W / 2 - 150, headY + 10, 1, 60, GuiFx.fade(CrateArt.GOLD_LINE, 0.7F * alpha), false);
+        CrateFx.hairline(g, REF_W / 2 + 150, REF_W / 2 + 330, headY + 10, 1, 60, GuiFx.fade(CrateArt.GOLD_LINE, 0.7F * alpha), false);
+        CrateFx.diamond(g, REF_W / 2 - 140, headY + 10.5F, 4, 4, GuiFx.fade(CrateArt.GOLD_LINE, alpha), false);
+        CrateFx.diamond(g, REF_W / 2 + 140, headY + 10.5F, 4, 4, GuiFx.fade(CrateArt.GOLD_LINE, alpha), false);
         int pages = Math.max(1, (strip.size() + STRIP_SLOTS - 1) / STRIP_SLOTS);
         textRight(g, Component.translatable(KEY + "strip.page", strip.size(), stripPage + 1, pages),
-                STRIP_X1 - 20, 796 - rise, 18, GuiFx.fade(TEXT_DIM, alpha), false);
+                STRIP_X1 - 24, headY + 2, 16, GuiFx.fade(TEXT_DIM, alpha), false);
+        renderRarityLegend(g, STRIP_X0 + 24, headY + 4, alpha);
         if (strip.isEmpty()) {
-            textCentered(g, Component.translatable(KEY + "strip.empty"), REF_W / 2, 882 - rise,
-                    24, GuiFx.fade(TEXT_DIM, alpha), true);
+            textCentered(g, Component.translatable(KEY + "strip.empty"), REF_W / 2, 890 + rise,
+                    22, GuiFx.fade(TEXT_DIM, alpha), true);
             return;
         }
-        int count = Math.min(STRIP_SLOTS, strip.size() - stripPage * STRIP_SLOTS);
-        float left = (REF_W - (count * 160 + Math.max(0, count - 1) * 16)) / 2;
+        int count = stripCount();
+        float left = stripLeft(count);
+        int hovered = hoveredStripCard(time);
         for (int i = 0; i < count; i++) {
             int index = stripPage * STRIP_SLOTS + i;
-            float x = left + i * 176;
-            CrateArt.card(g, x, 826 - rise, 160, 100, 1, 0, stripQuality.get(index).color(), alpha);
-            drawReward(g, candidates().get(index), strip.get(index), x + 80, 874 - rise, 5, 0, 0, 1, alpha);
-            textClipped(g, strip.get(index).getHoverName(), x, 934 - rise, 21, 160,
-                    GuiFx.fade(TEXT_BRIGHT, alpha), false);
+            // 逐张错峰入场
+            float enter = CrateStage.easeOutCubic(CrateStage.progress(time,
+                    enteredAt + CrateStage.STRIP_DELAY_MS + 60L * i, 420));
+            float a = alpha * enter;
+            if (a <= 0.02F) continue;
+            float target = index == hovered ? 1 : 0;
+            float h = GuiFx.approach(stripHover.getOrDefault(index, 0F), target, frameDelta, 60);
+            stripHover.put(index, h);
+            float x = left + i * (STRIP_CARD_W + STRIP_GAP);
+            float y = STRIP_CARD_Y + rise + 24 * (1 - enter) - 8 * h;
+            int rarity = rarityColor(stripQuality.get(index));
+            CrateArt.rarityCard(g, x, y, STRIP_CARD_W, STRIP_CARD_H, rarity, 1, 0.15F + 0.85F * h, a);
+            if (h > 0.02F) CrateArt.sheen(g, x, y, STRIP_CARD_W, STRIP_CARD_H,
+                    ((time % 1400L) / 1400.0F), h * a);
             var reward = candidates().get(index);
+            drawReward(g, reward, strip.get(index), x + STRIP_CARD_W / 2, y + 56, 5.2F + 0.5F * h, 0, 0, 1, a);
+            textClipped(g, strip.get(index).getHoverName(), x + 10, y + 110, 18, STRIP_CARD_W - 20,
+                    GuiFx.fade(TEXT_BRIGHT, a), true);
             Component detail = "skin".equals(reward.kind())
                     ? Component.translatable(stripQuality.get(index).translationKey())
                     : Component.translatable(KEY + "strip." + reward.kind());
-            textClipped(g, detail, x, 956 - rise, 17, 160, GuiFx.fade(TEXT_DIM, alpha), false);
+            textClipped(g, detail, x + 10, y + 134, 15, STRIP_CARD_W - 20,
+                    GuiFx.fade(GuiFx.mix(TEXT_DIM, rarity, 0.55F), a), false);
+        }
+    }
+
+    /** 橱窗左上：各品质数量的小色点图例。 */
+    private void renderRarityLegend(GuiGraphics g, float x, float y, float alpha) {
+        int[] counts = new int[SkinQuality.values().length];
+        for (SkinQuality quality : stripQuality) counts[quality.ordinal()]++;
+        for (SkinQuality quality : SkinQuality.values()) {
+            if (counts[quality.ordinal()] == 0) continue;
+            int color = rarityColor(quality);
+            CrateFx.diamond(g, x + 5, y + 7, 5, 5, GuiFx.fade(color, alpha), false);
+            CrateFx.glow(g, x + 5, y + 7, 12, color, 0.35F * alpha);
+            Component label = Component.literal(Component.translatable(quality.translationKey()).getString()
+                    + " " + counts[quality.ordinal()]);
+            textLeft(g, label, x + 16, y, 15, GuiFx.fade(TEXT_BODY, alpha), false);
+            x += 30 + textWidth(label, 15);
         }
     }
 
@@ -722,281 +864,451 @@ public final class CrateOpenScreen extends Screen {
     // 确认弹窗
     // ---------------------------------------------------------------------
 
+    private float modalAlpha(long time) {
+        if (modalCancelled && !stage.active()) return 0;
+        if (failure) return 0;
+        float in = modalShownAt < 0 ? 0 : CrateStage.easeOutCubic(CrateStage.progress(time, modalShownAt, 260));
+        return in * (1.0F - CrateStage.easeOutCubic(stage.dismiss(time)));
+    }
+
     private void renderModal(GuiGraphics g, long time) {
-        float alpha = CrateStage.modalIn(time, enteredAt) * (1.0F - stage.dismiss(time));
-        if (modalCancelled && !stage.active()) alpha = 0.0F;
-        if (failure) alpha = Math.min(alpha, 1.0F - CrateStage.easeOutCubic(stage.dismiss(time)));
+        float alpha = modalAlpha(time);
         if (alpha <= 0.02F) return;
-        // 参考视频在弹窗下面压了一层约 18% 的整屏黑
-        g.fill(0, 0, (int) canvasW, (int) REF_H, GuiFx.fade(0x2E000000, alpha));
-        CrateArt.modalPanel(g, (int) MODAL_X0, (int) MODAL_Y0, (int) MODAL_X1, (int) MODAL_Y1, alpha);
+        g.fill(0, 0, (int) REF_W, (int) REF_H, GuiFx.fade(0x99020304, alpha));
+        float pop = 0.94F + 0.06F * alpha;
+        g.pose().pushPose();
+        g.pose().translate(REF_W / 2, (MODAL_Y0 + MODAL_Y1) / 2, 0);
+        g.pose().scale(pop, pop, 1);
+        g.pose().translate(-REF_W / 2, -(MODAL_Y0 + MODAL_Y1) / 2, 0);
+        int accent = accent();
+        CrateFx.rectGlow(g, MODAL_X0, MODAL_Y0, MODAL_X1, MODAL_Y1, 40, accent, 0.18F * alpha);
+        CrateArt.glassPanel(g, MODAL_X0, MODAL_Y0, MODAL_X1, MODAL_Y1, 14, GuiFx.mix(accent, CrateArt.GOLD_LINE, 0.3F), alpha);
 
-        // 左缩略图：150×120 的箱子
-        drawCrate(g, MODAL_THUMB_X + MODAL_THUMB_W * 0.5F, MODAL_THUMB_Y + MODAL_THUMB_H,
-                MODAL_THUMB_W * 0.92F, 0.0F, 0.0F);
+        // 左侧：展台上的小箱子
+        float tx = 690, ty = 612;
+        CrateFx.glow(g, tx, ty - 90, 170, 150, crateLight(), 0.30F * alpha, true);
+        CrateFx.glow(g, tx, ty + 6, 150, 22, 0xFF000000, 0.7F * alpha, false);
+        CrateFx.dashRing(g, tx, ty + 6, 150, 22, 28, 0.55F, time / 1400.0F, 2.5F, crateLight(), 0.5F * alpha);
+        drawCrate(g, tx, ty, 220, 0, 0xFFFFFFFF, 0.25F + 0.15F * (float) Math.sin(time / 500.0), alpha);
 
-        textClipped(g, Component.translatable(KEY + "modal.title", crateName()), MODAL_TEXT_X,
-                MODAL_TITLE_Y, 26.0F, 415, GuiFx.fade(TEXT_TITLE, alpha), true);
-        textClipped(g, Component.translatable(KEY + "modal.body", crateName()), MODAL_TEXT_X,
-                MODAL_BODY_Y, 17.0F, 415, GuiFx.fade(TEXT_BODY, alpha), true);
+        float y = MODAL_Y0 + 34;
+        textSpaced(g, Component.translatable(KEY + "modal.eyebrow"), MODAL_TEXT_X + 150, y, 15, 2.2F,
+                GuiFx.fade(TEXT_GOLD, alpha), false);
+        textClipped(g, Component.translatable(KEY + "modal.title", crateName()), MODAL_TEXT_X, y + 26, 30,
+                MODAL_X1 - MODAL_TEXT_X - 30, GuiFx.fade(TEXT_BRIGHT, alpha), true);
+        CrateFx.hairline(g, MODAL_TEXT_X, MODAL_X1 - 30, y + 70, 1, 120, GuiFx.fade(0x55FFFFFF, alpha), false);
+        textClipped(g, Component.translatable(KEY + "modal.body", crateName()), MODAL_TEXT_X, y + 84, 18,
+                MODAL_X1 - MODAL_TEXT_X - 30, GuiFx.fade(TEXT_BODY, alpha), false);
         CrateCatalog.Entry entry = CrateCatalog.find(crateId);
         if (entry != null) {
             Component summary = "unified_pool".equals(entry.rewardMode())
                     ? Component.translatable(KEY + "modal.unified", entry.rollCount(), entry.minimumSkinCount())
                     : Component.translatable(KEY + "modal.fixed", entry.skinDrawCount());
-            textLeft(g, summary, MODAL_TEXT_X, MODAL_BODY_Y + 28, 16.0F, GuiFx.fade(TEXT_GOLD, alpha), false);
+            CrateFx.diamond(g, MODAL_TEXT_X + 5, y + 122, 4, 4, GuiFx.fade(TEXT_GOLD, alpha), false);
+            textClipped(g, summary, MODAL_TEXT_X + 16, y + 114, 16, MODAL_X1 - MODAL_TEXT_X - 50,
+                    GuiFx.fade(TEXT_GOLD, alpha), false);
             if (!entry.extraKinds().isEmpty()) textClipped(g,
                     Component.translatable(KEY + "modal.extras", String.join(", ", entry.extraKinds().stream().map(kind -> Component.translatable(
                             "green_apples".equals(kind) ? "screen.habitrain_lottery.warehouse.green_apples"
                                     : "screen.habitrain_lottery.config.cards." + kind).getString()).toList())),
-                    MODAL_TEXT_X, MODAL_BODY_Y + 52, 15.0F, 375, GuiFx.fade(TEXT_BODY, alpha), false);
+                    MODAL_TEXT_X + 16, y + 140, 15, MODAL_X1 - MODAL_TEXT_X - 50, GuiFx.fade(TEXT_DIM, alpha), false);
         }
+        // 钥匙消耗
+        CrateArt.item(g, keyIcon(), MODAL_TEXT_X + 12, MODAL_BTN_Y0 + 25, 1.6F, 0, 0, 1, alpha);
+        textLeft(g, Component.translatable(KEY + "key_use", keyName(), keyCount()), MODAL_TEXT_X + 32,
+                MODAL_BTN_Y0 + 16, 17, GuiFx.fade(keyCount() <= 0 ? DANGER : TEXT_BODY, alpha), false);
+        g.pose().popPose();
     }
 
     // ---------------------------------------------------------------------
     // 卡片转盘
     // ---------------------------------------------------------------------
 
-    private float cardWidth() {
-        return Math.min(CARD_W, canvasW * CrateStage.CARD_WIDTH_RATIO);
+    /** 转盘瞬时速度，单位为「卡片/毫秒」。 */
+    private float reelSpeed(long time) {
+        return Math.max(0, stage.reelPosition(time) - stage.reelPosition(time - 16)) / 16.0F;
     }
 
-    private void renderReel(GuiGraphics g, long time, float reveal) {
+    private void renderReel(GuiGraphics g, long time) {
         float entry = stage.wipe(time);
         if (entry <= 0.02F) return;
-        float cardW = cardWidth();
-        float cardH = cardW * CrateStage.CARD_ASPECT;
-        float cx = canvasW * 0.5F;
-        float cy = REEL_CENTER_Y;
-        float pitch = cardW * CrateStage.CARD_PITCH;
-        int winner = resultSlot;
-        int qualityColor = CrateEffects.qualityColor(resultQuality());
-        
-        // 转盘背景光圈
-        if (stage.hasResult()) {
-            CrateEffects.carouselBackglow(g, cx, cy, cardW * 1.5F, qualityColor, 
-                entry * 0.7F, time);
+        float cx = REF_W * .5F;
+        float speed = CrateStage.clamp01(reelSpeed(time) / CrateStage.REEL_SPEED);
+        boolean stopped = stage.hasResult() && time >= stage.stopAt();
+        float flare = stopped ? CrateStage.progress(time, stage.stopAt(), CrateStage.STOP_HOLD_MS) : 0;
+        int winnerColor = rarityColor(resultQuality());
+        int light = crateLight();
+
+        g.flush();
+        g.pose().pushPose();
+        g.pose().translate(0, 0, Z_REEL);
+        // ---- 轨道底板：两端淡出的暗色玻璃 + 上下发光导轨 ----
+        float half = REF_W * .5F * entry;
+        CrateFx.hGradient(g, cx - half, BAND_Y0, cx - half + 420, BAND_Y1, 0x000A0C0D, 0xE00A0C0D, false);
+        g.fill((int) (cx - half + 420), (int) BAND_Y0, (int) (cx + half - 420), (int) BAND_Y1, 0xE00A0C0D);
+        CrateFx.hGradient(g, cx + half - 420, BAND_Y0, cx + half, BAND_Y1, 0xE00A0C0D, 0x000A0C0D, false);
+        CrateFx.vGradient(g, cx - half, BAND_Y0, cx + half, BAND_Y0 + 60, GuiFx.fade(light, 0.10F), light & 0xFFFFFF, true);
+        for (float railY : new float[]{BAND_Y0, BAND_Y1 - 2}) {
+            CrateFx.hairline(g, cx - half, cx + half, railY, 2, 520, GuiFx.fade(light, 0.85F), false);
+            CrateFx.hairline(g, cx - half, cx + half, railY - 5, 12, 520, GuiFx.fade(light, 0.28F), true);
+        }
+        // 高速时的横向流光
+        if (speed > 0.05F) {
+            for (int i = 0; i < 16; i++) {
+                float ry = BAND_Y0 + 14 + ((i * 97) % 23) / 23.0F * (BAND_Y1 - BAND_Y0 - 28);
+                float len = 120 + (i * 53) % 220;
+                float travel = REF_W + len * 2;
+                float x = REF_W + len - ((time * (1.4F + (i % 5) * 0.3F) * speed + i * 211) % travel);
+                CrateFx.hairline(g, x, x + len, ry, 1.5F, len * 0.45F, GuiFx.fade(0xFFFFFFFF, 0.22F * speed), true);
+            }
         }
 
-        g.enableScissor((int)(canvasX + (cx - canvasW * .5F * entry) * unit),
-                (int)(canvasY + 370 * unit),
-                (int)(canvasX + (cx + canvasW * .5F * entry) * unit),
-                (int)(canvasY + 680 * unit));
-        g.pose().pushPose();
-        // 卡片按「由黄线向两侧擦入」入场：偏移量随擦入进度展开
+        g.enableScissor((int) (canvasX + (cx - half) * unit), (int) (canvasY + (BAND_Y0 + 2) * unit),
+                (int) (canvasX + (cx + half) * unit), (int) (canvasY + (BAND_Y1 - 2) * unit));
         for (int index = CrateStage.SLOTS - 1; index >= 0; index--) {
             ItemStack stack = stackAt(index);
             if (stack.isEmpty()) continue;
             float offset = stage.reelOffset(time, index);
             float distance = Math.abs(offset);
-            if (distance > CrateStage.VISIBLE_SPAN + 0.6F) continue;
-            boolean chosen = index == winner && stage.hasResult() && reveal > 0.0F;
+            if (distance > CrateStage.VISIBLE_SPAN + 0.7F) continue;
+            boolean winner = index == resultSlot && stage.hasResult();
             float scale = CrateStage.cardScale(offset);
+            if (winner && stopped) scale *= 1 + 0.06F * (float) Math.sin(Math.min(1, flare * 1.6F) * Math.PI) + 0.03F * flare;
             float tint = CrateStage.cardTint(offset);
-            float haze = CrateStage.cardHaze(offset) * entry;
-            float w = cardW * scale;
-            float h = cardH * scale;
-            float x = cx + offset * pitch - w * 0.5F;
-            float y = cy - h * 0.5F;
-            
-            SkinQuality cardQuality = qualityAt(index);
-            int cardColor = CrateEffects.qualityColor(cardQuality);
-
-            // 卡片基础渲染
-            CrateArt.card(g, x, y, w, h, tint, haze, cardQuality.color(), entry);
-            
-            // 卡片边框光效（靠近中心时更强）
-            float centerProximity = 1.0F - Math.min(1.0F, distance / 1.5F);
-            if (centerProximity > 0.1F && stage.hasResult()) {
-                CrateEffects.cardBorderGlow(g, x, y, w, h, cardColor, 
-                    centerProximity * entry * 0.8F, time);
+            if (stopped && !winner) tint *= 1 - 0.45F * CrateStage.easeOutCubic(Math.min(1, flare * 3));
+            float w = REEL_CARD_W * scale, h = REEL_CARD_H * scale;
+            float x = cx + offset * REEL_PITCH - w * .5F, y = REEL_CY - h * .5F;
+            int rarity = rarityColor(qualityAt(index));
+            float near = CrateStage.clamp01(1 - distance / 1.2F);
+            float glow = 0.12F + 0.4F * near + (winner && stopped ? 0.9F * CrateStage.easeOutCubic(Math.min(1, flare * 2.5F)) : 0);
+            CrateArt.rarityCard(g, x, y, w, h, rarity, tint, Math.min(1, glow), entry);
+            if (winner && stopped && flare < 0.8F) CrateArt.sheen(g, x, y, w, h, flare / 0.8F, 1);
+            CrateCatalog.RewardPreview preview = index == resultSlot ? resultPreview() : reelRewards.get(index);
+            float itemScale = Math.min(w, h) * 0.60F / 16.0F;
+            // 运动模糊：沿运动方向的淡残影
+            if (speed > 0.12F) {
+                for (int k = 3; k >= 1; k--) {
+                    float ghost = k * 26 * speed;
+                    drawReward(g, preview, stack, x + w * .5F + ghost, y + h * .46F, itemScale, 0, 0,
+                            tint * 0.7F, entry * (0.28F - k * 0.06F) * speed);
+                }
             }
-            
-            // 中心聚光（光标下的卡片）
-            if (distance < 0.5F && stage.hasResult()) {
-                CrateEffects.cardSpotlight(g, x, y, w, h, cardColor, 
-                    (1.0F - distance * 2) * entry);
-            }
-            
-            // 景深模糊
-            if (distance > 1.0F) {
-                CrateEffects.cardDepthBlur(g, x, y, w, h, (distance - 1.0F) * 0.3F);
-            }
-            
-            if (!chosen) {
-                float roll = 0.0F;
-                // 皮肤美术在参考视频里横向占满卡片；Minecraft 的物品图是正方形，
-                // 因此按较短边适配，保证完整落在井内而不是溢出到相邻卡片上。
-                drawReward(g, index == resultSlot ? resultPreview() : reelRewards.get(index), stack, x + w * 0.5F, y + h * 0.46F,
-                        Math.min(w, h) * 0.88F / 16.0F, 0.0F, roll, tint, entry);
-            }
+            drawReward(g, preview, stack, x + w * .5F, y + h * .46F, itemScale, 0, 0, tint, entry);
         }
-        g.pose().popPose();
-
         g.flush();
         g.disableScissor();
-        // 圆形暗角：内径 400px 通透、460px 处压到 α0.65，把视线锁在黄线附近
-        float close = stage.vignette(time);
-        g.pose().pushPose();
-        g.pose().translate(0, 0, 160);
-        CrateArt.circleVignette(g, (int) canvasW, (int) REF_H, cx, 505.0F,
-                VIGNETTE_INNER, VIGNETTE_OUTER, 0xFF000000, VIGNETTE_ALPHA * close * entry);
         g.pose().popPose();
 
-        // 增强光标扫描线效果
-        g.pose().pushPose();
-        g.pose().translate(0.0F, 0.0F, CURSOR_Z);
-        CrateEffects.cursorScanline(g, cx, CURSOR_Y0, CURSOR_Y1, GOLD_LINE, entry, time);
-        g.pose().popPose();
+        // ---- 箱内光柱透过卡片 ----
+        layer(g, Z_REEL_LIGHT, () -> {
+            CrateFx.beam(g, cx, BAND_Y0, BAND_Y1 + 60, 180, 260, light, 0.16F * entry);
+            if (stopped) CrateFx.glow(g, cx, REEL_CY, 360, 190, winnerColor, 0.30F * CrateStage.easeOutCubic(flare), true);
+        });
+
+        layer(g, Z_REEL_OVER, () -> {
+            // 两端压暗，让视线收在光标附近
+            CrateFx.hGradient(g, 0, BAND_Y0 - 30, 560, BAND_Y1 + 30, 0xF0020303, 0x00020303, false);
+            CrateFx.hGradient(g, REF_W - 560, BAND_Y0 - 30, REF_W, BAND_Y1 + 30, 0x00020303, 0xF0020303, false);
+            renderNeedle(g, time, entry, speed, stopped, flare, winnerColor);
+            if (stopped) renderWinnerFlare(g, time, flare, winnerColor);
+        });
+    }
+
+    /** 中央光标：金色光针 + 上下三角指针；卡片经过时闪一下。 */
+    private void renderNeedle(GuiGraphics g, long time, float entry, float speed, boolean stopped, float flare, int winner) {
+        float alpha = CrateStage.clamp01((entry - 0.3F) / 0.7F);
+        if (alpha <= 0.01F) return;
+        float cx = REF_W * .5F;
+        float frac = stage.reelPosition(time) % 1.0F;
+        float pass = (float) Math.pow(Math.max(0, 1 - Math.min(frac, 1 - frac) * 5), 2) * (0.4F + 0.6F * speed);
+        int color = stopped ? GuiFx.mix(CrateArt.GOLD_LINE, winner, 0.6F * flare) : CrateArt.GOLD_LINE;
+        float y0 = BAND_Y0 - 14, y1 = BAND_Y1 + 14;
+        CrateFx.lineGlow(g, cx, y0, cx, y1, 3, 14 + 10 * pass, color, alpha * (0.75F + 0.25F * pass));
+        CrateFx.glow(g, cx, REEL_CY, 60, 170, color, alpha * (0.10F + 0.25F * pass + 0.3F * flare), true);
+        for (int dir : new int[]{-1, 1}) {
+            float tipY = dir < 0 ? y0 : y1;
+            float baseY = tipY + dir * 20;
+            CrateFx.triangle(g, cx - 13, baseY, cx + 13, baseY, cx, tipY + dir * 2, GuiFx.fade(color, alpha), false);
+            CrateFx.glow(g, cx, tipY + dir * 8, 30, color, alpha * 0.5F);
+        }
+    }
+
+    /** 转盘停稳：中奖卡按品质绽放（射线、冲击环、拉丝、星芒）。 */
+    private void renderWinnerFlare(GuiGraphics g, long time, float flare, int color) {
+        float cx = REF_W * .5F, t = tier();
+        float in = CrateStage.easeOutCubic(Math.min(1, flare * 2.2F));
+        float rot = time / 3200.0F;
+        if (t >= 0.5F) CrateFx.rays(g, cx, REEL_CY, 60, 560, 14, rot, 5, 0.62F, color, 0.35F * in * t);
+        float ring = CrateStage.easeOutCubic(flare);
+        CrateFx.ring(g, cx, REEL_CY, 120 + 520 * ring, 26, 0.55F, color, 0.7F * (1 - ring));
+        CrateFx.streak(g, cx, REEL_CY, 520 * in, 10, color, 0.55F * in);
+        CrateFx.streak(g, cx, REEL_CY, 260 * in, 4, 0xFFFFFFFF, 0.6F * in);
     }
 
     // ---------------------------------------------------------------------
-    // 界面 chrome
+    // 展示页
     // ---------------------------------------------------------------------
 
-    private void renderChrome(GuiGraphics g, long time, float nameplate, float reveal) {
+    /** 展示舞台：压暗的庭院 + 品质色径向光。 */
+    private void renderRevealStage(GuiGraphics g, long time, float reveal) {
+        CrateArt.backdrop(g, (int) REF_W, (int) REF_H, 1, 1, 1, 1);
+        int color = rarityColor(resultQuality());
+        g.fill(0, 0, (int) REF_W, (int) REF_H, 0xC8040506);
+        CrateFx.glow(g, REVEAL_X, REVEAL_Y, 1100, 700, GuiFx.mix(color, 0xFF000000, 0.35F), 0.55F, true);
+        CrateFx.vGradient(g, 0, 0, REF_W, 260, 0xC0020303, 0x00020303, false);
+        CrateFx.vGradient(g, 0, 760, REF_W, REF_H, 0x00020303, 0xE0020303, false);
+        CrateFx.vignette(g, REF_W, REF_H, REVEAL_X, REVEAL_Y + 40, 620, 400, 1200, 760, 0xFF010202, 0.8F);
+    }
+
+    /** 物品身后的光：旋转射线、光环、展台与符文环。 */
+    private void renderRevealBack(GuiGraphics g, long time, float reveal) {
+        int color = rarityColor(resultQuality());
+        float t = tier();
+        float in = CrateStage.easeOutCubic(reveal);
+        float rot = time / 9000.0F;
+        float breathe = 0.85F + 0.15F * (float) Math.sin(time / 700.0);
+
+        CrateFx.rays(g, REVEAL_X, REVEAL_Y, 40, 760, 16, rot, 5, 1, color, (0.06F + 0.14F * t) * in * breathe);
+        if (t >= 0.5F) CrateFx.rays(g, REVEAL_X, REVEAL_Y, 40, 560, 10, -rot * 1.7F, 2, 1, 0xFFFFFFFF, 0.07F * t * in);
+        CrateFx.glow(g, REVEAL_X, REVEAL_Y, 420, 380, color, (0.22F + 0.18F * t) * in, true);
+        CrateFx.ring(g, REVEAL_X, REVEAL_Y, 250 + 8 * (float) Math.sin(time / 600.0), 18, 1, color, (0.14F + 0.22F * t) * in);
+        if (t >= 0.75F) CrateFx.ring(g, REVEAL_X, REVEAL_Y, 330, 8, 1, 0xFFFFFFFF, 0.10F * in * breathe);
+
+        // 展台
+        CrateFx.glow(g, REVEAL_X, PEDESTAL_Y, 420, 60, 0xFF000000, 0.8F * in, false);
+        CrateFx.glow(g, REVEAL_X, PEDESTAL_Y, 470, 70, color, 0.45F * in, true);
+        CrateFx.dashRing(g, REVEAL_X, PEDESTAL_Y, 380, 52, 48, 0.55F, time / 1600.0F, 3.4F, color, 0.75F * in);
+        CrateFx.dashRing(g, REVEAL_X, PEDESTAL_Y, 300, 41, 18, 0.35F, -time / 1100.0F, 2.6F, 0xFFFFFFFF, 0.35F * in);
+        CrateFx.ring(g, REVEAL_X, PEDESTAL_Y, 420, 8, 0.137F, color, 0.5F * in);
+        CrateFx.beam(g, REVEAL_X, 160, PEDESTAL_Y, 280, 200, color, 0.12F * in);
+        // 标题区压暗，让物品名读得清
+        CrateFx.vGradient(g, 0, 0, REF_W, 230, 0xE0030404, 0x00030404, false);
+    }
+
+    /** 选中物品：从卡片位置弹出、放大到舞台中央，之后缓慢漂浮。 */
+    private void renderRevealItem(GuiGraphics g, long time, float reveal) {
+        float morph = CrateStage.easeOutBack(reveal, 0.9F);
+        float settled = CrateStage.clamp01((reveal - 0.7F) / 0.3F);
+        float idle = (time - stage.revealAt()) / 1000.0F;
+        float fromScale = Math.min(REEL_CARD_W, REEL_CARD_H) * 0.60F / 16.0F;
+        float toScale = REF_H * 0.33F / 16.0F;
+        float size = fromScale + (toScale - fromScale) * morph;
+        float px = REVEAL_X;
+        float py = CrateStage.lerp(REEL_CY, REVEAL_Y, CrateStage.easeOutCubic(reveal))
+                + 7 * (float) Math.sin(idle * 1.3) * settled;
+        float yaw = CrateStage.lerp(-CrateStage.REVEAL_YAW, 0, CrateStage.easeOutCubic(reveal))
+                + 7 * (float) Math.sin(idle * 0.8) * settled;
+        float roll = 2 * (float) Math.sin(idle * 1.1) * settled;
+        int color = rarityColor(resultQuality());
+        CrateFx.glow(g, px, py, size * 9, size * 8, color, 0.22F + 0.1F * settled, true);
+        CrateFx.glow(g, px, py, size * 4, size * 4, 0xFFFFFFFF, 0.18F * (1 - settled) + 0.06F, true);
+        drawReward(g, resultPreview(), resultStack, px, py, size, yaw, roll, 1, 1);
+        // 漂浮的星芒点缀
+        for (int i = 0; i < 4; i++) {
+            float phase = (idle * 0.7F + i * 0.25F) % 1;
+            float twinkle = (float) Math.sin(phase * Math.PI);
+            double angle = i * 1.7 + 0.6;
+            CrateFx.sparkle(g, px + (float) Math.cos(angle) * size * 9, py + (float) Math.sin(angle) * size * 7,
+                    18 + 10 * twinkle, 0, i % 2 == 0 ? 0xFFFFFFFF : color, twinkle * settled * 0.9F);
+        }
+    }
+
+    /** 全屏闪光：开盖白闪、登场的品质闪光与冲击环。 */
+    private void renderFlashes(GuiGraphics g, long time) {
+        if (!stage.active() || failure) return;
+        long sinceOpen = time - stage.spinAt();
+        if (sinceOpen >= 0 && sinceOpen < 420) {
+            float k = 1 - sinceOpen / 420F;
+            CrateFx.flash(g, REF_W, REF_H, 0xFFFFF4DE, 0.30F * k * k * k);
+            float r = CrateStage.easeOutCubic(sinceOpen / 420F);
+            CrateFx.ring(g, REF_W / 2, 640, 80 + 1000 * r, 34, 0.4F, crateLight(), 0.6F * k * k);
+            CrateFx.streak(g, REF_W / 2, 660, 900 * (0.4F + 0.6F * r), 14, 0xFFFFFFFF, 0.7F * k);
+        }
+        if (!stage.hasResult()) return;
+        long sinceReveal = time - stage.revealAt();
+        if (sinceReveal >= 0 && sinceReveal < 700) {
+            int color = rarityColor(resultQuality());
+            float k = 1 - sinceReveal / 700F, t = tier();
+            CrateFx.flash(g, REF_W, REF_H, GuiFx.mix(0xFFFFFFFF, color, 0.5F), (0.10F + 0.16F * t) * k * k * k * k);
+            float r = CrateStage.easeOutCubic(sinceReveal / 700F);
+            CrateFx.ring(g, REVEAL_X, REVEAL_Y, 60 + (700 + 400 * t) * r, 30 + 20 * t, 0.8F, color, (0.35F + 0.4F * t) * k * k);
+            if (t >= 0.5F) CrateFx.ring(g, REVEAL_X, REVEAL_Y, 40 + 700 * r, 22, 0.8F, 0xFFFFFFFF, 0.6F * k);
+            CrateFx.streak(g, REVEAL_X, REVEAL_Y, 1100 * r, 18 * k + 4, color, 0.7F * k);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 标题、结果名牌、奖励面板、操作栏与提示
+    // ---------------------------------------------------------------------
+
+    private void renderChrome(GuiGraphics g, long time) {
         float enter = ScreenSwap.arriveFade(ScreenSwap.arrive(time, enteredAt));
-        float dismiss = CrateStage.easeOutCubic(stage.dismiss(time));
-        // 入场标题块与「使用钥匙」行会被确认动作淡出；底部导航条属于展示页，
-        // 不吃 dismiss，否则它会在开盖的那一刻永久消失。
-        float entryHud = enter * (1.0F - nameplate);
-        float page = enter;
+        boolean revealed = stage.cardsGone(time) && !failure;
+        float plate = revealed ? CrateStage.easeOutCubic(CrateStage.progress(time, stage.revealAt() + 150, 450)) : 0;
 
-        // ---- 顶部三行标题（参考 f050–f060 / 展示页换成名牌）----
-        if (entryHud > 0.02F) {
-            textCentered(g, Component.translatable(KEY + "hud.title"), canvasW * 0.5F, HUD_TITLE_Y,
-                    34.0F, GuiFx.fade(TEXT_BRIGHT, entryHud), true);
-            textCentered(g, Component.translatable(KEY + "hud.unlock", crateName()), canvasW * 0.5F,
-                    HUD_UNLOCK_Y, 21.0F, GuiFx.fade(0xFFD8D8D8, entryHud), true);
-            textCentered(g, Component.translatable(KEY + "hud.note", crateCount(), keyCount()),
-                    canvasW * 0.5F, HUD_NOTE_Y, 18.0F, GuiFx.fade(TEXT_DIM, entryHud), true);
-        }
-        if (nameplate > 0.02F) renderPlate(g, nameplate);
-
-        // ---- 底部导航条 ----
-        // 参考视频在前半段（开箱流程）是「使用钥匙 / 开启 / 关闭」的窄条，
-        // 到展示页才换成六个白色图标 + 关闭。这里按 nameplate 切换。
-        g.fill(0, (int) NAV_Y0, (int) canvasW, (int) REF_H, GuiFx.fade(NAV_SCRIM, page));
-        g.fill(0, (int) NAV_Y0, (int) canvasW, (int) NAV_Y0 + 1, GuiFx.fade(0x2EFFFFFF, page));
-        if (entryHud > 0.02F) {
-            textCentered(g, Component.translatable(KEY + "key_use", keyName(), keyCount()), REF_W / 2,
-                    992, 20, GuiFx.fade(keyCount() <= 0 ? DANGER : TEXT_NAV, entryHud), true);
+        if (!revealed) renderHeader(g, time, enter);
+        else {
+            renderResultHeader(g, time, plate);
+            renderSummary(g, time, CrateStage.easeOutCubic(CrateStage.progress(time, stage.revealAt() + 400, 500)));
         }
 
-        // ---- 失败提示 ----
-        CrateStage.Phase phase = stage.phase(time);
-        if (failure && !message.isEmpty() && stage.failedVisible(time)) {
-            textCentered(g, Component.translatable(message), canvasW * 0.5F, 640.0F, 22.0F,
-                    GuiFx.fade(DANGER, 1.0F), true);
+        // ---- 底部操作栏 ----
+        CrateFx.vGradient(g, 0, NAV_Y0 - 50, REF_W, NAV_Y0, 0x00030404, GuiFx.fade(0xB0030404, enter), false);
+        g.fill(0, (int) NAV_Y0, (int) REF_W, (int) REF_H, GuiFx.fade(0xD8030404, enter));
+        CrateFx.hairline(g, 0, REF_W, NAV_Y0, 1, 700, GuiFx.fade(0x70FFFFFF, enter), false);
+        CrateFx.hairline(g, 560, REF_W - 560, NAV_Y0, 1, 260, GuiFx.fade(TEAL, 0.8F * enter), false);
+        boolean idle = !stage.active() || failure;
+        if (idle || revealed) {
+            CrateArt.item(g, keyIcon(), 214, 1045, 1.7F, 0, 0, 1, enter);
+            textLeft(g, Component.translatable(KEY + "key_use", keyName(), keyCount()), 236, 1036, 18,
+                    GuiFx.fade(keyCount() <= 0 ? DANGER : TEXT_BODY, enter), false);
+            CrateArt.item(g, crateIcon(), REF_W - 214, 1045, 1.7F, 0, 0, 1, enter);
+            textRight(g, Component.translatable(KEY + "nav.crates", crateCount()), REF_W - 236, 1036, 18,
+                    GuiFx.fade(crateCount() <= 0 ? DANGER : TEXT_BODY, enter), false);
+        } else {
+            // 开箱中：一条进度提示
+            Component status = Component.translatable(KEY + (stage.phase(time) == CrateStage.Phase.CAROUSEL
+                    ? (stage.hasResult() ? "status.rolling" : "status.waiting") : "status.charging"));
+            float pulse = 0.65F + 0.35F * (float) Math.sin(time / 260.0);
+            textSpaced(g, status, REF_W / 2, 1034, 19, 2, GuiFx.fade(TEXT_GOLD, enter * pulse), true);
+        }
 
-        } else if (!stage.active() && candidates().isEmpty()) {
-            textCentered(g, Component.translatable(KEY + "strip.empty"), REF_W / 2, 730, 22, DANGER, true);
-        } else if (!stage.active() && CrateCatalog.find(crateId) != null && !CrateCatalog.find(crateId).enabled()) {
-            textCentered(g, Component.translatable("crates.disabled"), REF_W / 2, 730, 22, DANGER, true);
-        } else if (!stage.active() && crateCount() <= 0) {
-            textCentered(g, Component.translatable(KEY + "missing_crate"), canvasW * 0.5F, 640.0F, 22.0F,
-                    GuiFx.fade(DANGER, page), true);
-        } else if (!stage.active() && keyCount() <= 0) {
-            textCentered(g, Component.translatable(KEY + "missing_key"), canvasW * 0.5F, 640.0F, 22.0F,
-                    GuiFx.fade(DANGER, page), true);
+        // ---- 状态提示：失败、缺少物品、操作被锁 ----
+        Component notice = null;
+        if (failure && !message.isEmpty() && (stage.failedVisible(time) || !stage.active())) notice = Component.translatable(message);
+        else if (!message.isEmpty() && toastAt >= 0 && time - toastAt < 1800) notice = Component.translatable(message);
+        else if (!stage.active() && candidates().isEmpty()) notice = Component.translatable(KEY + "strip.empty");
+        else if (!stage.active() && CrateCatalog.find(crateId) != null && !CrateCatalog.find(crateId).enabled())
+            notice = Component.translatable("crates.disabled");
+        else if (!stage.active() && crateCount() <= 0) notice = Component.translatable(KEY + "missing_crate");
+        else if (!stage.active() && keyCount() <= 0) notice = Component.translatable(KEY + "missing_key");
+        if (notice != null && enter > 0.5F) {
+            float w = textWidth(notice, 20) + 64, y0 = 726;
+            CrateFx.rectGlow(g, REF_W / 2 - w / 2, y0, REF_W / 2 + w / 2, y0 + 42, 18, DANGER, 0.18F);
+            CrateArt.chip(g, REF_W / 2 - w / 2, y0, REF_W / 2 + w / 2, y0 + 42, DANGER, 0.95F);
+            CrateFx.diamond(g, REF_W / 2 - w / 2 + 22, y0 + 21, 5, 5, DANGER, false);
+            textCentered(g, notice, REF_W / 2 + 8, y0 + 11, 20, DANGER, true);
         }
     }
 
-    /** 展示页的左上名牌：箱子徽标 + 物品名 + 收藏品行 + 品质横条。 */
-    private void renderPlate(GuiGraphics g, float alpha) {
+    /** 开箱前 / 开箱中的标题：眉题、箱子名、库存标签。 */
+    private void renderHeader(GuiGraphics g, long time, float enter) {
+        float busy = failure ? 0 : CrateStage.easeOutCubic(stage.dismiss(time));
+        float a = enter;
+        if (a <= 0.02F) return;
+        int accent = GuiFx.mix(accent(), CrateArt.GOLD_LINE, 0.4F);
+        float cx = REF_W / 2;
+        textSpaced(g, Component.translatable(KEY + "hud.title"), cx, HEAD_EYEBROW_Y, 16, 3.5F,
+                GuiFx.fade(GuiFx.mix(TEXT_DIM, accent, 0.5F), a), false);
+        CrateFx.hairline(g, cx - 250, cx - 60, HEAD_EYEBROW_Y + 8, 1, 90, GuiFx.fade(accent, 0.8F * a), false);
+        CrateFx.hairline(g, cx + 60, cx + 250, HEAD_EYEBROW_Y + 8, 1, 90, GuiFx.fade(accent, 0.8F * a), false);
+        Component name = Component.literal(crateName());
+        float nameW = textWidth(name, HEAD_TITLE_SIZE);
+        CrateFx.glow(g, cx, HEAD_TITLE_Y + 22, nameW * 0.7F + 60, 46, accent, 0.20F * a, true);
+        textCentered(g, name, cx, HEAD_TITLE_Y, HEAD_TITLE_SIZE, GuiFx.fade(TEXT_BRIGHT, a), true);
+
+        float chipsA = a * (1 - busy);
+        if (chipsA <= 0.02F) return;
+        Component crates = Component.translatable(KEY + "chip.crates", crateCount());
+        Component keys = Component.translatable(KEY + "chip.keys", keyCount());
+        float w1 = textWidth(crates, 17) + 62, w2 = textWidth(keys, 17) + 62, gap = 16;
+        float x = cx - (w1 + w2 + gap) / 2;
+        renderChip(g, x, crateIcon(), crates, w1, crateCount() > 0 ? accent : DANGER, chipsA);
+        renderChip(g, x + w1 + gap, keyIcon(), keys, w2, keyCount() > 0 ? TEAL : DANGER, chipsA);
+    }
+
+    private void renderChip(GuiGraphics g, float x, ItemStack icon, Component text, float w, int accent, float a) {
+        CrateArt.chip(g, x, HEAD_CHIP_Y0, x + w, HEAD_CHIP_Y1, accent, a);
+        CrateArt.item(g, icon, x + 22, (HEAD_CHIP_Y0 + HEAD_CHIP_Y1) / 2, 1.45F, 0, 0, 1, a);
+        textLeft(g, text, x + 42, HEAD_CHIP_Y0 + 9, 17, GuiFx.fade(TEXT_BRIGHT, a), false);
+    }
+
+    /** 展示页标题：品质眉题、物品名、品质标签与品质横条。 */
+    private void renderResultHeader(GuiGraphics g, long time, float a) {
+        if (a <= 0.02F) return;
         SkinQuality quality = resultQuality();
-        CrateArt.crateBadge(g, (int) BADGE_X, (int) BADGE_Y, (int) BADGE_SIZE, accent(), alpha);
-        Component name = resultStack.isEmpty()
-                ? Component.translatable(KEY + "skin_result", "") : resultStack.getHoverName();
-        textLeft(g, name, PLATE_X, PLATE_NAME_Y, 34.0F, GuiFx.fade(TEXT_BRIGHT, alpha), true);
-        textLeft(g, Component.translatable(KEY + "reveal.collection",
-                        Component.translatable(quality.translationKey()).getString()),
-                PLATE_X, PLATE_SUB_Y, 20.0F, GuiFx.fade(0xFFC9C9C9, alpha), true);
-        CrateArt.rarityRule(g, (int) Math.min(RARITY_RULE_X0, canvasW - 10.0F), (int) RARITY_RULE_Y,
-                (int) Math.min(RARITY_RULE_X1, canvasW - 10.0F), quality.color(), alpha);
-
-        // ---- 说明文字块（参考 phase 13 的三段 body text）----
-        float tipAlpha = GuiFx.clamp01((alpha - 0.4F) / 0.6F);
-        if (tipAlpha <= 0.02F) return;
-        g.fill((int) TIP_HAIRLINE_X, (int) TIP_HAIRLINE_Y0, (int) TIP_HAIRLINE_X + 1,
-                (int) TIP_HAIRLINE_Y1, GuiFx.fade(0x40FFFFFF, tipAlpha));
-        if (rewards.size() > 1 || !rewards.isEmpty() && !"skin".equals(rewards.get(0).kind())) {
-            renderRewardSummary(g, tipAlpha);
-            return;
-        }
-        String[] lines = {
-                Component.translatable(KEY + "reveal.tip1",
-                        Component.translatable(quality.translationKey())).getString(),
-                Component.translatable(KEY + "reveal.tip2", crateName(), keyName()).getString(),
-                Component.translatable(KEY + "reveal.tip3", crateName()).getString()};
-        int[] colors = {0xFFCFCFCF, 0xFFD98A4A, 0xFFCFCFCF};
-        float tipWidth = Math.max(120.0F, TIP_HAIRLINE_X - TIP_X - 40.0F);
-        float y = TIP_Y;
-        for (int i = 0; i < lines.length; i++) {
-            for (String line : wrap(lines[i], tipWidth, 19.0F)) {
-                textLeft(g, Component.literal(line), TIP_X, y, 19.0F, GuiFx.fade(colors[i], tipAlpha), false);
-                y += TIP_LINE;
-            }
-            y += TIP_LINE * 0.6F;
-        }
+        int color = rarityColor(quality);
+        float cx = REF_W / 2, drop = 14 * (1 - a);
+        textSpaced(g, Component.translatable(KEY + "reveal.eyebrow"), cx, 34 - drop, 16, 3.5F,
+                GuiFx.fade(GuiFx.mix(0xFFFFFFFF, color, 0.6F), a), false);
+        Component name = resultStack.isEmpty() ? Component.translatable(KEY + "skin_result", "") : resultStack.getHoverName();
+        float nameW = textWidth(name, 50);
+        CrateFx.glow(g, cx, 84 - drop, nameW * 0.7F + 80, 56, color, 0.35F * a, true);
+        textCentered(g, name, cx, 58 - drop, 50, GuiFx.fade(TEXT_BRIGHT, a), true);
+        Component chip = Component.translatable(KEY + "reveal.collection", Component.translatable(quality.translationKey()).getString());
+        Component source = Component.translatable(KEY + "reveal.from", crateName());
+        float w1 = textWidth(chip, 17) + 44, w2 = textWidth(source, 17) + 34, gap = 14;
+        float x = cx - (w1 + w2 + gap) / 2, y0 = 124 - drop;
+        CrateArt.chip(g, x, y0, x + w1, y0 + 32, color, a);
+        CrateFx.diamond(g, x + 17, y0 + 16, 5, 5, GuiFx.fade(color, a), false);
+        CrateFx.glow(g, x + 17, y0 + 16, 14, color, 0.6F * a);
+        textLeft(g, chip, x + 30, y0 + 8, 17, GuiFx.fade(GuiFx.mix(0xFFFFFFFF, color, 0.45F), a), false);
+        CrateArt.chip(g, x + w1 + gap, y0, x + w1 + gap + w2, y0 + 32, 0xFF8A9490, a);
+        textLeft(g, source, x + w1 + gap + 17, y0 + 8, 17, GuiFx.fade(TEXT_BODY, a), false);
+        CrateArt.rarityRule(g, (int) (cx - 420 * a), (int) (176 - drop), (int) (cx + 420 * a), color, a);
     }
 
-    private void renderRewardSummary(GuiGraphics g, float alpha) {
-        textLeft(g, Component.translatable(KEY + "reward_summary"), TIP_X, TIP_Y - 24, 22,
-                GuiFx.fade(TEXT_GOLD, alpha), false);
-        int rowsPerColumn = 4;
-        float rowHeight = 36, iconScale = 1.75F;
-        textRight(g, Component.translatable(KEY + "strip.page", rewards.size(), rewardPage + 1,
-                Math.max(1, (rewards.size() + 7) / 8)), TIP_HAIRLINE_X - 20, TIP_Y - 24,
-                18, GuiFx.fade(TEXT_DIM, alpha), false);
-        for (int i = rewardPage * 8; i < Math.min(rewards.size(), rewardPage * 8 + 8); i++) {
-            CrateService.Reward reward = rewards.get(i);
-            int local = i - rewardPage * 8;
-            float x = TIP_X + (local / rowsPerColumn) * 420, y = TIP_Y + (local % rowsPerColumn) * rowHeight;
+    /** 展示页底部：本次获得的全部奖励（迷你卡片，可翻页）与说明。 */
+    private void renderSummary(GuiGraphics g, long time, float a) {
+        if (a <= 0.02F) return;
+        int color = rarityColor(resultQuality());
+        float rise = 24 * (1 - a);
+        CrateArt.glassPanel(g, PANEL_X0, PANEL_Y0 + rise, PANEL_X1, PANEL_Y1 + rise, 12, color, a * 0.96F);
+        textLeft(g, Component.translatable(KEY + "reward_summary"), PANEL_X0 + 28, PANEL_Y0 + 14 + rise, 20,
+                GuiFx.fade(TEXT_GOLD, a), true);
+        int pages = Math.max(1, (rewards.size() + MINI_SLOTS - 1) / MINI_SLOTS);
+        textRight(g, Component.translatable(KEY + "strip.page", rewards.size(), rewardPage + 1, pages),
+                PANEL_X1 - 28, PANEL_Y0 + 16 + rise, 16, GuiFx.fade(TEXT_DIM, a), false);
+        List<CrateService.Reward> shown = rewards;
+        if (shown.isEmpty() && result != null) shown = List.of(new CrateService.Reward(
+                resultPreview().kind(), "skin".equals(resultPreview().kind()) ? result.skinType() + "/" + result.skin()
+                : result.skin(), 1));
+        int from = rewardPage * MINI_SLOTS, to = Math.min(shown.size(), from + MINI_SLOTS);
+        int count = Math.max(0, to - from);
+        boolean single = shown.size() == 1;
+        float rowW = count * MINI_W + Math.max(0, count - 1) * MINI_GAP;
+        float left = single ? PANEL_X0 + 40 : (PANEL_X0 + PANEL_X1 - rowW) / 2;
+        for (int i = from; i < to; i++) {
+            CrateService.Reward reward = shown.get(i);
+            int local = i - from;
+            float enter = CrateStage.easeOutCubic(CrateStage.progress(time, stage.revealAt() + 500 + 70L * local, 380));
+            float x = left + local * (MINI_W + MINI_GAP), y = MINI_Y + rise + 16 * (1 - enter);
+            SkinQuality quality = qualityOf(reward);
+            CrateArt.rarityCard(g, x, y, MINI_W, MINI_H, rarityColor(quality), 1, 0.3F, a * enter);
             ItemStack stack;
-            String name;
             if ("skin".equals(reward.kind())) {
                 String[] parts = reward.id().split("/", 2);
                 stack = parts.length == 2 ? preview(parts[0], parts[1]) : new ItemStack(Items.BARRIER);
-                name = stack.getHoverName().getString();
-            } else {
-                stack = previewReward(reward.kind(), reward.id());
-                name = stack.getHoverName().getString();
-            }
-            drawReward(g, new CrateCatalog.RewardPreview(reward.kind(), reward.id(), reward.amount(), "white"),
-                    stack, x + 14, y + 14, iconScale, 0, 0, 1, alpha);
-            textClipped(g, Component.literal(name + " ×" + reward.amount()), x + 36, y + 3, rowsPerColumn > 5 ? 16 : 19,
-                    365, GuiFx.fade(TEXT_BODY, alpha), false);
+            } else stack = previewReward(reward.kind(), reward.id());
+            drawReward(g, new CrateCatalog.RewardPreview(reward.kind(), reward.id(), reward.amount(), quality.id()),
+                    stack, x + MINI_W / 2, y + 44, 3.4F, 0, 0, 1, a * enter);
+            if (reward.amount() > 1) textRight(g, Component.literal("×" + reward.amount()), x + MINI_W - 8, y + 70, 16,
+                    GuiFx.fade(TEXT_GOLD, a * enter), true);
+            textClipped(g, stack.getHoverName(), x + 7, y + 92, 14, MINI_W - 14, GuiFx.fade(TEXT_BODY, a * enter), false);
         }
-    }
-
-    /** 按参考空间里的像素宽度折行；CJK 逐字符测量，足够应付说明文字。 */
-    private List<String> wrap(String text, float maxWidth, float size) {
-        List<String> out = new ArrayList<>();
-        float scale = textScale(size);
-        StringBuilder line = new StringBuilder();
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (line.length() > 0 && font.width(line.toString() + c) * scale > maxWidth) {
-                out.add(line.toString());
-                line.setLength(0);
+        if (single) {
+            float tx = left + MINI_W + 36, ty = MINI_Y + rise + 8;
+            String[] lines = {
+                    Component.translatable(KEY + "reveal.tip1", Component.translatable(resultQuality().translationKey())).getString(),
+                    Component.translatable(KEY + "reveal.tip2", crateName(), keyName()).getString(),
+                    Component.translatable(KEY + "reveal.tip3", crateName()).getString()};
+            int[] colors = {TEXT_BODY, 0xFFE0A060, TEXT_DIM};
+            for (int i = 0; i < lines.length; i++) {
+                CrateFx.diamond(g, tx + 4, ty + 10 + i * 36, 3.5F, 3.5F, GuiFx.fade(colors[i], a), false);
+                textClipped(g, Component.literal(lines[i]), tx + 16, ty + i * 36, 18, PANEL_X1 - tx - 50,
+                        GuiFx.fade(colors[i], a), false);
             }
-            line.append(c);
         }
-        if (line.length() > 0) out.add(line.toString());
-        return out;
     }
 
     // =====================================================================
     // 文字工具（在参考空间里按像素字号绘制）
     // =====================================================================
 
-    private float textScale(float size) {
-        // The canvas already applies the window/GUI scale exactly once.
-        return size / font.lineHeight;
-    }
+    private float textScale(float size) { return size / font.lineHeight; }
 
     private void textAt(GuiGraphics g, Component text, float x, float y, float size, int color, boolean shadow) {
+        if ((color >>> 24) < 5) return;
         g.pose().pushPose();
         g.pose().translate(x, y, 0.0F);
         g.pose().scale(textScale(size), textScale(size), 1.0F);
@@ -1004,7 +1316,6 @@ public final class CrateOpenScreen extends Screen {
         g.pose().popPose();
     }
 
-    /** 左对齐并截断到 {@code maxWidth} 参考像素，用于卡片下方那两行窄说明。 */
     private void textClipped(GuiGraphics g, Component text, float x, float y, float size,
                              float maxWidth, int color, boolean shadow) {
         float scale = textScale(size);
@@ -1012,39 +1323,32 @@ public final class CrateOpenScreen extends Screen {
         String raw = text.getString();
         String shown = font.width(raw) <= allowed ? raw
                 : font.plainSubstrByWidth(raw, Math.max(1, allowed - font.width("…"))) + "…";
-        g.pose().pushPose();
-        g.pose().translate(x, y, 0.0F);
-        g.pose().scale(scale, scale, 1.0F);
-        g.drawString(font, shown, 0, 0, color, shadow);
-        g.pose().popPose();
+        textAt(g, Component.literal(shown), x, y, size, color, shadow);
     }
 
     private float textWidth(Component text, float size) { return font.width(text) * textScale(size); }
 
-    private void textCentered(GuiGraphics g, Component text, float centerX, float y, float size,
-                              int color, boolean shadow) {
+    private void textCentered(GuiGraphics g, Component text, float centerX, float y, float size, int color, boolean shadow) {
         textAt(g, text, centerX - textWidth(text, size) * 0.5F, y, size, color, shadow);
     }
 
-    private void textLeft(GuiGraphics g, Component text, float x, float y, float size,
-                          int color, boolean shadow) {
+    private void textLeft(GuiGraphics g, Component text, float x, float y, float size, int color, boolean shadow) {
         textAt(g, text, x, y, size, color, shadow);
     }
 
-    private void textRight(GuiGraphics g, Component text, float right, float y, float size,
-                           int color, boolean shadow) {
+    private void textRight(GuiGraphics g, Component text, float right, float y, float size, int color, boolean shadow) {
         textAt(g, text, right - textWidth(text, size), y, size, color, shadow);
     }
 
-    /** 带字距的居中文字：用来还原参考视频表头那 2px 的 letter-spacing。 */
+    /** 带字距的居中文字（眉题）。 */
     private void textSpaced(GuiGraphics g, Component text, float centerX, float y, float size,
                             float spacing, int color, boolean shadow) {
+        if ((color >>> 24) < 5) return;
         String raw = text.getString();
         float scale = textScale(size);
         float width = (font.width(raw) + spacing * Math.max(0, raw.length() - 1)) * scale;
-        float x = centerX - width * 0.5F;
         g.pose().pushPose();
-        g.pose().translate(x, y, 0.0F);
+        g.pose().translate(centerX - width * 0.5F, y, 0.0F);
         g.pose().scale(scale, scale, 1.0F);
         for (int i = 0; i < raw.length(); i++) {
             String ch = raw.substring(i, i + 1);
@@ -1063,113 +1367,90 @@ public final class CrateOpenScreen extends Screen {
         if (departAt >= 0) return;
         CrateStage.Phase phase = stage.phase(time);
         boolean idle = !stage.active() || failure;
-        // 对应参考视频的确认弹窗：有对应钥匙即可直接点击“开启并保留”，
-        // 不要求玩家先点一次底部钥匙文字；selectedKey 只作为网络请求的明确参数。
         boolean ready = readyToOpen();
         boolean finished = stage.finished(time);
 
-        // 弹窗按钮（画在箱子之前，但热区统一处理）
-        float modalAlpha = CrateStage.modalIn(time, enteredAt) * (1.0F - stage.dismiss(time));
+        float modalAlpha = modalAlpha(time);
         if ((idle || phase == CrateStage.Phase.DISMISS) && !modalCancelled && modalAlpha > 0.02F) {
-            hotspots.add(new Hotspot(MODAL_OK_X0, MODAL_BTN_Y0, MODAL_OK_X1 - MODAL_OK_X0,
-                    MODAL_BTN_Y1 - MODAL_BTN_Y0, Component.translatable(KEY + "modal.confirm"),
-                    Kind.MODAL_PRIMARY, this::beginOpen).enabled(ready && idle).opacity(modalAlpha));
-            hotspots.add(new Hotspot(MODAL_CANCEL_X0, MODAL_BTN_Y0, MODAL_CANCEL_X1 - MODAL_CANCEL_X0,
-                    MODAL_BTN_Y1 - MODAL_BTN_Y0, Component.translatable(KEY + "modal.cancel"),
-                    Kind.MODAL_GHOST, () -> modalCancelled = true).enabled(idle).opacity(modalAlpha));
+            hotspots.add(new Hotspot("modal-ok", MODAL_OK_X0, MODAL_BTN_Y0, MODAL_OK_X1, MODAL_BTN_Y1,
+                    Component.translatable(KEY + "modal.confirm"), true, this::beginOpen).enabled(ready && idle).opacity(modalAlpha));
+            hotspots.add(new Hotspot("modal-cancel", MODAL_CANCEL_X0, MODAL_BTN_Y0, MODAL_CANCEL_X1, MODAL_BTN_Y1,
+                    Component.translatable(KEY + "modal.cancel"), false, () -> modalCancelled = true).enabled(idle).opacity(modalAlpha));
         }
-        // 取消之后重新叫出弹窗
         if (idle && (modalCancelled || failure)) {
-            hotspots.add(new Hotspot(AGAIN_X0, AGAIN_Y0, AGAIN_X1 - AGAIN_X0, AGAIN_Y1 - AGAIN_Y0,
-                    Component.translatable(KEY + "open"), Kind.MODAL_PRIMARY, () -> {
-                        modalCancelled = false;
+            hotspots.add(new Hotspot("open", PRIMARY_X0, BTN_Y0, PRIMARY_X1, BTN_Y1,
+                    Component.translatable(KEY + "open"), true, () -> {
                         if (failure) { failure = false; message = ""; stage = CrateStage.idle(); }
-                    }).enabled(ready));
+                        modalCancelled = false;
+                        modalShownAt = now();
+                    }).enabled(ready).pulse(1));
         }
         if (idle && modalCancelled && strip.size() > STRIP_SLOTS) {
-            hotspots.add(new Hotspot(184, 864, 44, 48, Component.literal("‹"), Kind.MODAL_GHOST,
-                    () -> stripPage--).enabled(stripPage > 0));
-            hotspots.add(new Hotspot(1692, 864, 44, 48, Component.literal("›"), Kind.MODAL_GHOST,
-                    () -> stripPage++).enabled((stripPage + 1) * STRIP_SLOTS < strip.size()));
+            hotspots.add(new Hotspot("strip-prev", STRIP_PREV_X, STRIP_ARROW_Y0, STRIP_PREV_X + ARROW_W, STRIP_ARROW_Y1,
+                    Component.literal("‹"), false, () -> stripPage--).enabled(stripPage > 0).opacity(stripAlpha(time)));
+            hotspots.add(new Hotspot("strip-next", STRIP_NEXT_X, STRIP_ARROW_Y0, STRIP_NEXT_X + ARROW_W, STRIP_ARROW_Y1,
+                    Component.literal("›"), false, () -> stripPage++).enabled((stripPage + 1) * STRIP_SLOTS < strip.size())
+                    .opacity(stripAlpha(time)));
         }
-        // 展示结束后可以再来一次
         if (phase == CrateStage.Phase.REVEAL && finished) {
-            hotspots.add(new Hotspot(AGAIN_X0, AGAIN_Y0, AGAIN_X1 - AGAIN_X0, AGAIN_Y1 - AGAIN_Y0,
-                    Component.translatable(KEY + "again"), Kind.MODAL_PRIMARY, this::beginOpen).enabled(ready));
+            hotspots.add(new Hotspot("again", PRIMARY_X0, BTN_Y0, PRIMARY_X1, BTN_Y1,
+                    Component.translatable(KEY + "again"), true, this::beginOpen).enabled(ready).pulse(1));
         }
-        if (finished && rewards.size() > 8) {
-            hotspots.add(new Hotspot(450, 856, 48, 48, Component.literal("‹"), Kind.MODAL_GHOST,
-                    () -> rewardPage--).enabled(rewardPage > 0));
-            hotspots.add(new Hotspot(1420, 856, 48, 48, Component.literal("›"), Kind.MODAL_GHOST,
-                    () -> rewardPage++).enabled((rewardPage + 1) * 8 < rewards.size()));
+        if (finished && rewards.size() > MINI_SLOTS) {
+            hotspots.add(new Hotspot("reward-prev", PANEL_PREV_X, 870, PANEL_PREV_X + ARROW_W, 918,
+                    Component.literal("‹"), false, () -> rewardPage--).enabled(rewardPage > 0));
+            hotspots.add(new Hotspot("reward-next", PANEL_NEXT_X, 870, PANEL_NEXT_X + ARROW_W, 918,
+                    Component.literal("›"), false, () -> rewardPage++).enabled((rewardPage + 1) * MINI_SLOTS < rewards.size()));
         }
-        // 关闭：任何未锁定的时刻都能返回仓库
-        boolean locked = phase == CrateStage.Phase.DISMISS || phase == CrateStage.Phase.HOLD
-                || phase == CrateStage.Phase.CAROUSEL || phase == CrateStage.Phase.BRIDGE;
-        if ((!locked || failure) && (modalCancelled || stage.active())) {
-            float closeX = idle || finished ? CLOSE_X0 : (REF_W - (CLOSE_X1 - CLOSE_X0)) / 2;
-            hotspots.add(new Hotspot(closeX, CLOSE_Y0, CLOSE_X1 - CLOSE_X0, CLOSE_Y1 - CLOSE_Y0,
-                    Component.translatable(KEY + "reveal.close"), Kind.MODAL_GHOST, this::depart));
+        if ((!locked(time)) && (modalCancelled || stage.active())) {
+            float w = CLOSE_X1 - CLOSE_X0;
+            float closeX = idle || finished ? CLOSE_X0 : (REF_W - w) / 2;
+            hotspots.add(new Hotspot("close", closeX, BTN_Y0, closeX + w, BTN_Y1,
+                    Component.translatable(KEY + "reveal.close"), false, this::depart));
         }
     }
 
-
-    private enum Kind { MODAL_PRIMARY, MODAL_GHOST, TEXT }
-
-    /** 自绘热区：扁平芯片式按钮与纯文字按钮，支持悬停、按下反馈与键盘操作。 */
+    /** 自绘按钮：主按钮（绿色、呼吸光与扫光）与次级按钮（暗色玻璃），支持悬停、按下与键盘焦点。 */
     private final class Hotspot {
-        private final float x, y, w, h;
+        private final String id;
+        private final float x0, y0, x1, y1;
         private final Component label;
-        private final Kind kind;
+        private final boolean primary;
         private final Runnable action;
         private boolean enabled = true;
-        private float opacity = 1;
-        private float hover, press;
+        private float opacity = 1, pulse;
 
-        Hotspot(float x, float y, float w, float h, Component label, Kind kind, Runnable action) {
-            this.x = x;
-            this.y = y;
-            this.w = w;
-            this.h = h;
+        Hotspot(String id, float x0, float y0, float x1, float y1, Component label, boolean primary, Runnable action) {
+            this.id = id;
+            this.x0 = x0;
+            this.y0 = y0;
+            this.x1 = x1;
+            this.y1 = y1;
             this.label = label;
-            this.kind = kind;
+            this.primary = primary;
             this.action = action;
         }
 
-        Hotspot enabled(boolean value) { this.enabled = value; return this; }
+        Hotspot enabled(boolean value) { enabled = value; return this; }
         Hotspot opacity(float value) { opacity = value; return this; }
+        Hotspot pulse(float value) { pulse = value; return this; }
 
         boolean contains(double mx, double my) {
-            return enabled && opacity >= .4F && mx >= x && mx < x + w && my >= y && my < y + h;
+            return enabled && opacity >= .4F && mx >= x0 && mx < x1 && my >= y0 && my < y1;
         }
 
-        void render(GuiGraphics g, Font font, float mx, float my, float delta) {
-            boolean over = enabled && (mx >= x && mx < x + w && my >= y && my < y + h
+        void render(GuiGraphics g, long time) {
+            boolean over = enabled && (mouseX >= x0 && mouseX < x1 && mouseY >= y0 && mouseY < y1
                     || hotspots.indexOf(this) == keyboardFocus);
-            hover = over ? 1.0F : 0.0F;
-            press = GuiFx.approach(press, 0.0F, delta, 110.0F);
-            float top = y + press;
-            switch (kind) {
-                case MODAL_PRIMARY -> {
-                    CrateArt.primaryButton(g, (int) x, (int) top, (int) (x + w), (int) (top + h),
-                            opacity * (enabled || stage.active() ? 1.0F : 0.45F), hover);
-                    textCentered(g, label, x + w * 0.5F, top + h * 0.5F - 10.0F, 19.0F,
-                            GuiFx.fade(enabled || stage.active() ? 0xFFFFFFFF : 0xFFBDBDBD, opacity), true);
-                }
-                case MODAL_GHOST -> {
-                    CrateArt.ghostButton(g, (int) x, (int) top, (int) (x + w), (int) (top + h), opacity, hover);
-                    textCentered(g, label, x + w * 0.5F, top + h * 0.5F - 10.0F, 19.0F, GuiFx.fade(0xFFE0E0E0, opacity), true);
-                }
-                default -> {
-                    int color = enabled ? (over ? 0xFFFFFFFF : TEXT_NAV) : 0xFF6E7780;
-                    textLeft(g, label, x, y, 20.0F, color, true);
-                    if (over) {
-                        float width = textWidth(label, 20.0F);
-                        g.fill((int) x, (int) (y + 22.0F), (int) (x + width), (int) (y + 23.0F),
-                                GuiFx.fade(0xFFFFFFFF, 0.7F));
-                    }
-                }
-            }
+            float hover = GuiFx.approach(hoverAnim.getOrDefault(id, 0F), over ? 1 : 0, frameDelta, 45);
+            hoverAnim.put(id, hover);
+            float a = opacity * (enabled ? 1 : 0.45F);
+            float lift = -2 * hover;
+            if (primary) CrateArt.primaryButton(g, x0, y0 + lift, x1, y1 + lift, a, hover, enabled ? pulse : 0, time);
+            else CrateArt.ghostButton(g, x0, y0 + lift, x1, y1 + lift, a, hover);
+            float size = label.getString().length() <= 1 ? 30 : 20;
+            textCentered(g, label, (x0 + x1) / 2, (y0 + y1) / 2 + lift - size * 0.5F, size,
+                    GuiFx.fade(enabled ? 0xFFFFFFFF : 0xFFBDBDBD, opacity), true);
         }
     }
 
@@ -1184,7 +1465,7 @@ public final class CrateOpenScreen extends Screen {
         buildHotspots(now());
         for (Hotspot hotspot : hotspots) {
             if (hotspot.contains(cx, cy)) {
-                hotspot.press = 1.0F;
+                sound(SoundEvents.UI_BUTTON_CLICK.value(), 1.0F, 0.25F);
                 hotspot.action.run();
                 return true;
             }
@@ -1214,8 +1495,8 @@ public final class CrateOpenScreen extends Screen {
                 if (selected.enabled) selected.action.run();
             } else if (!stage.active() && modalCancelled && readyToOpen()) {
                 modalCancelled = false;
-            } else if (CrateStage.modalIn(now(), enteredAt) >= 1 && !modalCancelled
-                    || stage.finished(now())) {
+                modalShownAt = now();
+            } else if (!modalCancelled && modalAlpha(now()) >= 0.9F || stage.finished(now())) {
                 beginOpen();
             }
             return true;
@@ -1249,10 +1530,10 @@ public final class CrateOpenScreen extends Screen {
         if (CrateClientNetwork.connected() && !CrateClientNetwork.canOpen()) {
             fail("crates.client_outdated"); return;
         }
-        // 每个箱子只有一把对应钥匙，因此直接选中它，不需要玩家再点一次。
         selectedKey = matchingKeyId();
         keyboardFocus = -1;
         stage = CrateStage.opened(time);
+        if (modalShownAt < 0) modalShownAt = time - 260;
         result = null;
         rewards = List.of();
         resultStack = ItemStack.EMPTY;
@@ -1260,6 +1541,9 @@ public final class CrateOpenScreen extends Screen {
         failure = false;
         message = "";
         modalCancelled = false;
+        firedHold = firedOpen = firedStop = firedReveal = false;
+        lastTickSlot = Integer.MIN_VALUE;
+        particles.clear();
         buildReel();
         buildStrip();
         activeOpenId = CrateClientNetwork.open(crateId, selectedKey);

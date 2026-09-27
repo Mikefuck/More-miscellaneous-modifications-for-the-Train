@@ -441,8 +441,9 @@ public final class CrateSmoke implements ClientModInitializer {
         if (!phase.equals(lastPhase)) { lastPhase = phase; event("phase=" + phase); }
         if (!previewChecked && now - entered >= 1500) {
             int size = ((List<?>)get(screen, "strip")).size();
-            if (size != 11) throw new IllegalStateException("public pool must contain 9 skins, apples and card: " + size);
-            click(screen, 1714, 888);
+            // Registered fixture skins vary with the installed providers; pagination only needs > 1 page.
+            if (size <= 8) throw new IllegalStateException("public pool must span more than one page: " + size);
+            click(screen, 1738, 894);
             if ((int)get(screen, "stripPage") != 1) throw new IllegalStateException("next reward page failed");
             previewChecked = true; event("server-pool-preview-and-pagination=PASS");
         }
@@ -468,6 +469,7 @@ public final class CrateSmoke implements ClientModInitializer {
             set(screen, "stage", CrateStage.opened(now));
             set(screen, "activeOpenId", "00000000-0000-0000-0000-000000000001");
             set(screen, "failure", false);
+            set(screen, "message", "");
             stage = (CrateStage)get(screen,"stage");
             if (!stage.active()) throw new IllegalStateException("mouse confirm failed");
             clickedOpen = true; event("mouse-confirm=PASS");
@@ -488,12 +490,12 @@ public final class CrateSmoke implements ClientModInitializer {
                 List<CrateService.Reward> many = new ArrayList<>();
                 for (int i = 0; i < 12; i++) many.add(new CrateService.Reward("green_apples", "green_apples", i + 1));
                 set(screen, "rewards", List.copyOf(many));
-                click(screen, 1444, 880);
+                click(screen, 1494, 894);
                 if ((int)get(screen, "rewardPage") != 1) throw new IllegalStateException("result next page failed");
                 summaryChecked = true; event("12-rewards-next-page=PASS");
             }
             if (summaryChecked && !summaryReturned && now >= stage.finishAt() + 900) {
-                click(screen, 474, 880);
+                click(screen, 426, 894);
                 if ((int)get(screen, "rewardPage") != 0) throw new IllegalStateException("result previous page failed");
                 summaryReturned = true; event("12-rewards-previous-page=PASS");
             }
@@ -625,6 +627,9 @@ public final class CrateSmoke implements ClientModInitializer {
         resultType = chosen.type();
         resultSkin = chosen.id();
         resultQuality = chosen.quality().id();
+        // -DcrateSmoke.quality=white|blue|purple|gold|red previews each reveal tier with the same fixture.
+        String forced = System.getProperty("crateSmoke.quality", "");
+        if (!forced.isBlank()) resultQuality = SkinQuality.fromId(forced).id();
         HabiLotteryMod.LOGGER.info("{} result chosen from {} registered skins: {}/{} ({})", TAG, all.size(),
                 resultType, resultSkin, resultQuality);
     }

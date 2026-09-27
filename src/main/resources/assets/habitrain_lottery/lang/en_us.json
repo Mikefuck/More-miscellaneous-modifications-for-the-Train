@@ -613,5 +613,14 @@
   "screen.habitrain_lottery.crate_manage.overview": "Crate catalog: %s types · %s enabled",
   "screen.habitrain_lottery.crate_manage.overview_hint": "Open crate management to choose a crate and edit its appearance, rewards and draw rules.",
   "screen.habitrain_lottery.crate_manage.source_server": "Current server configuration · Saved changes sync to the opener",
-  "screen.habitrain_lottery.crate_manage.overview_offline": "Connect to a server to view its crate catalog and enabled state"
+  "screen.habitrain_lottery.crate_manage.overview_offline": "Connect to a server to view its crate catalog and enabled state",
+  "screen.habitrain_lottery.crate.modal.eyebrow": "CONFIRM",
+  "screen.habitrain_lottery.crate.nav.crates": "Crates in stock ×%s",
+  "screen.habitrain_lottery.crate.chip.crates": "Crates ×%s",
+  "screen.habitrain_lottery.crate.chip.keys": "Keys ×%s",
+  "screen.habitrain_lottery.crate.status.charging": "Unlocking…",
+  "screen.habitrain_lottery.crate.status.waiting": "Waiting for the server…",
+  "screen.habitrain_lottery.crate.status.rolling": "Rolling…",
+  "screen.habitrain_lottery.crate.reveal.eyebrow": "YOU RECEIVED",
+  "screen.habitrain_lottery.crate.reveal.from": "From %s"
 }
