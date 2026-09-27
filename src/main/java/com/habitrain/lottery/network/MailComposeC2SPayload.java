@@ -164,7 +164,8 @@ public record MailComposeC2SPayload(
                 if (reward.kind() == MailReward.Kind.SKIN && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty())
                     throw new IllegalArgumentException("未注册的皮肤 " + reward.factionType());
                 if ((reward.kind() == MailReward.Kind.CRATE || reward.kind() == MailReward.Kind.KEY)
-                        && CrateCatalog.find(reward.factionType()) == null)
+                        && (CrateCatalog.find(reward.factionType()) == null
+                        || CrateCatalog.find(reward.factionType()).archived()))
                     throw new IllegalArgumentException("未注册的箱子或钥匙 " + reward.factionType());
             }
         } catch (IllegalArgumentException invalid) {

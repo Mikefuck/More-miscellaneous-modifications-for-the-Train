@@ -352,7 +352,7 @@ public class MailComposeScreen extends Screen {
         int gap = 5;
         int rowWidth = Math.max(1, (contentWidth - gap * 2) / 3);
         int y = contentTop + 12;
-        List<CrateCatalog.Entry> entries = CrateCatalog.entries();
+        List<CrateCatalog.Entry> entries = CrateCatalog.publishedEntries();
         for (int i = 0; i < entries.size(); i++) {
             CrateCatalog.Entry entry = entries.get(i);
             int row = i / 3;
@@ -449,10 +449,10 @@ public class MailComposeScreen extends Screen {
         }
         if (!skinEntry.isBlank()) built.add(new RewardEntry(RewardEntry.SKIN, 1, skinEntry));
         int crateAmount = parseIntSafe(crateAmountBox != null ? crateAmountBox.getValue() : "0", 0);
-        if (crateAmount != 0 && !CrateCatalog.entries().isEmpty()) {
+        if (crateAmount != 0 && !CrateCatalog.publishedEntries().isEmpty()) {
             built.add(new RewardEntry(keyAttachment ? RewardEntry.KEY : RewardEntry.CRATE,
-                    crateAmount, CrateCatalog.entries().get(Math.max(0, Math.min(crateIdx,
-                            CrateCatalog.entries().size() - 1))).id()));
+                    crateAmount, CrateCatalog.publishedEntries().get(Math.max(0, Math.min(crateIdx,
+                            CrateCatalog.publishedEntries().size() - 1))).id()));
         }
         return built;
     }
@@ -637,8 +637,8 @@ public class MailComposeScreen extends Screen {
         }
         if (page == PAGE_CRATES) {
             String kind = keyAttachment ? "钥匙" : "箱子";
-            String selected = CrateCatalog.entries().isEmpty() ? "" : CrateCatalog.entries()
-                    .get(Math.max(0, Math.min(crateIdx, CrateCatalog.entries().size() - 1))).id();
+            String selected = CrateCatalog.publishedEntries().isEmpty() ? "" : CrateCatalog.publishedEntries()
+                    .get(Math.max(0, Math.min(crateIdx, CrateCatalog.publishedEntries().size() - 1))).id();
             graphics.drawString(font, kind + "附件 · 当前选择 " + selected, contentX, contentTop + 2, TEXT, false);
             graphics.drawString(font, font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth),
                     contentX, contentTop + 112, BRASS, false);

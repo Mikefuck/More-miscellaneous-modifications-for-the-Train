@@ -66,7 +66,7 @@ class CrateStageTest {
     }
 
     @Test void aSlowServerSpinsAtFullSpeedUntilTheResultArrives() {
-        // 结果没到之前保持 7 件/秒匀速，不会出现「停住等结果」
+        // 结果没到之前保持 13 件/秒匀速，不会出现「停住等结果」
         long late = CrateStage.opened(0L).spinAt() + 4000L;
         CrateStage stage = CrateStage.opened(0L).result(late);
         assertEquals(late, stage.decayAt());
@@ -172,14 +172,15 @@ class CrateStageTest {
         float expected = CrateStage.SPIN_MS * ((CrateStage.REEL_SPEED - CrateStage.REEL_TAIL_SPEED) * 0.25F + CrateStage.REEL_TAIL_SPEED);
         assertEquals(expected, CrateStage.reelTravel(1.0F), 1e-2F);
         assertEquals(0.0F, CrateStage.reelTravel(0.0F), 1e-4F);
-        // 起手速度就是参考视频实测的 7 件/秒，并且全程单调、逐渐放慢
+        // 加强起手速度，同时保持全程单调、逐渐放慢
         float previousStep = Float.MAX_VALUE;
         for (float u = 0.0F; u < 0.999F; u += 0.01F) {
             float step = CrateStage.reelTravel(u + 0.01F) - CrateStage.reelTravel(u);
             assertTrue(step <= previousStep + 1e-4F, "the reel must decelerate monotonically");
             previousStep = step;
         }
-        assertEquals(CrateStage.REEL_SPEED * 1000.0F, 7.0F, 0.11F);
+        assertEquals(CrateStage.REEL_SPEED * 1000.0F, 13.0F, 0.11F);
+        assertTrue(CrateStage.reelTravel(1.0F) > 19.0F, "the reel should travel with visible momentum");
     }
 
     @Test void reelPositionIsContinuousAndStopsAfterSettling() {

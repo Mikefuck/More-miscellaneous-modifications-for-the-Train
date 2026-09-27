@@ -1,12 +1,13 @@
 package com.habitrain.lottery.client.gui;
 
-import com.habitrain.lottery.api.skin.HabiSkinApi;
-import com.habitrain.lottery.api.skin.SkinDefinition;
 import com.habitrain.lottery.api.skin.SkinItems;
 import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.client.CrateClientNetwork;
 import com.habitrain.lottery.crate.CrateService;
+import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.network.CrateNetwork;
+import com.google.gson.Gson;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.Util;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -18,6 +19,7 @@ import net.minecraft.world.item.Items;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Reference-timed crate animation on a fitted 1920×1080 canvas.
@@ -50,13 +52,9 @@ public final class CrateOpenScreen extends Screen {
     private static final float HUD_TITLE_Y = 48.0F, HUD_UNLOCK_Y = 96.0F, HUD_NOTE_Y = 132.0F;
 
     // 底部物品条（参考 f074：x 40–1590、y 795–965）
-    private static final float STRIP_X0 = 40.0F, STRIP_X1 = 1590.0F,
-            STRIP_Y0 = 795.0F, STRIP_Y1 = 965.0F;
-    private static final float STRIP_HEADER_Y = 800.0F, STRIP_INSPECT_X = 1815.0F;
-    private static final float STRIP_CARD_X0 = 74.0F, STRIP_CARD_PITCH = 153.4F,
-            STRIP_CARD_W = 134.0F, STRIP_WELL_Y0 = 845.0F, STRIP_WELL_Y1 = 955.0F,
-            STRIP_CAPTION_Y = 960.0F;
-    private static final int STRIP_SLOTS = 10;
+    private static final float STRIP_X0 = 180.0F, STRIP_X1 = 1740.0F,
+            STRIP_Y0 = 780.0F, STRIP_Y1 = 978.0F;
+    private static final int STRIP_SLOTS = 8;
 
     // 确认弹窗（参考 f104：772×204px）
     private static final float MODAL_X0 = 566.0F, MODAL_X1 = 1338.0F,
@@ -85,18 +83,16 @@ public final class CrateOpenScreen extends Screen {
 
     // 底部导航条（参考 y 1020–1080）
     private static final float NAV_Y0 = 1020.0F;
-    private static final float[] NAV_ICON_X = {490.0F, 546.0F, 604.0F, 662.0F, 722.0F, 782.0F};
-    private static final float CLOSE_X0 = 1390.0F, CLOSE_X1 = 1470.0F,
-            CLOSE_Y0 = 1036.0F, CLOSE_Y1 = 1064.0F;
-    private static final float AGAIN_X0 = 1180.0F, AGAIN_X1 = 1340.0F,
-            AGAIN_Y0 = 1036.0F, AGAIN_Y1 = 1064.0F;
+    private static final float CLOSE_X0 = 970, CLOSE_X1 = 1150,
+            CLOSE_Y0 = 1030, CLOSE_Y1 = 1070;
+    private static final float AGAIN_X0 = 770, AGAIN_X1 = 950,
+            AGAIN_Y0 = 1030, AGAIN_Y1 = 1070;
 
     // 颜色（全部取自参考视频 §4 的实测表）
     private static final int TEXT_BRIGHT = 0xFFEDEDED, TEXT_TITLE = 0xFFF2F2F2,
             TEXT_BODY = 0xFFD2D2D2, TEXT_DIM = 0xFFCFCFCF, TEXT_MUTED = 0xFFB0B0B0,
-            TEXT_STRIP_HEADER = 0xFFDDDDDD, TEXT_NAV = 0xFFEAEAEA,
-            TEXT_GOLD = 0xFFE7D06A, SPECIAL_GOLD = 0xFFD9C93E,
-            MODAL_GREEN = 0xFF4CAF50, DANGER = 0xFFFF8A8A,
+            TEXT_NAV = 0xFFEAEAEA,
+            TEXT_GOLD = 0xFFE7D06A, DANGER = 0xFFFF8A8A,
             NAV_SCRIM = 0x73000000;
 
     private final Screen parent;
@@ -107,15 +103,19 @@ public final class CrateOpenScreen extends Screen {
 
     private CrateStage stage = CrateStage.idle();
     private CrateNetwork.OpenResultS2C result;
+    private List<CrateService.Reward> rewards = List.of();
     private ItemStack resultStack = ItemStack.EMPTY;
+    private String activeOpenId;
     private int resultSlot = -1;
     private List<ItemStack> reel = List.of();
     private List<SkinQuality> reelQuality = List.of();
+    private List<CrateCatalog.RewardPreview> reelRewards = List.of();
     private List<ItemStack> strip = List.of();
     private List<SkinQuality> stripQuality = List.of();
     private String message = "";
     private boolean failure;
-    private boolean modalCancelled;
+    private boolean modalCancelled = true;
+    private int catalogVersion = -1, stripPage, rewardPage;
 
     private long enteredAt = -1;
     private long departAt = -1;
@@ -178,6 +178,11 @@ public final class CrateOpenScreen extends Screen {
     }
 
     public void refreshFromState() {
+        if (catalogVersion != CrateClientNetwork.STATE.catalogVersion && (!stage.active() || stage.finished(now()) || failure)) {
+            catalogVersion = CrateClientNetwork.STATE.catalogVersion;
+            buildStrip();
+            if (!stage.active() || failure) buildReel();
+        }
         if (inventoryVersion == CrateClientNetwork.STATE.inventoryVersion) return;
         inventoryVersion = CrateClientNetwork.STATE.inventoryVersion;
         inventory = CrateClientNetwork.STATE.inventory;
@@ -185,7 +190,7 @@ public final class CrateOpenScreen extends Screen {
     }
 
     public void receive(CrateNetwork.OpenResultS2C payload) {
-        if (!crateId.equals(payload.crateId())) return;
+        if (!crateId.equals(payload.crateId()) || !payload.openId().equals(activeOpenId)) return;
         if (!payload.success()) {
             fail(payload.message());
             return;
@@ -193,8 +198,14 @@ public final class CrateOpenScreen extends Screen {
         long now = now();
         if (!stage.active()) stage = CrateStage.opened(now - 1L);
         result = payload;
+        rewardPage = 0;
+        if (parent instanceof WarehouseScreen warehouse) warehouse.expectInventoryRevision(payload.inventoryRevision());
+        try {
+            CrateService.Reward[] parsed = new Gson().fromJson(payload.rewardsJson(), CrateService.Reward[].class);
+            rewards = parsed == null ? List.of() : List.of(parsed);
+        } catch (RuntimeException error) { rewards = List.of(); }
         stage = stage.result(now);
-        resultStack = preview(payload.skinType(), payload.skin());
+        resultStack = previewReward(payload.skinType(), payload.skin());
         SkinQuality quality = SkinQuality.fromId(payload.quality());
         // 结果固定落在「转盘停稳」那一刻光标正中的槽位：把中奖卡片换掉，
         // 玩家只会看到转盘停在这一件上，随后它从这个位置起飞到台前。
@@ -272,11 +283,39 @@ public final class CrateOpenScreen extends Screen {
     }
 
     private String crateName() {
-        return Component.translatable(KEY + crateId).getString();
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return Component.translatable(entry == null ? KEY + crateId : entry.nameKey()).getString();
+    }
+
+    private void drawCrate(GuiGraphics g, float x, float baseY, float width, float lid, float intensity) {
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        CrateCatalog.Entry builtin = CrateCatalog.builtin(crateId);
+        boolean styled = entry != null && (builtin == null || entry.color() != builtin.color()
+                || !crateId.equals(entry.appearancePreset()) || !"star".equals(entry.badge()));
+        if (styled) CrateArt.crateStyled(g, x, baseY, width, lid, accent(), intensity,
+                entry.appearancePreset(), entry.badge());
+        else CrateArt.crate(g, x, baseY, width, lid, accent(), intensity);
     }
 
     private String keyName() {
-        return Component.translatable(KEY + "key." + crateId).getString();
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return Component.translatable(entry == null ? KEY + "key." + crateId : entry.keyName()).getString();
+    }
+
+    private static ItemStack previewReward(String type, String id) {
+        if ("green_apples".equals(type)) {
+            ItemStack stack = new ItemStack(Items.APPLE);
+            stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME,
+                    Component.translatable("screen.habitrain_lottery.warehouse.green_apples"));
+            return stack;
+        }
+        if ("card".equals(type)) {
+            ItemStack stack = new ItemStack(Items.PAPER);
+            stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME,
+                    Component.translatable("screen.habitrain_lottery.config.cards." + id));
+            return stack;
+        }
+        return preview(type, id);
     }
 
     private static ItemStack preview(String type, String id) {
@@ -286,97 +325,68 @@ public final class CrateOpenScreen extends Screen {
         return stack.isEmpty() ? new ItemStack(Items.NETHER_STAR) : stack;
     }
 
-    /** 该箱子会掉落的皮肤池；棱彩箱是全部品质，其余按主品质过滤。 */
-    private List<SkinDefinition> pool() {
-        CrateService.Definition definition = CrateService.definition(crateId);
-        SkinQuality primary = definition == null ? SkinQuality.WHITE : definition.primary();
-        boolean prism = definition != null && definition.prism();
-        List<SkinDefinition> pool = new ArrayList<>();
-        for (SkinDefinition skin : HabiSkinApi.registrations()) {
-            if (prism || skin.quality() == primary) pool.add(skin);
-        }
-        if (pool.isEmpty()) pool.addAll(HabiSkinApi.registrations());
-        return pool;
+    private List<CrateCatalog.RewardPreview> candidates() {
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return entry == null ? List.of() : entry.rewards();
     }
 
-    /**
-     * 生成转盘上的候选物品。参考视频里转盘滚着好几件战利品、最后才锁定其中一件，
-     * 因此这里用该箱子的皮肤池铺满 {@link CrateStage#SLOTS} 张卡片，
-     * 结果到达后再替换到光标下的槽位。
-     */
+    private ItemStack previewCandidate(CrateCatalog.RewardPreview reward) {
+        ItemStack stack;
+        if ("skin".equals(reward.kind())) {
+            String[] parts = reward.id().split("/", 2);
+            stack = parts.length == 2 ? preview(parts[0], parts[1]) : new ItemStack(Items.BARRIER);
+        } else stack = previewReward(reward.kind(), reward.id());
+        if (reward.amount() > 1) stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME,
+                Component.literal(stack.getHoverName().getString() + " ×" + reward.amount()));
+        return stack;
+    }
+
+    /** Decorative order only; every card must belong to the server's published candidates. */
     private void buildReel() {
-        List<SkinDefinition> pool = pool();
         List<ItemStack> out = new ArrayList<>();
         List<SkinQuality> quality = new ArrayList<>();
-        if (!pool.isEmpty()) {
-            int size = pool.size();
-            int start = Math.floorMod(crateId.hashCode(), size);
-            for (int i = 0; i < CrateStage.SLOTS; i++) {
-                // 7 与常见皮肤池大小互质，取样比顺序取更分散
-                SkinDefinition skin = pool.get(Math.floorMod(start + i * 7, size));
-                ItemStack stack = preview(skin.type(), skin.id());
-                if (stack.isEmpty()) {
-                    stack = filler(i);
-                    quality.add(SkinQuality.WHITE);
-                } else {
-                    quality.add(skin.quality());
-                }
-                out.add(stack);
-            }
-        }
-        while (out.size() < CrateStage.SLOTS) {
-            quality.add(SkinQuality.WHITE);
-            out.add(filler(out.size()));
+        reelRewards = CrateReelSequence.sample(candidates(), CrateStage.SLOTS, ThreadLocalRandom.current());
+        for (var reward : reelRewards) {
+            out.add(previewCandidate(reward));
+            quality.add(SkinQuality.fromId(reward.quality()));
         }
         reel = List.copyOf(out);
         reelQuality = List.copyOf(quality);
     }
 
-    /**
-     * 生成底部「开启并获得以下之一」的十连物品条。
-     * 前 9 张来自该箱子真实的皮肤池；第 10 张是参考视频里那张金色特殊卡
-     * （{@code ★罕见的特殊物品★}），固定用池中最高品质的一件与金色条纹。
-     */
     private void buildStrip() {
-        List<SkinDefinition> pool = pool();
-        List<ItemStack> out = new ArrayList<>();
-        List<SkinQuality> quality = new ArrayList<>();
-        int start = pool.isEmpty() ? 0 : Math.floorMod(crateId.hashCode() + 3, pool.size());
-        for (int i = 0; i < STRIP_SLOTS - 1; i++) {
-            if (pool.isEmpty()) {
-                out.add(filler(i));
-                quality.add(SkinQuality.WHITE);
-                continue;
-            }
-            SkinDefinition skin = pool.get(Math.floorMod(start + i * 5, pool.size()));
-            ItemStack stack = preview(skin.type(), skin.id());
-            if (stack.isEmpty()) {
-                stack = filler(i);
-                quality.add(SkinQuality.WHITE);
-            } else {
-                quality.add(skin.quality());
-            }
-            out.add(stack);
-        }
-        SkinDefinition rarest = null;
-        for (SkinDefinition skin : pool) {
-            if (rarest == null || skin.quality().ordinal() > rarest.quality().ordinal()) rarest = skin;
-        }
-        ItemStack special = rarest == null ? new ItemStack(Items.NETHER_STAR)
-                : SkinItems.preview(rarest.type() + "/" + rarest.id());
-        out.add(special.isEmpty() ? filler(STRIP_SLOTS) : special);
-        quality.add(SkinQuality.GOLD);
-        strip = List.copyOf(out);
-        stripQuality = List.copyOf(quality);
+        strip = candidates().stream().map(this::previewCandidate).toList();
+        stripQuality = candidates().stream().map(r -> SkinQuality.fromId(r.quality())).toList();
+        stripPage = Math.min(stripPage, Math.max(0, (strip.size() - 1) / STRIP_SLOTS));
     }
 
-    private static final ItemStack[] FILLERS = {
-            new ItemStack(Items.IRON_SWORD), new ItemStack(Items.CROSSBOW), new ItemStack(Items.SNOWBALL),
-            new ItemStack(Items.LEATHER_HELMET), new ItemStack(Items.AMETHYST_SHARD),
-            new ItemStack(Items.GOLD_INGOT), new ItemStack(Items.ECHO_SHARD), new ItemStack(Items.STICK)};
+    private void drawReward(GuiGraphics g, CrateCatalog.RewardPreview reward, ItemStack stack,
+                            float x, float y, float scale, float yaw, float roll, float tint, float alpha) {
+        if (reward == null || "skin".equals(reward.kind())) {
+            CrateArt.item(g, stack, x, y, scale, yaw, roll, tint, alpha);
+            return;
+        }
+        ResourceLocation texture = ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/"
+                + ("green_apples".equals(reward.kind()) ? "green_apple" : "cards/" + reward.id()) + ".png");
+        g.pose().pushPose(); g.pose().translate(x, y, 0);
+        g.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(roll));
+        g.pose().scale(scale, scale, 1);
+        g.setColor(tint, tint, tint, alpha);
+        g.blit(texture, -8, -8, 0, 0, 16, 16, 16, 16);
+        g.setColor(1, 1, 1, 1); g.pose().popPose();
+    }
 
-    private static ItemStack filler(int index) {
-        return FILLERS[Math.floorMod(index, FILLERS.length)].copy();
+    private CrateCatalog.RewardPreview resultPreview() {
+        if (result == null) return null;
+        String kind = result.skinType();
+        return new CrateCatalog.RewardPreview("green_apples".equals(kind) || "card".equals(kind) ? kind : "skin",
+                result.skin(), 1, result.quality());
+    }
+
+    private boolean readyToOpen() {
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        return entry != null && entry.enabled() && !entry.archived() && !candidates().isEmpty()
+                && crateCount() > 0 && keyCount() > 0;
     }
 
     private ItemStack stackAt(int index) {
@@ -411,7 +421,15 @@ public final class CrateOpenScreen extends Screen {
         g.pose().scale(unit, unit, 1.0F);
         renderCanvas(g, time, (mx - canvasX) / unit, (my - canvasY) / unit);
         g.pose().popPose();
-
+        if (!stage.active() && modalCancelled) {
+            float cx = (mx - canvasX) / unit, cy = (my - canvasY) / unit;
+            int count = Math.min(STRIP_SLOTS, strip.size() - stripPage * STRIP_SLOTS);
+            float left = (REF_W - (count * 160 + Math.max(0, count - 1) * 16)) / 2;
+            for (int i = 0; i < count; i++) if (cx >= left + i * 176 && cx < left + i * 176 + 160 && cy >= 826 && cy <= 965) {
+                g.renderTooltip(font, java.util.List.of(strip.get(stripPage * STRIP_SLOTS + i).getHoverName().getVisualOrderText(),
+                        Component.translatable(KEY + "preview_note").getVisualOrderText()), mx, my);
+            }
+        }
         if (departAt >= 0) finishLeaving();
     }
 
@@ -505,7 +523,9 @@ public final class CrateOpenScreen extends Screen {
         // 箱子底面：参考视频里落位后箱体中心约在 (967, 603)，高约 640px
         float width = 330.0F * stage.crateScale(time, enteredAt);
         float baseY = 570.0F + (width - 330.0F) * .67F;
-        if (stage.phase(time) == CrateStage.Phase.CAROUSEL) baseY = 745.0F;
+        // Follow the same easing as the zoom, avoiding a one-frame vertical jump at reel entry.
+        float back = CrateStage.easeInOutCubic(CrateStage.progress(time, stage.spinAt(), CrateStage.BACKDROP_MS));
+        baseY = CrateStage.lerp(baseY, 745.0F, back);
         float centreX = canvasW * 0.5F;
 
         float drop = -REF_H * 1.15F * (1.0F - CrateStage.dropProgress(time, enteredAt));
@@ -528,7 +548,7 @@ public final class CrateOpenScreen extends Screen {
         g.pose().translate(-centreX, -baseY, 0.0F);
 
         // Shadow belongs to the ground, not the rotating model.
-        CrateArt.crate(g, centreX, baseY, width, lid, accent(), open * (1.0F - 0.55F * reveal));
+        drawCrate(g, centreX, baseY, width, lid, open * (1.0F - 0.55F * reveal));
         g.pose().popPose();
     }
 
@@ -542,7 +562,7 @@ public final class CrateOpenScreen extends Screen {
         float fromX = REEL_CENTER_X;
         float fromY = REEL_CENTER_Y;
         float fromScale = Math.min(cardW, cardH) * 0.88F / 16.0F;
-        float stageScale = REF_H * CrateStage.REVEAL_SIZE_RATIO / 16.0F;
+        float stageScale = REF_H * .38F / 16.0F;
 
         float px = CrateStage.lerp(fromX, REVEAL_ITEM_X, morph);
         float py = CrateStage.lerp(fromY, REVEAL_ITEM_Y, morph);
@@ -556,7 +576,7 @@ public final class CrateOpenScreen extends Screen {
 
         g.pose().pushPose();
         g.pose().translate(0.0F, 0.0F, 20.0F);
-        CrateArt.item(g, resultStack, px, py, size, yaw, roll, 1.0F);
+        drawReward(g, resultPreview(), resultStack, px, py, size, yaw, roll, 1.0F, 1.0F);
         g.pose().popPose();
     }
 
@@ -565,57 +585,36 @@ public final class CrateOpenScreen extends Screen {
     // ---------------------------------------------------------------------
 
     private void renderStrip(GuiGraphics g, long time) {
-        if (stage.openedAt() >= 0 && stage.dismiss(time) >= 1.0F) return;
-        float enter = CrateStage.stripIn(time, enteredAt);
-        float dismiss = stage.dismiss(time);
-        float alpha = enter * (1.0F - dismiss);
-        if (alpha <= 0.02F) return;
+        float alpha = CrateStage.stripIn(time, enteredAt) * (1 - stage.dismiss(time));
+        if (alpha <= .02F) return;
         float rise = -CrateStage.stripOffset(time, enteredAt);
-        float right = Math.min(STRIP_X1, canvasW - STRIP_X0);
-
-        CrateArt.stripPanel(g, (int) STRIP_X0, (int) (STRIP_Y0 - rise), (int) right,
+        CrateArt.stripPanel(g, (int) STRIP_X0, (int) (STRIP_Y0 - rise), (int) STRIP_X1,
                 (int) (STRIP_Y1 - rise), alpha);
-
-        // 表头：参考视频居中于屏幕、字距 2px
-        textSpaced(g, Component.translatable(KEY + "strip.header"), canvasW * 0.5F, STRIP_HEADER_Y - rise,
-                20.0F, 2.0F, GuiFx.fade(TEXT_STRIP_HEADER, alpha), true);
-        textRight(g, Component.translatable(KEY + "strip.inspect"),
-                Math.min(STRIP_INSPECT_X, canvasW - 10.0F), STRIP_HEADER_Y - rise,
-                20.0F, GuiFx.fade(TEXT_DIM, alpha), true);
-
-        // 卡片：参考视频里退场时会以左端为轴横向压扁到 0.72
-        float collapse = 1.0F - (1.0F - CrateStage.STRIP_COLLAPSE) * CrateStage.easeOutCubic(dismiss);
-        g.pose().pushPose();
-        g.pose().translate(STRIP_CARD_X0, 0.0F, 0.0F);
-        g.pose().scale(collapse, 1.0F, 1.0F);
-        g.pose().translate(-STRIP_CARD_X0, 0.0F, 0.0F);
-        for (int i = 0; i < STRIP_SLOTS && i < strip.size(); i++) {
-            float x = STRIP_CARD_X0 + STRIP_CARD_PITCH * i;
-            if (x + STRIP_CARD_W > canvasW) break;
-            int stripe = i == STRIP_SLOTS - 1 ? SPECIAL_GOLD : stripQuality.get(i).color();
-            CrateArt.card(g, x, STRIP_WELL_Y0 - rise, STRIP_CARD_W, STRIP_WELL_Y1 - STRIP_WELL_Y0,
-                    1.0F, 0.0F, stripe, alpha);
-            float artScale = Math.min(STRIP_CARD_W, STRIP_WELL_Y1 - STRIP_WELL_Y0) * 0.86F / 16.0F;
-            boolean special = i == STRIP_SLOTS - 1;
-            if (special) {
-                CrateArt.specialMedallion(g,x,STRIP_WELL_Y0-rise,STRIP_CARD_W,STRIP_WELL_Y1-STRIP_WELL_Y0,alpha);
-                textCentered(g,Component.literal("?"),x+STRIP_CARD_W*.5F,STRIP_WELL_Y0-rise+22,48,GuiFx.fade(TEXT_GOLD,alpha),false);
-            } else {
-                CrateArt.item(g, strip.get(i), x + STRIP_CARD_W * 0.5F,
-                        (STRIP_WELL_Y0 + STRIP_WELL_Y1) * 0.5F - rise - 3.0F, artScale, 0.0F, 0.0F, 1.0F, alpha);
-            }
-            Component caption = special
-                    ? Component.translatable(KEY + "strip.special")
-                    : strip.get(i).getHoverName();
-            textClipped(g, caption, x, STRIP_CAPTION_Y - rise, 16.0F, STRIP_CARD_PITCH * 0.94F,
-                    GuiFx.fade(special ? TEXT_GOLD : 0xFFE6E6E6, alpha), false);
-            if (!special) {
-                textClipped(g, Component.translatable(stripQuality.get(i).translationKey()),
-                        x, STRIP_CAPTION_Y - rise + textScale(15.0F) * font.lineHeight * 1.15F,
-                        15.0F, STRIP_CARD_PITCH * 0.94F, GuiFx.fade(TEXT_MUTED, alpha), false);
-            }
+        textCentered(g, Component.translatable(KEY + "strip.header"), REF_W / 2, 790 - rise,
+                24, GuiFx.fade(TEXT_BRIGHT, alpha), true);
+        int pages = Math.max(1, (strip.size() + STRIP_SLOTS - 1) / STRIP_SLOTS);
+        textRight(g, Component.translatable(KEY + "strip.page", strip.size(), stripPage + 1, pages),
+                STRIP_X1 - 20, 796 - rise, 18, GuiFx.fade(TEXT_DIM, alpha), false);
+        if (strip.isEmpty()) {
+            textCentered(g, Component.translatable(KEY + "strip.empty"), REF_W / 2, 882 - rise,
+                    24, GuiFx.fade(TEXT_DIM, alpha), true);
+            return;
         }
-        g.pose().popPose();
+        int count = Math.min(STRIP_SLOTS, strip.size() - stripPage * STRIP_SLOTS);
+        float left = (REF_W - (count * 160 + Math.max(0, count - 1) * 16)) / 2;
+        for (int i = 0; i < count; i++) {
+            int index = stripPage * STRIP_SLOTS + i;
+            float x = left + i * 176;
+            CrateArt.card(g, x, 826 - rise, 160, 100, 1, 0, stripQuality.get(index).color(), alpha);
+            drawReward(g, candidates().get(index), strip.get(index), x + 80, 874 - rise, 5, 0, 0, 1, alpha);
+            textClipped(g, strip.get(index).getHoverName(), x, 934 - rise, 21, 160,
+                    GuiFx.fade(TEXT_BRIGHT, alpha), false);
+            var reward = candidates().get(index);
+            Component detail = "skin".equals(reward.kind())
+                    ? Component.translatable(stripQuality.get(index).translationKey())
+                    : Component.translatable(KEY + "strip." + reward.kind());
+            textClipped(g, detail, x, 956 - rise, 17, 160, GuiFx.fade(TEXT_DIM, alpha), false);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -632,13 +631,25 @@ public final class CrateOpenScreen extends Screen {
         CrateArt.modalPanel(g, (int) MODAL_X0, (int) MODAL_Y0, (int) MODAL_X1, (int) MODAL_Y1, alpha);
 
         // 左缩略图：150×120 的箱子
-        CrateArt.crate(g, MODAL_THUMB_X + MODAL_THUMB_W * 0.5F, MODAL_THUMB_Y + MODAL_THUMB_H,
-                MODAL_THUMB_W * 0.92F, 0.0F, accent(), 0.0F);
+        drawCrate(g, MODAL_THUMB_X + MODAL_THUMB_W * 0.5F, MODAL_THUMB_Y + MODAL_THUMB_H,
+                MODAL_THUMB_W * 0.92F, 0.0F, 0.0F);
 
-        textLeft(g, Component.translatable(KEY + "modal.title", crateName()), MODAL_TEXT_X,
-                MODAL_TITLE_Y, 26.0F, GuiFx.fade(TEXT_TITLE, alpha), true);
-        textLeft(g, Component.translatable(KEY + "modal.body", crateName()), MODAL_TEXT_X,
-                MODAL_BODY_Y, 17.0F, GuiFx.fade(TEXT_BODY, alpha), true);
+        textClipped(g, Component.translatable(KEY + "modal.title", crateName()), MODAL_TEXT_X,
+                MODAL_TITLE_Y, 26.0F, 415, GuiFx.fade(TEXT_TITLE, alpha), true);
+        textClipped(g, Component.translatable(KEY + "modal.body", crateName()), MODAL_TEXT_X,
+                MODAL_BODY_Y, 17.0F, 415, GuiFx.fade(TEXT_BODY, alpha), true);
+        CrateCatalog.Entry entry = CrateCatalog.find(crateId);
+        if (entry != null) {
+            Component summary = "unified_pool".equals(entry.rewardMode())
+                    ? Component.translatable(KEY + "modal.unified", entry.rollCount(), entry.minimumSkinCount())
+                    : Component.translatable(KEY + "modal.fixed", entry.skinDrawCount());
+            textLeft(g, summary, MODAL_TEXT_X, MODAL_BODY_Y + 28, 16.0F, GuiFx.fade(TEXT_GOLD, alpha), false);
+            if (!entry.extraKinds().isEmpty()) textClipped(g,
+                    Component.translatable(KEY + "modal.extras", String.join(", ", entry.extraKinds().stream().map(kind -> Component.translatable(
+                            "green_apples".equals(kind) ? "screen.habitrain_lottery.warehouse.green_apples"
+                                    : "screen.habitrain_lottery.config.cards." + kind).getString()).toList())),
+                    MODAL_TEXT_X, MODAL_BODY_Y + 52, 15.0F, 375, GuiFx.fade(TEXT_BODY, alpha), false);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -685,7 +696,7 @@ public final class CrateOpenScreen extends Screen {
                 float roll = 0.0F;
                 // 皮肤美术在参考视频里横向占满卡片；Minecraft 的物品图是正方形，
                 // 因此按较短边适配，保证完整落在井内而不是溢出到相邻卡片上。
-                CrateArt.item(g, stack, x + w * 0.5F, y + h * 0.46F,
+                drawReward(g, index == resultSlot ? resultPreview() : reelRewards.get(index), stack, x + w * 0.5F, y + h * 0.46F,
                         Math.min(w, h) * 0.88F / 16.0F, 0.0F, roll, tint, entry);
             }
         }
@@ -736,20 +747,9 @@ public final class CrateOpenScreen extends Screen {
         // 到展示页才换成六个白色图标 + 关闭。这里按 nameplate 切换。
         g.fill(0, (int) NAV_Y0, (int) canvasW, (int) REF_H, GuiFx.fade(NAV_SCRIM, page));
         g.fill(0, (int) NAV_Y0, (int) canvasW, (int) NAV_Y0 + 1, GuiFx.fade(0x2EFFFFFF, page));
-        if (nameplate > 0.02F) {
-            for (int i = 0; i < NAV_ICON_X.length; i++) {
-                navIcon(g, NAV_ICON_X[i], NAV_Y0 + 12.0F, i, page * nameplate);
-            }
-            // 第一个图标是当前页
-            g.fill((int) NAV_ICON_X[0], (int) (REF_H - 6.0F), (int) (NAV_ICON_X[0] + 26.0F),
-                    (int) (REF_H - 3.0F), GuiFx.fade(0xFFFFFFFF, page * nameplate));
-        }
-
-        // ---- 底部左侧：使用中的钥匙（参考「使用 反恐精英武器箱钥匙」）----
         if (entryHud > 0.02F) {
-            int color = keyCount() <= 0 ? DANGER : TEXT_NAV;
-            textLeft(g, Component.translatable(KEY + "key_use", keyName(), keyCount()), 570.0F,
-                    1034.0F, 20.0F, GuiFx.fade(color, entryHud), true);
+            textCentered(g, Component.translatable(KEY + "key_use", keyName(), keyCount()), REF_W / 2,
+                    992, 20, GuiFx.fade(keyCount() <= 0 ? DANGER : TEXT_NAV, entryHud), true);
         }
 
         // ---- 失败提示 ----
@@ -758,6 +758,10 @@ public final class CrateOpenScreen extends Screen {
             textCentered(g, Component.translatable(message), canvasW * 0.5F, 640.0F, 22.0F,
                     GuiFx.fade(DANGER, 1.0F), true);
 
+        } else if (!stage.active() && candidates().isEmpty()) {
+            textCentered(g, Component.translatable(KEY + "strip.empty"), REF_W / 2, 730, 22, DANGER, true);
+        } else if (!stage.active() && CrateCatalog.find(crateId) != null && !CrateCatalog.find(crateId).enabled()) {
+            textCentered(g, Component.translatable("crates.disabled"), REF_W / 2, 730, 22, DANGER, true);
         } else if (!stage.active() && crateCount() <= 0) {
             textCentered(g, Component.translatable(KEY + "missing_crate"), canvasW * 0.5F, 640.0F, 22.0F,
                     GuiFx.fade(DANGER, page), true);
@@ -785,6 +789,10 @@ public final class CrateOpenScreen extends Screen {
         if (tipAlpha <= 0.02F) return;
         g.fill((int) TIP_HAIRLINE_X, (int) TIP_HAIRLINE_Y0, (int) TIP_HAIRLINE_X + 1,
                 (int) TIP_HAIRLINE_Y1, GuiFx.fade(0x40FFFFFF, tipAlpha));
+        if (rewards.size() > 1 || !rewards.isEmpty() && !"skin".equals(rewards.get(0).kind())) {
+            renderRewardSummary(g, tipAlpha);
+            return;
+        }
         String[] lines = {
                 Component.translatable(KEY + "reveal.tip1",
                         Component.translatable(quality.translationKey())).getString(),
@@ -799,6 +807,35 @@ public final class CrateOpenScreen extends Screen {
                 y += TIP_LINE;
             }
             y += TIP_LINE * 0.6F;
+        }
+    }
+
+    private void renderRewardSummary(GuiGraphics g, float alpha) {
+        textLeft(g, Component.translatable(KEY + "reward_summary"), TIP_X, TIP_Y - 24, 22,
+                GuiFx.fade(TEXT_GOLD, alpha), false);
+        int rowsPerColumn = 4;
+        float rowHeight = 36, iconScale = 1.75F;
+        textRight(g, Component.translatable(KEY + "strip.page", rewards.size(), rewardPage + 1,
+                Math.max(1, (rewards.size() + 7) / 8)), TIP_HAIRLINE_X - 20, TIP_Y - 24,
+                18, GuiFx.fade(TEXT_DIM, alpha), false);
+        for (int i = rewardPage * 8; i < Math.min(rewards.size(), rewardPage * 8 + 8); i++) {
+            CrateService.Reward reward = rewards.get(i);
+            int local = i - rewardPage * 8;
+            float x = TIP_X + (local / rowsPerColumn) * 420, y = TIP_Y + (local % rowsPerColumn) * rowHeight;
+            ItemStack stack;
+            String name;
+            if ("skin".equals(reward.kind())) {
+                String[] parts = reward.id().split("/", 2);
+                stack = parts.length == 2 ? preview(parts[0], parts[1]) : new ItemStack(Items.BARRIER);
+                name = stack.getHoverName().getString();
+            } else {
+                stack = previewReward(reward.kind(), reward.id());
+                name = stack.getHoverName().getString();
+            }
+            drawReward(g, new CrateCatalog.RewardPreview(reward.kind(), reward.id(), reward.amount(), "white"),
+                    stack, x + 14, y + 14, iconScale, 0, 0, 1, alpha);
+            textClipped(g, Component.literal(name + " ×" + reward.amount()), x + 36, y + 3, rowsPerColumn > 5 ? 16 : 19,
+                    365, GuiFx.fade(TEXT_BODY, alpha), false);
         }
     }
 
@@ -817,47 +854,6 @@ public final class CrateOpenScreen extends Screen {
         }
         if (line.length() > 0) out.add(line.toString());
         return out;
-    }
-
-    /** 底部导航条的六个白色图标：视线 / 手枪 / 奔跑 / ⓘ / 图片 / ⋮。 */
-    private void navIcon(GuiGraphics g, float x, float y, int index, float alpha) {
-        int white = GuiFx.fade(0xFFF0F0F0, alpha);
-        int ix = (int) x, iy = (int) y;
-        switch (index) {
-            case 0 -> { // 眼睛
-                g.fill(ix + 2, iy + 6, ix + 24, iy + 20, white);
-                g.fill(ix + 8, iy + 9, ix + 18, iy + 17, GuiFx.fade(0xFF101010, alpha));
-            }
-            case 1 -> { // 手枪
-                g.fill(ix + 2, iy + 8, ix + 24, iy + 14, white);
-                g.fill(ix + 16, iy + 13, ix + 22, iy + 24, white);
-            }
-            case 2 -> { // 奔跑的人
-                g.fill(ix + 11, iy + 2, ix + 17, iy + 8, white);
-                g.fill(ix + 9, iy + 9, ix + 19, iy + 17, white);
-                g.fill(ix + 6, iy + 17, ix + 12, iy + 26, white);
-                g.fill(ix + 16, iy + 17, ix + 22, iy + 26, white);
-            }
-            case 3 -> { // ⓘ
-                g.fill(ix + 4, iy + 4, ix + 22, iy + 6, white);
-                g.fill(ix + 4, iy + 20, ix + 22, iy + 22, white);
-                g.fill(ix + 4, iy + 4, ix + 6, iy + 22, white);
-                g.fill(ix + 20, iy + 4, ix + 22, iy + 22, white);
-                g.fill(ix + 12, iy + 8, ix + 14, iy + 12, white);
-                g.fill(ix + 12, iy + 14, ix + 14, iy + 20, white);
-            }
-            case 4 -> { // 图片
-                g.fill(ix + 2, iy + 4, ix + 24, iy + 24, white);
-                g.fill(ix + 5, iy + 7, ix + 21, iy + 21, GuiFx.fade(0xFF101010, alpha));
-                g.fill(ix + 6, iy + 18, ix + 13, iy + 20, white);
-                g.fill(ix + 10, iy + 13, ix + 20, iy + 20, white);
-            }
-            default -> { // ⋮
-                g.fill(ix + 11, iy + 3, ix + 15, iy + 7, white);
-                g.fill(ix + 11, iy + 11, ix + 15, iy + 15, white);
-                g.fill(ix + 11, iy + 19, ix + 15, iy + 23, white);
-            }
-        }
     }
 
     // =====================================================================
@@ -882,7 +878,9 @@ public final class CrateOpenScreen extends Screen {
                              float maxWidth, int color, boolean shadow) {
         float scale = textScale(size);
         int allowed = Math.max(1, (int) (maxWidth / scale));
-        String shown = font.plainSubstrByWidth(text.getString(), allowed);
+        String raw = text.getString();
+        String shown = font.width(raw) <= allowed ? raw
+                : font.plainSubstrByWidth(raw, Math.max(1, allowed - font.width("…"))) + "…";
         g.pose().pushPose();
         g.pose().translate(x, y, 0.0F);
         g.pose().scale(scale, scale, 1.0F);
@@ -936,7 +934,7 @@ public final class CrateOpenScreen extends Screen {
         boolean idle = !stage.active() || failure;
         // 对应参考视频的确认弹窗：有对应钥匙即可直接点击“开启并保留”，
         // 不要求玩家先点一次底部钥匙文字；selectedKey 只作为网络请求的明确参数。
-        boolean ready = crateCount() > 0 && keyCount() > 0;
+        boolean ready = readyToOpen();
         boolean finished = stage.finished(time);
 
         // 弹窗按钮（画在箱子之前，但热区统一处理）
@@ -952,28 +950,35 @@ public final class CrateOpenScreen extends Screen {
         // 取消之后重新叫出弹窗
         if (idle && (modalCancelled || failure)) {
             hotspots.add(new Hotspot(AGAIN_X0, AGAIN_Y0, AGAIN_X1 - AGAIN_X0, AGAIN_Y1 - AGAIN_Y0,
-                    Component.translatable(KEY + "open"), Kind.TEXT, () -> {
+                    Component.translatable(KEY + "open"), Kind.MODAL_PRIMARY, () -> {
                         modalCancelled = false;
                         if (failure) { failure = false; message = ""; stage = CrateStage.idle(); }
-                    }));
+                    }).enabled(ready));
         }
-        // 钥匙：点击选中对应钥匙
-        if (idle && keyCount() > 0 && !selectedKey.equals(matchingKeyId())) {
-            hotspots.add(new Hotspot(STRIP_X0, 1026.0F, 340.0F, 30.0F,
-                    Component.translatable(KEY + "key_use", keyName(), keyCount()),
-                    Kind.TEXT, () -> selectedKey = matchingKeyId()));
+        if (idle && modalCancelled && strip.size() > STRIP_SLOTS) {
+            hotspots.add(new Hotspot(184, 864, 44, 48, Component.literal("‹"), Kind.MODAL_GHOST,
+                    () -> stripPage--).enabled(stripPage > 0));
+            hotspots.add(new Hotspot(1692, 864, 44, 48, Component.literal("›"), Kind.MODAL_GHOST,
+                    () -> stripPage++).enabled((stripPage + 1) * STRIP_SLOTS < strip.size()));
         }
         // 展示结束后可以再来一次
         if (phase == CrateStage.Phase.REVEAL && finished) {
             hotspots.add(new Hotspot(AGAIN_X0, AGAIN_Y0, AGAIN_X1 - AGAIN_X0, AGAIN_Y1 - AGAIN_Y0,
-                    Component.translatable(KEY + "again"), Kind.TEXT, this::beginOpen));
+                    Component.translatable(KEY + "again"), Kind.MODAL_PRIMARY, this::beginOpen).enabled(ready));
+        }
+        if (finished && rewards.size() > 8) {
+            hotspots.add(new Hotspot(450, 856, 48, 48, Component.literal("‹"), Kind.MODAL_GHOST,
+                    () -> rewardPage--).enabled(rewardPage > 0));
+            hotspots.add(new Hotspot(1420, 856, 48, 48, Component.literal("›"), Kind.MODAL_GHOST,
+                    () -> rewardPage++).enabled((rewardPage + 1) * 8 < rewards.size()));
         }
         // 关闭：任何未锁定的时刻都能返回仓库
         boolean locked = phase == CrateStage.Phase.DISMISS || phase == CrateStage.Phase.HOLD
                 || phase == CrateStage.Phase.CAROUSEL || phase == CrateStage.Phase.BRIDGE;
-        if (!locked || failure) {
-            hotspots.add(new Hotspot(CLOSE_X0, CLOSE_Y0, CLOSE_X1 - CLOSE_X0, CLOSE_Y1 - CLOSE_Y0,
-                    Component.translatable(KEY + "reveal.close"), Kind.TEXT, this::depart));
+        if ((!locked || failure) && (modalCancelled || stage.active())) {
+            float closeX = idle || finished ? CLOSE_X0 : (REF_W - (CLOSE_X1 - CLOSE_X0)) / 2;
+            hotspots.add(new Hotspot(closeX, CLOSE_Y0, CLOSE_X1 - CLOSE_X0, CLOSE_Y1 - CLOSE_Y0,
+                    Component.translatable(KEY + "reveal.close"), Kind.MODAL_GHOST, this::depart));
         }
     }
 
@@ -1076,6 +1081,8 @@ public final class CrateOpenScreen extends Screen {
             if (keyboardFocus >= 0 && keyboardFocus < hotspots.size()) {
                 Hotspot selected = hotspots.get(keyboardFocus);
                 if (selected.enabled) selected.action.run();
+            } else if (!stage.active() && modalCancelled && readyToOpen()) {
+                modalCancelled = false;
             } else if (CrateStage.modalIn(now(), enteredAt) >= 1 && !modalCancelled
                     || stage.finished(now())) {
                 beginOpen();
@@ -1087,6 +1094,18 @@ public final class CrateOpenScreen extends Screen {
 
     @Override public boolean charTyped(char c, int modifiers) { return true; }
 
+    @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
+        float cy = (float) ((y - canvasY) / unit);
+        float cx = (float) ((x - canvasX) / unit);
+        if (!stage.active() && modalCancelled && cx >= STRIP_X0 && cx <= STRIP_X1
+                && cy >= STRIP_Y0 && cy <= STRIP_Y1 && vertical != 0) {
+            stripPage = Math.max(0, Math.min(Math.max(0, (strip.size() - 1) / STRIP_SLOTS),
+                    stripPage + (vertical < 0 ? 1 : -1)));
+            return true;
+        }
+        return super.mouseScrolled(x, y, horizontal, vertical);
+    }
+
     // =====================================================================
     // 开箱
     // =====================================================================
@@ -1095,18 +1114,24 @@ public final class CrateOpenScreen extends Screen {
         long time = now();
         boolean finished = stage.hasResult() && stage.finished(time);
         if (stage.active() && !finished && !failure) return;
-        if (crateCount() <= 0 || keyCount() <= 0) return;
+        if (!readyToOpen()) return;
+        if (CrateClientNetwork.connected() && !CrateClientNetwork.canOpen()) {
+            fail("crates.client_outdated"); return;
+        }
         // 每个箱子只有一把对应钥匙，因此直接选中它，不需要玩家再点一次。
         selectedKey = matchingKeyId();
         keyboardFocus = -1;
         stage = CrateStage.opened(time);
         result = null;
+        rewards = List.of();
         resultStack = ItemStack.EMPTY;
         resultSlot = -1;
         failure = false;
         message = "";
         modalCancelled = false;
         buildReel();
-        CrateClientNetwork.open(crateId, selectedKey);
+        buildStrip();
+        activeOpenId = CrateClientNetwork.open(crateId, selectedKey);
+        if (activeOpenId == null) fail("crates.pending");
     }
 }

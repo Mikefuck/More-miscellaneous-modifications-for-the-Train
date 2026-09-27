@@ -5,7 +5,13 @@ import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
 import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.client.CrateClientNetwork;
+import com.habitrain.lottery.client.gui.CrateAppearancePreviewScreen;
 import com.habitrain.lottery.client.gui.CrateOpenScreen;
+import com.habitrain.lottery.client.gui.CrateManageScreen;
+import com.habitrain.lottery.client.gui.CrateListScreen;
+import com.habitrain.lottery.client.gui.LotteryConfigRootScreen;
+import com.habitrain.lottery.client.gui.MailComposeScreen;
+import com.habitrain.lottery.client.gui.SkinWardrobeScreen;
 import com.habitrain.lottery.client.gui.WarehouseScreen;
 import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.network.CrateNetwork;
@@ -66,6 +72,7 @@ public final class CrateSmoke implements ClientModInitializer {
     private static final int WIN_H = Integer.getInteger("crateSmoke.height", 720);
     private static final int GUI_SCALE = Integer.getInteger("crateSmoke.guiScale", 2);
     private static final String OUT_DIR = System.getProperty("crateSmoke.out", "frames");
+    private static final String MODE = System.getProperty("crateSmoke.mode", "open");
 
     // ---- fixtures -------------------------------------------------------
     private final List<WarehouseEntry> rows = new ArrayList<>();
@@ -92,11 +99,14 @@ public final class CrateSmoke implements ClientModInitializer {
     private final List<Thread> writers = new ArrayList<>();
     private long lastCaptureAt;
     private long returnedAt = -1;
-    private boolean clickedOpen, injected, checkedCancel, reopened;
+    private boolean clickedOpen, injected, checkedCancel, reopened, previewChecked, modalOpened, summaryChecked, summaryReturned;
     private String lastPhase = "";
     private final List<String> events = new ArrayList<>();
     private static final boolean CHECKS = Boolean.getBoolean("crateSmoke.checks");
     private volatile Throwable writerFailure;
+    private int lastManageCaptureTick = -1;
+    private final RewardEditorSmoke rewardEditorSmoke = new RewardEditorSmoke();
+    private final CrateSaveNetworkSmoke saveNetworkSmoke = new CrateSaveNetworkSmoke();
 
     /** One grabbed frame: the index, the wall-clock offset it was taken at and the raw pixels. */
     private static final class Frame {
@@ -129,6 +139,11 @@ public final class CrateSmoke implements ClientModInitializer {
     }
 
     private void onTick(Minecraft mc) {
+        if ("save-network".equals(MODE)) {
+            try { saveNetworkSmoke.tick(mc); }
+            catch (Throwable error) { HabiLotteryMod.LOGGER.error("CRATE_SAVE_NETWORK FAILED", error); mc.stop(); }
+            return;
+        }
         if (mc.getOverlay() != null || mc.screen == null) return;
         try {
             // Visual fixture with no world: keep the lobby-state guard from freezing every frame.
@@ -141,11 +156,221 @@ public final class CrateSmoke implements ClientModInitializer {
             at.setLong(null, System.nanoTime());
 
             ++ticks;
+            if ("rewards".equals(MODE)) { rewardEditorSmoke.tick(mc, ticks); return; }
+            if ("manage".equals(MODE)) { driveManage(mc); return; }
+            if ("menu".equals(MODE)) { driveMenu(mc); return; }
             drive(mc);
             advance(mc);
         } catch (Throwable error) {
             HabiLotteryMod.LOGGER.error("{} FAILED", TAG, error);
             stop(mc);
+        }
+    }
+
+    private void driveManage(Minecraft mc) throws Exception {
+        switch (ticks) {
+            case 30 -> {
+                mc.options.languageCode = "zh_cn";
+                mc.getLanguageManager().setSelected("zh_cn");
+                mc.reloadResourcePacks();
+            }
+            case 50 -> {
+                mc.options.guiScale().set(GUI_SCALE);
+                org.lwjgl.glfw.GLFW.glfwSetWindowSize(mc.getWindow().getWindow(), WIN_W, WIN_H);
+                mc.resizeDisplay();
+            }
+            case 70 -> {
+                CrateService.State fixture = new CrateService.State();
+                for (var entry : com.habitrain.lottery.crate.CrateCatalog.builtins()) {
+                    CrateService.CratePool pool = new CrateService.CratePool();
+                    pool.name = entry.nameKey(); pool.description = entry.nameKey() + ".hint";
+                    pool.tier = entry.primary().id(); pool.icon = entry.icon(); pool.color = entry.color();
+                    pool.keyName = "screen.habitrain_lottery.crate.key." + entry.id();
+                    pool.keyIcon = "minecraft:tripwire_hook";
+                    fixture.crates.put(entry.id(), pool);
+                }
+                CrateService.CratePool custom = new CrateService.CratePool();
+                custom.name = "庆典补给箱"; custom.description = "可开出庆典皮肤与额外奖励";
+                custom.tier = "gold"; custom.color = 0xFFD9A541; custom.appearancePreset = "gilded";
+                custom.keyName = "庆典钥匙"; custom.keyIcon = "minecraft:gold_nugget";
+                custom.customPool = true; custom.skinDrawCount = 2; custom.rollCount = 3;
+                custom.minimumSkinCount = 1; custom.rewardMode = "unified_pool";
+                custom.skinWeights.put("revolver/capture_8", 100);
+                CrateService.ExtraReward apples = new CrateService.ExtraReward();
+                apples.amount = 80; apples.weight = 30; apples.chance = .25;
+                custom.extraRewards.add(apples);
+                fixture.crates.put("festival_2026", custom);
+                CrateClientNetwork.STATE.configJson = new com.google.gson.Gson().toJson(fixture);
+                CrateClientNetwork.STATE.configVersion++;
+                CrateManageScreen screen = new CrateManageScreen(mc.screen);
+                set(screen, "selected", 6);
+                mc.setScreen(screen);
+                event("manage-profile=PASS");
+            }
+            case 100, 130, 160 -> {
+                if (mc.screen instanceof CrateManageScreen screen) {
+                    set(screen, "tab", (ticks - 70) / 30);
+                    set(screen, "scroll", 0);
+                    var method = CrateManageScreen.class.getDeclaredMethod("rebuild");
+                    method.setAccessible(true); method.invoke(screen);
+                    event("manage-tab=" + (ticks - 70) / 30);
+                }
+            }
+            case 115 -> {
+                if (mc.screen instanceof CrateManageScreen screen) {
+                    var method = CrateManageScreen.class.getDeclaredMethod("openAppearancePreview");
+                    method.setAccessible(true);
+                    method.invoke(screen);
+                    event("appearance-preview=PASS");
+                }
+            }
+            case 125 -> {
+                if (mc.screen instanceof CrateAppearancePreviewScreen screen) screen.onClose();
+            }
+            case 175 -> {
+                if (mc.screen instanceof CrateManageScreen screen) {
+                    mc.setScreen(new CrateListScreen(screen, List.of("woodland", "gilded", "festival_2026"),
+                            Map.of("festival_2026", "庆典补给箱"), chosen -> {}));
+                    event("manage-picker=PASS");
+                }
+            }
+            case 185 -> {
+                if (mc.screen instanceof CrateListScreen screen) screen.onClose();
+            }
+            case 190 -> {
+                if (mc.screen instanceof CrateManageScreen screen) {
+                    set(screen, "tab", 4);
+                    set(screen, "scroll", 0);
+                    var method = CrateManageScreen.class.getDeclaredMethod("rebuild");
+                    method.setAccessible(true); method.invoke(screen);
+                    event("manage-limits=PASS");
+                }
+            }
+            case 220 -> {
+                if (mc.screen instanceof CrateManageScreen screen) {
+                    set(screen, "tab", 3);
+                    set(screen, "scroll", 0);
+                    var method = CrateManageScreen.class.getDeclaredMethod("rebuild");
+                    method.setAccessible(true); method.invoke(screen);
+                    event("manage-skins=PASS");
+                }
+            }
+            case 250 -> stop(mc);
+            default -> { }
+        }
+    }
+
+    private void driveMenu(Minecraft mc) throws Exception {
+        switch (ticks) {
+            case 30 -> {
+                mc.options.languageCode = "zh_cn";
+                mc.getLanguageManager().setSelected("zh_cn");
+                mc.reloadResourcePacks();
+            }
+            case 50 -> {
+                mc.options.guiScale().set(GUI_SCALE);
+                org.lwjgl.glfw.GLFW.glfwSetWindowSize(mc.getWindow().getWindow(), WIN_W, WIN_H);
+                mc.resizeDisplay();
+            }
+            case 70 -> {
+                String playerId = "00000000-0000-0000-0000-000000000001";
+                ClientLotteryState.playerList.players = List.of(new com.habitrain.lottery.network.PlayerAdminModels.PlayerRow(
+                        "测试玩家", java.util.UUID.fromString(playerId), 120, 3, true));
+                ClientLotteryState.playerListVersion++;
+                ClientLotteryState.titleCatalogJson = "{\"version\":1,\"titles\":[{\"id\":\"hero\",\"display\":\"英雄\",\"enabled\":true}]}";
+                ClientLotteryState.titlePlayersJson = "{\"" + playerId + "\":{\"current\":\"英雄\",\"owned\":[\"英雄\",\"列车员\"]}}";
+                ClientLotteryState.titleVersion++;
+                var factory = new com.habitrain.lottery.client.ModMenuIntegration().getModConfigScreenFactory();
+                var screen = factory.create(mc.screen);
+                if (!(screen instanceof LotteryConfigRootScreen root))
+                    throw new IllegalStateException("Mod Menu did not create the lottery settings screen");
+                mc.setScreen(root);
+                event("modmenu-players=PASS");
+            }
+            case 83 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root && root.width < 480 && root.height >= 220)
+                    root.mouseClicked(30, 160, 0);
+            }
+            case 88 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root && root.width < 480 && root.height >= 220)
+                    root.mouseClicked(280, 88, 0);
+            }
+            case 95, 120, 145, 170 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root) {
+                    int tab = (ticks - 70) / 25;
+                    var switchTab = LotteryConfigRootScreen.class.getDeclaredMethod("switchTab", int.class);
+                    switchTab.setAccessible(true);
+                    switchTab.invoke(root, tab);
+                    event("modmenu-tab=" + tab);
+                }
+            }
+            case 108 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root && root.width < 480 && root.height >= 220) {
+                    set(root, "titleNarrowPage", 1);
+                    var rebuild = LotteryConfigRootScreen.class.getDeclaredMethod("rebuildTabContent");
+                    rebuild.setAccessible(true);
+                    rebuild.invoke(root);
+                }
+            }
+            case 115 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root && root.width < 480 && root.height >= 220) {
+                    root.mouseClicked(30, 130, 0);
+                    if ((int) get(root, "titleNarrowPage") != 2)
+                        throw new IllegalStateException("selecting a player did not open owned titles");
+                    event("modmenu-title-player-select=PASS");
+                }
+            }
+            case 135 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root) {
+                    root.mouseClicked(root.width < 480 ? 30 : 150, root.width < 480 ? 115 : 84, 0);
+                    if (!(mc.screen instanceof SkinWardrobeScreen))
+                        throw new IllegalStateException("wardrobe did not open from Mod Menu console");
+                    event("modmenu-wardrobe-open=PASS");
+                }
+            }
+            case 144 -> {
+                if (mc.screen instanceof SkinWardrobeScreen screen) screen.onClose();
+                if (!(mc.screen instanceof LotteryConfigRootScreen))
+                    throw new IllegalStateException("wardrobe did not return to Mod Menu console");
+                event("modmenu-wardrobe-return=PASS");
+            }
+            case 157 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root && root.width < 480 && root.height >= 220)
+                    root.mouseClicked(30, 115, 0);
+                else if (mc.screen instanceof LotteryConfigRootScreen root) mc.setScreen(new CrateManageScreen(root));
+                if (!(mc.screen instanceof CrateManageScreen))
+                    throw new IllegalStateException("crate manager did not open from Mod Menu console");
+                event("modmenu-crate-manage-open=PASS");
+            }
+            case 160 -> {
+                if (mc.screen instanceof CrateManageScreen screen) screen.onClose();
+            }
+            case 195 -> {
+                if (mc.screen instanceof LotteryConfigRootScreen root && root.width < 480 && root.height >= 220)
+                    root.mouseClicked(30, 115, 0);
+                else if (mc.screen instanceof LotteryConfigRootScreen root) mc.setScreen(new MailComposeScreen(root));
+                if (!(mc.screen instanceof MailComposeScreen))
+                    throw new IllegalStateException("mail composer did not open from Mod Menu console");
+                event("modmenu-mail-open=PASS");
+            }
+            case 220, 245, 270, 295 -> {
+                if (mc.screen instanceof MailComposeScreen screen) {
+                    set(screen, "page", (ticks - 195) / 25);
+                    var rebuild = MailComposeScreen.class.getDeclaredMethod("rebuildPage");
+                    rebuild.setAccessible(true);
+                    rebuild.invoke(screen);
+                }
+            }
+            case 315 -> {
+                if (!(mc.screen instanceof MailComposeScreen screen))
+                    throw new IllegalStateException("mail composer closed unexpectedly");
+                screen.onClose();
+                if (!(mc.screen instanceof LotteryConfigRootScreen))
+                    throw new IllegalStateException("mail composer did not return to Mod Menu console");
+                event("modmenu-mail-return=PASS");
+            }
+            case 320 -> stop(mc);
+            default -> { }
         }
     }
 
@@ -212,33 +437,67 @@ public final class CrateSmoke implements ClientModInitializer {
         CrateStage stage = (CrateStage)get(screen, "stage");
         String phase = stage.phase(now).name();
         if (!phase.equals(lastPhase)) { lastPhase = phase; event("phase=" + phase); }
-        if (CHECKS && !checkedCancel && now - entered >= 1800) {
+        if (!previewChecked && now - entered >= 1500) {
+            int size = ((List<?>)get(screen, "strip")).size();
+            if (size != 11) throw new IllegalStateException("public pool must contain 9 skins, apples and card: " + size);
+            click(screen, 1714, 888);
+            if ((int)get(screen, "stripPage") != 1) throw new IllegalStateException("next reward page failed");
+            previewChecked = true; event("server-pool-preview-and-pagination=PASS");
+        }
+        if (!modalOpened && now - entered >= 2100) {
+            click(screen, 860, 1050);
+            if ((boolean)get(screen, "modalCancelled")) throw new IllegalStateException("open confirmation failed");
+            modalOpened = true; event("open-confirmation=PASS");
+        }
+        if (CHECKS && !checkedCancel && now - entered >= 2600) {
             click(screen,1290,649);
             if (!(boolean)get(screen,"modalCancelled")) throw new IllegalStateException("cancel click failed");
             checkedCancel = true; event("cancel=PASS");
         }
-        if (CHECKS && checkedCancel && !reopened && now - entered >= 2400) {
-            click(screen,1240,1050);
+        if (CHECKS && checkedCancel && !reopened && now - entered >= 3100) {
+            click(screen,860,1050);
             if ((boolean)get(screen,"modalCancelled")) throw new IllegalStateException("reopen click failed");
             reopened = true; event("reopen=PASS");
         }
-        if (!clickedOpen && now - entered >= (CHECKS ? 2900 : 1933)) {
+        if (!clickedOpen && now - entered >= (CHECKS ? 3600 : 2500)) {
             click(screen,1174,649);
+            if (!(boolean)get(screen, "failure")) throw new IllegalStateException("confirm did not reach the network path");
+            // No connected server: inject its response only after the click reaches the request path.
+            set(screen, "stage", CrateStage.opened(now));
+            set(screen, "activeOpenId", "00000000-0000-0000-0000-000000000001");
+            set(screen, "failure", false);
             stage = (CrateStage)get(screen,"stage");
             if (!stage.active()) throw new IllegalStateException("mouse confirm failed");
             clickedOpen = true; event("mouse-confirm=PASS");
         }
         if (clickedOpen && !injected && now - stage.openedAt() >= 200) {
-            screen.receive(new CrateNetwork.OpenResultS2C(true, CRATE_ID, CrateService.keyItemId(CRATE_ID),
-                    resultType,resultSkin,resultQuality,"crates.opened",158,638));
+            screen.receive(new CrateNetwork.OpenResultS2C((String)get(screen, "activeOpenId"), true,
+                    CRATE_ID, CrateService.keyItemId(CRATE_ID),
+                    resultType,resultSkin,resultQuality,"crates.opened",158,638,
+                    "[{\"kind\":\"skin\",\"id\":\"" + resultType + "/" + resultSkin + "\",\"amount\":1}]", 1));
             injected = true; event("fixture-result="+resultType+"/"+resultSkin);
             inventory.put(CrateService.crateItemId(CRATE_ID),2D);
             inventory.put(CrateService.keyItemId(CRATE_ID),4D);
             CrateClientNetwork.STATE.inventory = Map.copyOf(inventory);
             CrateClientNetwork.STATE.inventoryVersion++;
         }
+        if ("extended".equals(MODE) && injected && stage.finished(now)) {
+            if (!summaryChecked && now >= stage.finishAt() + 200) {
+                List<CrateService.Reward> many = new ArrayList<>();
+                for (int i = 0; i < 12; i++) many.add(new CrateService.Reward("green_apples", "green_apples", i + 1));
+                set(screen, "rewards", List.copyOf(many));
+                click(screen, 1444, 880);
+                if ((int)get(screen, "rewardPage") != 1) throw new IllegalStateException("result next page failed");
+                summaryChecked = true; event("12-rewards-next-page=PASS");
+            }
+            if (summaryChecked && !summaryReturned && now >= stage.finishAt() + 900) {
+                click(screen, 474, 880);
+                if ((int)get(screen, "rewardPage") != 0) throw new IllegalStateException("result previous page failed");
+                summaryReturned = true; event("12-rewards-previous-page=PASS");
+            }
+        }
         if (injected && stage.finished(now) && returnedAt < 0 && now >= stage.finishAt() + TAIL_MS) {
-            click(screen,1420,1050);
+            click(screen,1060,1050);
             // The production hand-off completes on the next tick.
             returnedAt = now;
             event("close-click=PASS");
@@ -273,7 +532,22 @@ public final class CrateSmoke implements ClientModInitializer {
     // ==================================================================
 
     /** Real inventory so the production screen sees crate and key counts above zero. */
-    private void seedInventory() {
+    private void seedInventory() throws Exception {
+        var out = new File(Minecraft.getInstance().gameDirectory, OUT_DIR).toPath();
+        Files.createDirectories(out);
+        com.habitrain.lottery.storage.WorldLotteryPaths.initForTests(Files.createTempDirectory(out, "server-state-"));
+        CrateService.onServerStarted();
+        var gson = new com.google.gson.Gson();
+        var config = gson.fromJson(CrateService.configJson(), CrateService.State.class);
+        var pool = config.crates.get(CRATE_ID);
+        pool.enabled = true; pool.customPool = true; pool.rewardMode = "unified_pool";
+        for (var skin : HabiSkinApi.registrations()) pool.skinWeights.put(skin.type() + "/" + skin.id(), 100);
+        var apples = new CrateService.ExtraReward(); apples.amount = 80; pool.extraRewards.add(apples);
+        var card = new CrateService.ExtraReward(); card.type = "card"; card.cardKind = "civilian"; pool.extraRewards.add(card);
+        if (!CrateService.applyConfigJson(gson.toJson(config))) throw new IllegalStateException("server fixture rejected");
+        CrateService.acceptCatalogJson(CrateService.catalogJson());
+        CrateClientNetwork.STATE.catalogVersion++;
+
         CrateClientNetwork.CrateClientState state = CrateClientNetwork.STATE;
         inventory.put(CrateService.crateItemId(CRATE_ID), 3.0D);
         inventory.put(CrateService.keyItemId(CRATE_ID), 5.0D);
@@ -359,6 +633,64 @@ public final class CrateSmoke implements ClientModInitializer {
 
     private void capture(Minecraft mc) throws Exception {
         if (finished) return;
+        if ("rewards".equals(MODE)) { rewardEditorSmoke.capture(mc, ticks); return; }
+        if ("menu".equals(MODE)) {
+            if ((ticks == 80 || ticks == 86 || ticks == 90 || ticks == 105 || ticks == 112 || ticks == 118
+                    || ticks == 130 || ticks == 140 || ticks == 155 || ticks == 180
+                    || ticks == 205 || ticks == 230 || ticks == 255 || ticks == 280 || ticks == 305)
+                    && lastManageCaptureTick != ticks) {
+                lastManageCaptureTick = ticks;
+                File out = new File(mc.gameDirectory, OUT_DIR);
+                if (!out.isDirectory() && !out.mkdirs()) throw new IllegalStateException("cannot create " + out);
+                String page = switch (ticks) {
+                    case 80 -> "players";
+                    case 86 -> "players-detail";
+                    case 90 -> "players-cards";
+                    case 105 -> "titles";
+                    case 112 -> "titles-players";
+                    case 118 -> "titles-owned";
+                    case 130 -> "skins";
+                    case 140 -> "wardrobe";
+                    case 155 -> "crates";
+                    case 180 -> "mail";
+                    case 205 -> "compose-content";
+                    case 230 -> "compose-recipients";
+                    case 255 -> "compose-rewards";
+                    case 280 -> "compose-skin";
+                    default -> "compose-crates";
+                };
+                try (NativeImage image = Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                    image.writeToFile(new File(out, "modmenu-" + page + ".png"));
+                }
+                HabiLotteryMod.LOGGER.info("{} Mod Menu screenshot {}", TAG, page);
+            }
+            return;
+        }
+        if ("manage".equals(MODE)) {
+            if ((ticks == 80 || ticks == 110 || ticks == 120 || ticks == 140 || ticks == 170 || ticks == 180 || ticks == 200 || ticks == 230)
+                    && lastManageCaptureTick != ticks
+                    && (mc.screen instanceof CrateManageScreen || mc.screen instanceof CrateListScreen
+                    || mc.screen instanceof CrateAppearancePreviewScreen)) {
+                lastManageCaptureTick = ticks;
+                File out = new File(mc.gameDirectory, OUT_DIR);
+                if (!out.isDirectory() && !out.mkdirs()) throw new IllegalStateException("cannot create " + out);
+                String tab = switch (ticks) {
+                    case 80 -> "profile";
+                    case 110 -> "appearance";
+                    case 140 -> "rewards";
+                    case 170 -> "limits";
+                    case 120 -> "appearance-preview";
+                    case 180 -> "picker";
+                    case 200 -> "limits";
+                    default -> "skins";
+                };
+                try (NativeImage image = Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                    image.writeToFile(new File(out, "manage-" + tab + ".png"));
+                }
+                HabiLotteryMod.LOGGER.info("{} manage screenshot {}", TAG, tab);
+            }
+            return;
+        }
         if (flushing) {
             if (writerFailure != null) {
                 HabiLotteryMod.LOGGER.error("{} frame writer failed", TAG, writerFailure);

@@ -98,11 +98,29 @@ public final class CrateArt {
         texturedFace(g, iso, FRONT, new float[][]{{0,1,0},{1,1,0},{1,0,0},{0,0,0}}, 1);
         texturedFace(g, iso, SIDE, new float[][]{{1,1,0},{1,1,1},{1,0,1},{1,0,0}}, 1);
         if (lidAngle <= 90) {
-            texturedFace(g, iso, LID, new float[][]{{0,1.10F,1},{1,1.10F,1},
-                    {1,1.10F+lift,1-cos},{0,1.10F+lift,1-cos}}, 1);
+            texturedFace(g, iso, LID, new float[][]{{0,1.012F,1},{1,1.012F,1},
+                    {1,1.012F+lift,1-cos},{0,1.012F+lift,1-cos}}, 1);
         }
         // Raised lid rim gives the closed case a visible seam.
         line(g, iso.px(0,1,0),iso.py(0,1,0),iso.px(1,1,0),iso.py(1,1,0),EDGE);
+    }
+
+    /** Palette and face mark for configurable cases, while retaining the original geometry and timing. */
+    public static void crateStyled(GuiGraphics g, float cx, float baseY, float width, float lidAngle,
+                                   int accent, float intensity, String preset, String badge) {
+        crate(g, cx, baseY, width, lidAngle, accent, intensity);
+        Iso iso = new Iso(cx, baseY, width);
+        int dark = 0xFF000000 | ((accent & 0xFEFEFE) >> 1);
+        float low = "industrial".equals(preset) ? .23F : .30F;
+        float high = "hazard".equals(preset) ? .65F : .55F;
+        polygon(g, new float[]{iso.px(.12F, low, 0),iso.px(.88F, low, 0),iso.px(.88F, high, 0),iso.px(.12F, high, 0)},
+                new float[]{iso.py(.12F, low, 0),iso.py(.88F, low, 0),iso.py(.88F, high, 0),iso.py(.12F, high, 0)}, 4, dark);
+        line(g, iso.px(.12F, high, 0), iso.py(.12F, high, 0), iso.px(.88F, high, 0), iso.py(.88F, high, 0), accent);
+        if ("diamond".equals(badge) || "star".equals(badge) || "bolt".equals(badge)) {
+            float[] xs = {iso.px(.50F,.59F,0),iso.px(.63F,.43F,0),iso.px(.50F,.27F,0),iso.px(.37F,.43F,0)};
+            float[] ys = {iso.py(.50F,.59F,0),iso.py(.63F,.43F,0),iso.py(.50F,.27F,0),iso.py(.37F,.43F,0)};
+            polygon(g, xs, ys, 4, accent);
+        }
     }
 
     // =====================================================================
@@ -284,7 +302,7 @@ public final class CrateArt {
                 GuiFx.fade(GuiFx.shade(CARD_TOP, dim - 1.0F), alpha), GuiFx.fade(GuiFx.shade(CARD_MID, dim - 1.0F), alpha));
         if (floorTop > split) {
             g.fillGradient(left, split, right, floorTop,
-                    GuiFx.fade(GuiFx.shade(CARD_FLOOR, dim - 1.0F), alpha), GuiFx.fade(GuiFx.shade(CARD_FLOOR_DEEP, dim - 1.0F), alpha));
+                    GuiFx.fade(GuiFx.shade(GuiFx.mix(0xFF30343B, stripe, .28F), dim - 1.0F), alpha), GuiFx.fade(GuiFx.shade(GuiFx.mix(0xFF20242B, stripe, .14F), dim - 1.0F), alpha));
         }
         g.fill(left, top, right, top + 1, GuiFx.alpha(CARD_EDGE, (int)(200 * alpha)));
         if (stripeAlpha > 0.02F) {
@@ -359,7 +377,7 @@ public final class CrateArt {
     public static void modalPanel(GuiGraphics g, int x0, int y0, int x1, int y1, float alpha) {
         float a = CrateStage.clamp01(alpha);
         if (a <= 0.01F || x1 <= x0 || y1 <= y0) return;
-        g.fill(x0, y0, x1, y1, GuiFx.fade(0xB84A5A3C, a));
+        g.fill(x0, y0, x1, y1, GuiFx.fade(0xEE252C24, a));
         g.fill(x0, y0, x1, y0 + 1, GuiFx.fade(0x59FFFFFF, a));
     }
 

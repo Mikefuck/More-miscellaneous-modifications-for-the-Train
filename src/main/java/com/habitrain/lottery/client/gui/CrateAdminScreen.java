@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
 import com.habitrain.lottery.api.skin.SkinQuality;
+import com.habitrain.lottery.api.skin.SkinItems;
 import com.habitrain.lottery.client.CrateClientNetwork;
 import com.habitrain.lottery.client.MenuAccessBridge;
 import com.habitrain.lottery.crate.CrateService;
@@ -43,10 +44,13 @@ public final class CrateAdminScreen extends Screen {
     private final EnumMap<SkinQuality, Integer> monthlyCaps = new EnumMap<>(SkinQuality.class);
     private final EnumMap<SkinQuality, Integer> weeklyUsed = new EnumMap<>(SkinQuality.class);
     private final EnumMap<SkinQuality, Integer> monthlyUsed = new EnumMap<>(SkinQuality.class);
-    private final List<SkinDefinition> visibleSkins = new ArrayList<>();
+    private final List<String> visibleSkins = new ArrayList<>();
     private final String[] rowKeys = new String[ROWS];
     private final Button[] rowButtons = new Button[ROWS];
     private final EditBox[] rowWeights = new EditBox[ROWS];
+    private final EditBox[] rowCaps = new EditBox[ROWS];
+    private final Map<String, Integer> capDrafts = new LinkedHashMap<>();
+    private final Map<String, Integer> produced = new LinkedHashMap<>();
     private final EditBox[] weeklyBoxes = new EditBox[SkinQuality.values().length];
     private final EditBox[] monthlyBoxes = new EditBox[SkinQuality.values().length];
     private final String[] weeklyDrafts = new String[SkinQuality.values().length];
@@ -55,6 +59,9 @@ public final class CrateAdminScreen extends Screen {
     private int selectedCrate;
     private int skinScroll;
     private int configVersion = -1;
+    private long serverRevision;
+    private JsonObject serverCrates = new JsonObject();
+    private JsonObject lifetimeCaps = new JsonObject();
     private boolean draftLoaded;
     private String status = "";
     private String skinQuery = "";
@@ -68,14 +75,17 @@ public final class CrateAdminScreen extends Screen {
     private int editorX;
     private int editorW;
     private int rowsTop;
+    private int quotaRowsTop;
     private int footerY;
     private int visibleRows;
     private int visibleCapRows;
     private int capScroll;
+    private boolean compactLayout;
 
     private Button selectedCrateButton;
     private Button poolPageButton;
     private Button quotaPageButton;
+    private Button managePageButton;
     private Button enabledButton;
     private Button customPoolButton;
     private Button duplicateButton;
@@ -139,22 +149,31 @@ public final class CrateAdminScreen extends Screen {
     private void buildWidgets() {
         editorW = Math.min(600, Math.max(180, width - 16));
         editorX = (width - editorW) / 2;
+        compactLayout = height < 240;
         footerY = height - 26;
-        int controlsY = 84;
-        rowsTop = controlsY + 62;
+        int controlsY = compactLayout ? 66 : 84;
+        int selectorY = compactLayout ? 18 : 34;
+        int tabsY = compactLayout ? 42 : 58;
+        rowsTop = controlsY + (compactLayout ? 48 : 62);
+        quotaRowsTop = compactLayout ? 108 : 112;
         visibleRows = Mth.clamp((footerY - rowsTop - 8) / ROW_H, 1, ROWS);
-        visibleCapRows = Mth.clamp((footerY - 112) / 26, 1, SkinQuality.values().length);
+        visibleCapRows = Mth.clamp((footerY - quotaRowsTop) / 26, 1, SkinQuality.values().length);
         int third = (editorW - 8) / 3;
         addRenderableWidget(Button.builder(Component.literal("‹"), b -> selectCrate(selectedCrate - 1))
-                .bounds(editorX, 34, 24, 20).build());
+                .bounds(editorX, selectorY, 24, 20).build());
         selectedCrateButton = addRenderableWidget(Button.builder(Component.empty(), b -> selectCrate(selectedCrate + 1))
-                .bounds(editorX + 28, 34, editorW - 56, 20).build());
+                .bounds(editorX + 28, selectorY, editorW - 56, 20).build());
         addRenderableWidget(Button.builder(Component.literal("›"), b -> selectCrate(selectedCrate + 1))
-                .bounds(editorX + editorW - 24, 34, 24, 20).build());
+                .bounds(editorX + editorW - 24, selectorY, 24, 20).build());
+        int tabW = (editorW - 8) / 3;
         poolPageButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.crate_admin.pool_title"),
-                b -> showPage(false)).bounds(editorX, 58, (editorW - 4) / 2, 20).build());
+                b -> showPage(false)).bounds(editorX, tabsY, tabW, 20).build());
         quotaPageButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.crate_admin.quotas"),
-                b -> showPage(true)).bounds(editorX + (editorW + 4) / 2, 58, (editorW - 4) / 2, 20).build());
+                b -> showPage(true)).bounds(editorX + tabW + 4, tabsY, tabW, 20).build());
+        managePageButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.crate_admin.manage"),
+                b -> {
+                    if (minecraft != null) minecraft.setScreen(new CrateManageScreen(this));
+                }).bounds(editorX + (tabW + 4) * 2, tabsY, editorW - (tabW + 4) * 2, 20).build());
 
         enabledButton = addRenderableWidget(Button.builder(Component.empty(), b -> toggleEnabled())
                 .bounds(editorX, controlsY, third, 20).build());
@@ -181,7 +200,7 @@ public final class CrateAdminScreen extends Screen {
 
         for (int i = 0; i < SkinQuality.values().length; i++) {
             final int qualityIndex = i;
-            int y = 112 + i * 26;
+            int y = quotaRowsTop + i * 26;
             weeklyBoxes[i] = addRenderableWidget(new EditBox(font, editorX + editorW - 150, y, 70, 20,
                     Component.translatable("screen.habitrain_lottery.crate_admin.weekly")));
             monthlyBoxes[i] = addRenderableWidget(new EditBox(font, editorX + editorW - 74, y, 70, 20,
@@ -204,10 +223,14 @@ public final class CrateAdminScreen extends Screen {
             final int slot = i;
             int y = rowsTop + i * ROW_H;
             rowButtons[i] = addRenderableWidget(Button.builder(Component.empty(), b -> toggleRow(slot))
-                    .bounds(editorX, y, editorW - 84, 20).build());
-            rowWeights[i] = addRenderableWidget(new EditBox(font, editorX + editorW - 78, y, 78, 20,
+                    .bounds(editorX + 22, y, editorW - 154, 20).build());
+            rowWeights[i] = addRenderableWidget(new EditBox(font, editorX + editorW - 126, y, 58, 20,
                     Component.translatable("screen.habitrain_lottery.crate_admin.weight")));
+            rowCaps[i] = addRenderableWidget(new EditBox(font, editorX + editorW - 62, y, 62, 20,
+                    Component.translatable("screen.habitrain_lottery.crate_admin.lifetime_cap")));
             rowWeights[i].setMaxLength(10);
+            rowCaps[i].setMaxLength(10);
+            rowCaps[i].setTooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.crate_admin.lifetime_cap")));
             rowWeights[i].setResponder(value -> {
                 if (updatingWidgets) return;
                 if (rowKeys[slot] != null) {
@@ -219,6 +242,15 @@ public final class CrateAdminScreen extends Screen {
                     }
                     updateSaveState();
                 }
+            });
+            rowCaps[i].setResponder(value -> {
+                if (updatingWidgets || rowKeys[slot] == null) return;
+                Integer parsed = parseCap(value);
+                if (parsed != null) {
+                    capDrafts.put(rowKeys[slot], parsed < 0 ? null : parsed);
+                    dirty = true;
+                }
+                updateSaveState();
             });
         }
 
@@ -318,6 +350,7 @@ public final class CrateAdminScreen extends Screen {
         configVersion = CrateClientNetwork.STATE.configVersion;
         String message = CrateClientNetwork.STATE.configMessage;
         if (savePending) {
+            if (message.isBlank()) return;
             savePending = false;
             savePendingTicks = 0;
             if (!"crates.config_saved".equals(message)) {
@@ -327,12 +360,35 @@ public final class CrateAdminScreen extends Screen {
             }
             dirty = false;
         } else if (dirty) {
-            status = "screen.habitrain_lottery.crate_admin.unsaved_refresh";
+            try {
+                JsonObject latest = JsonParser.parseString(CrateClientNetwork.STATE.configJson).getAsJsonObject();
+                if (latest.has("revision") && latest.get("revision").getAsLong() != serverRevision)
+                    status = "screen.habitrain_lottery.crate_admin.unsaved_refresh";
+            } catch (RuntimeException ignored) { }
             return;
         }
         String json = CrateClientNetwork.STATE.configJson;
         try {
             JsonObject root = JsonParser.parseString(json == null || json.isBlank() ? "{}" : json).getAsJsonObject();
+            serverRevision = root.has("revision") ? root.get("revision").getAsLong() : 0;
+            serverCrates = root.has("crates") && root.get("crates").isJsonObject()
+                    ? root.getAsJsonObject("crates").deepCopy() : new JsonObject();
+            lifetimeCaps = root.has("skinLifetimeCaps") && root.get("skinLifetimeCaps").isJsonObject()
+                    ? root.getAsJsonObject("skinLifetimeCaps").deepCopy() : new JsonObject();
+            capDrafts.clear(); produced.clear();
+            for (Map.Entry<String, JsonElement> entry : lifetimeCaps.entrySet()) {
+                if (entry.getValue().isJsonNull()) continue;
+                try { capDrafts.put(entry.getKey(), entry.getValue().getAsInt()); }
+                catch (RuntimeException ignored) { }
+            }
+            if (root.has("skinProduced") && root.get("skinProduced").isJsonObject())
+                for (Map.Entry<String, JsonElement> entry : root.getAsJsonObject("skinProduced").entrySet()) {
+                    try { produced.put(entry.getKey(), entry.getValue().getAsInt()); }
+                    catch (RuntimeException ignored) { }
+                }
+            definitions.clear();
+            definitions.addAll(CrateService.definitions());
+            selectedCrate = Mth.clamp(selectedCrate, 0, Math.max(0, definitions.size() - 1));
             readCaps(root);
             readPools(root);
             draftLoaded = true;
@@ -342,6 +398,11 @@ public final class CrateAdminScreen extends Screen {
             status = "screen.habitrain_lottery.crate_admin.invalid";
         }
         if (!message.isBlank()) status = message;
+    }
+
+    public void refreshCatalog() {
+        configVersion = -1;
+        refreshFromState();
     }
 
     private void readCaps(JsonObject root) {
@@ -363,8 +424,8 @@ public final class CrateAdminScreen extends Screen {
 
     private void readPools(JsonObject root) {
         ensureDraftDefaults();
-        if (!root.has("pools") || !root.get("pools").isJsonObject()) return;
-        JsonObject all = root.getAsJsonObject("pools");
+        if (!root.has("crates") || !root.get("crates").isJsonObject()) return;
+        JsonObject all = root.getAsJsonObject("crates");
         for (CrateService.Definition definition : definitions) {
             DraftPool pool = defaultPool(definition);
             if (all.has(definition.id()) && all.get(definition.id()).isJsonObject()) {
@@ -401,11 +462,16 @@ public final class CrateAdminScreen extends Screen {
             }
             root.add("weeklyCaps", weekly);
             root.add("monthlyCaps", monthly);
-            JsonObject all = new JsonObject();
+            root.addProperty("revision", serverRevision);
+            JsonObject caps = new JsonObject();
+            capDrafts.forEach((key, value) -> { if (value != null) caps.addProperty(key, value); });
+            root.add("skinLifetimeCaps", caps);
+            JsonObject all = serverCrates.deepCopy();
             for (CrateService.Definition definition : definitions) {
                 DraftPool pool = pools.get(definition.id());
                 if (pool == null) pool = defaultPool(definition);
-                JsonObject out = new JsonObject();
+                JsonObject out = all.has(definition.id()) && all.get(definition.id()).isJsonObject()
+                        ? all.getAsJsonObject(definition.id()) : new JsonObject();
                 out.addProperty("enabled", pool.enabled);
                 out.addProperty("customPool", pool.customPool);
                 out.addProperty("duplicateProtection", pool.duplicateProtection);
@@ -418,11 +484,12 @@ public final class CrateAdminScreen extends Screen {
                     if (total > 4_000_000_000L) throw new IllegalArgumentException();
                     weights.addProperty(entry.getKey(), value);
                 }
-                if (pool.customPool && pool.enabled && total <= 0) throw new IllegalArgumentException();
+                if (pool.customPool && pool.enabled && total <= 0 && requiresSkin(definition.id()))
+                    throw new IllegalArgumentException();
                 out.add("skinWeights", weights);
                 all.add(definition.id(), out);
             }
-            root.add("pools", all);
+            root.add("crates", all);
             savePending = true;
             savePendingTicks = 0;
             CrateClientNetwork.saveConfig(GSON.toJson(root));
@@ -449,15 +516,16 @@ public final class CrateAdminScreen extends Screen {
         enabledButton.setTooltip(Tooltip.create(enabledButton.getMessage()));
         customPoolButton.setTooltip(Tooltip.create(customPoolButton.getMessage()));
         duplicateButton.setTooltip(Tooltip.create(duplicateButton.getMessage()));
-        boolean editable = draftLoaded && !savePending && CrateClientNetwork.connected() && LotteryNetwork.ClientLotteryState.op
+        boolean editable = draftLoaded && !savePending && CrateClientNetwork.connected() && CrateClientNetwork.canEdit()
+                && LotteryNetwork.ClientLotteryState.op
                 && !MenuAccessBridge.isLocked();
         enabledButton.visible = customPoolButton.visible = duplicateButton.visible = !quotaPage;
         skinFilterBox.visible = qualityFilterButton.visible = !quotaPage;
         for (int i = 0; i < SkinQuality.values().length; i++) {
             boolean visible = quotaPage && i >= capScroll && i < capScroll + visibleCapRows;
             weeklyBoxes[i].visible = monthlyBoxes[i].visible = visible;
-            weeklyBoxes[i].setY(112 + (i - capScroll) * 26);
-            monthlyBoxes[i].setY(112 + (i - capScroll) * 26);
+            weeklyBoxes[i].setY(quotaRowsTop + (i - capScroll) * 26);
+            monthlyBoxes[i].setY(quotaRowsTop + (i - capScroll) * 26);
             weeklyBoxes[i].active = monthlyBoxes[i].active = editable;
         }
         enabledButton.active = customPoolButton.active = duplicateButton.active = editable;
@@ -467,6 +535,9 @@ public final class CrateAdminScreen extends Screen {
                 : "screen.habitrain_lottery.crate_admin.reset_current"));
         poolPageButton.active = quotaPage;
         quotaPageButton.active = !quotaPage;
+        managePageButton.active = !dirty && draftLoaded && !savePending;
+        managePageButton.setTooltip(Tooltip.create(Component.translatable(dirty
+                ? "screen.habitrain_lottery.crate_admin.save_first" : "screen.habitrain_lottery.crate_admin.manage")));
         refreshSkinRows();
         updateSaveState();
     }
@@ -493,6 +564,7 @@ public final class CrateAdminScreen extends Screen {
         }
         for (int i = 0; i < visibleRows; i++) {
             if (rowKeys[i] != null) valid &= parseWeight(rowWeights[i].getValue()) != null;
+            if (rowKeys[i] != null) valid &= parseCap(rowCaps[i].getValue()) != null;
         }
         for (CrateService.Definition definition : definitions) {
             DraftPool pool = pools.get(definition.id());
@@ -504,10 +576,10 @@ public final class CrateAdminScreen extends Screen {
             for (SkinDefinition skin : HabiSkinApi.registrations()) {
                 total += Math.max(0, pool.weights.getOrDefault(key(skin), 0));
             }
-            if (total > 4_000_000_000L || (pool.enabled && total == 0)) valid = false;
+            if (total > 4_000_000_000L || (pool.enabled && total == 0 && requiresSkin(definition.id()))) valid = false;
         }
         saveButton.active = valid && dirty && draftLoaded && !savePending
-                && CrateClientNetwork.connected() && LotteryNetwork.ClientLotteryState.op
+                && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && LotteryNetwork.ClientLotteryState.op
                 && !MenuAccessBridge.isLocked();
     }
 
@@ -518,6 +590,16 @@ public final class CrateAdminScreen extends Screen {
         } catch (RuntimeException ignored) {
             return false;
         }
+    }
+
+    private boolean requiresSkin(String crateId) {
+        if (!serverCrates.has(crateId) || !serverCrates.get(crateId).isJsonObject()) return true;
+        JsonObject raw = serverCrates.getAsJsonObject(crateId);
+        try {
+            if (raw.has("rewardMode") && "unified_pool".equals(raw.get("rewardMode").getAsString()))
+                return raw.has("minimumSkinCount") && raw.get("minimumSkinCount").getAsInt() > 0;
+            return !raw.has("skinDrawCount") || raw.get("skinDrawCount").getAsInt() > 0;
+        } catch (RuntimeException ignored) { return true; }
     }
 
     private void refreshSkinRows() {
@@ -531,8 +613,13 @@ public final class CrateAdminScreen extends Screen {
         for (SkinDefinition skin : HabiSkinApi.registrations()) {
             if (qualityFilter >= 0 && skin.quality() != SkinQuality.values()[qualityFilter]) continue;
             String label = key(skin).toLowerCase(Locale.ROOT);
-            if (!query.isBlank() && !label.contains(query)) continue;
-            visibleSkins.add(skin);
+            String name = SkinWardrobeScreen.skinName(skin.type(), skin.id()).getString().toLowerCase(Locale.ROOT);
+            if (!query.isBlank() && !label.contains(query) && !name.contains(query)) continue;
+            visibleSkins.add(label);
+        }
+        if (qualityFilter < 0) for (String missing : currentPool().weights.keySet()) {
+            if (HabiSkinApi.fromEntry(missing).isPresent() || !query.isBlank() && !missing.contains(query)) continue;
+            visibleSkins.add(missing);
         }
         skinScroll = Mth.clamp(skinScroll, 0, Math.max(0, visibleSkins.size() - visibleRows));
         DraftPool pool = currentPool();
@@ -540,21 +627,26 @@ public final class CrateAdminScreen extends Screen {
         for (int slot = 0; slot < ROWS; slot++) {
             int index = skinScroll + slot;
             if (slot < visibleRows && index < visibleSkins.size()) {
-                SkinDefinition skin = visibleSkins.get(index);
-                String skinKey = key(skin);
+                String skinKey = visibleSkins.get(index);
                 rowKeys[slot] = skinKey;
                 int weight = pool.weights.getOrDefault(skinKey, 0);
                 rowButtons[slot].visible = !quotaPage;
                 rowWeights[slot].visible = !quotaPage;
+                rowCaps[slot].visible = !quotaPage;
                 rowButtons[slot].active = draftLoaded && !savePending
-                        && CrateClientNetwork.connected() && LotteryNetwork.ClientLotteryState.op
+                        && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && LotteryNetwork.ClientLotteryState.op
                         && !MenuAccessBridge.isLocked();
-                rowWeights[slot].active = rowButtons[slot].active && pool.customPool;
+                rowWeights[slot].active = rowButtons[slot].active && pool.customPool
+                        && HabiSkinApi.fromEntry(skinKey).isPresent();
+                rowCaps[slot].active = rowButtons[slot].active;
                 rowWeights[slot].setValue(String.valueOf(weight));
+                rowCaps[slot].setValue(capDrafts.containsKey(skinKey) && capDrafts.get(skinKey) != null
+                        ? String.valueOf(capDrafts.get(skinKey)) : "∞");
             } else {
                 rowKeys[slot] = null;
                 rowButtons[slot].visible = false;
                 rowWeights[slot].visible = false;
+                rowCaps[slot].visible = false;
             }
         }
         updatingWidgets = false;
@@ -573,11 +665,24 @@ public final class CrateAdminScreen extends Screen {
             String skinKey = rowKeys[slot];
             if (skinKey == null) continue;
             int weight = pool.weights.getOrDefault(skinKey, 0);
-            String probability = total <= 0 || weight <= 0 ? "0.00%"
+            String probability = total <= 0 || weight <= 0 || HabiSkinApi.fromEntry(skinKey).isEmpty() ? "0.00%"
                     : String.format(Locale.ROOT, "%.2f%%", weight * 100.0D / total);
-            String name = font.plainSubstrByWidth(skinKey, Math.max(30, editorW - 170));
+            String[] parts = skinKey.split("/", 2);
+            String display = parts.length == 2 ? SkinWardrobeScreen.skinName(parts[0], parts[1]).getString() : skinKey;
+            String name = font.plainSubstrByWidth(display, Math.max(24, editorW - 195));
             rowButtons[slot].setMessage(Component.literal((weight > 0 ? "✓ " : "○ ") + name + "  " + probability));
-            rowButtons[slot].setTooltip(Tooltip.create(Component.literal(skinKey + "  " + probability)));
+            String cap = capDrafts.containsKey(skinKey) && capDrafts.get(skinKey) != null
+                    ? String.valueOf(capDrafts.get(skinKey)) : "∞";
+            SkinDefinition registered = HabiSkinApi.fromEntry(skinKey).orElse(null);
+            String modelStatus = registered == null
+                    ? Component.translatable("screen.habitrain_lottery.crate_admin.provider_missing").getString()
+                    : com.habitrain.lottery.client.SkinClient.hasModel(parts[0], parts[1])
+                    ? Component.translatable("screen.habitrain_lottery.crate_admin.model_ready").getString()
+                    : Component.translatable("screen.habitrain_lottery.crate_admin.model_missing").getString();
+            rowButtons[slot].setTooltip(Tooltip.create(Component.literal(skinKey + "  " + probability
+                    + "  " + produced.getOrDefault(skinKey, 0) + "/" + cap + "  " + modelStatus
+                    + (registered == null ? "" : "  " + Component.translatable(registered.quality().translationKey()).getString()
+                    + "  " + registered.model().getNamespace()))));
         }
     }
 
@@ -591,6 +696,9 @@ public final class CrateAdminScreen extends Screen {
                 return false;
             }
             pool.weights.put(rowKeys[slot], value);
+            Integer cap = parseCap(rowCaps[slot].getValue());
+            if (cap == null) return false;
+            capDrafts.put(rowKeys[slot], cap < 0 ? null : cap);
         }
         return true;
     }
@@ -602,6 +710,10 @@ public final class CrateAdminScreen extends Screen {
         DraftPool pool = currentPool();
         pool.customPool = true;
         int value = pool.weights.getOrDefault(key, 0);
+        if (value <= 0 && HabiSkinApi.fromEntry(key).isEmpty()) {
+            status = "screen.habitrain_lottery.crate_admin.provider_missing";
+            return;
+        }
         pool.weights.put(key, value > 0 ? 0 : 100);
         dirty = true;
         refreshWidgetsFromDraft();
@@ -609,7 +721,7 @@ public final class CrateAdminScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-        if (mouseX >= editorX && mouseX < editorX + editorW && mouseY >= 108 && mouseY < footerY) {
+        if (mouseX >= editorX && mouseX < editorX + editorW && mouseY >= (compactLayout ? 90 : 108) && mouseY < footerY) {
             if (quotaPage) {
                 capScroll = Mth.clamp(capScroll + (verticalAmount < 0 ? 1 : -1), 0,
                         Math.max(0, SkinQuality.values().length - visibleCapRows));
@@ -644,27 +756,31 @@ public final class CrateAdminScreen extends Screen {
         renderBackground(g, mouseX, mouseY, delta);
         g.fill(editorX - 4, 4, editorX + editorW + 4, footerY - 2, 0xE51B242C);
         g.fill(editorX - 4, 4, editorX + editorW + 4, 7, 0xFF57C6D6);
-        g.drawCenteredString(font, getTitle(), width / 2, 14, 0xFFFFFFFF);
-        String subtitle = Component.translatable("screen.habitrain_lottery.crate_admin.subtitle_full").getString();
-        g.drawCenteredString(font, font.plainSubstrByWidth(subtitle, editorW), width / 2, 25, 0xFFAEBBC1);
+        g.drawCenteredString(font, getTitle(), width / 2, compactLayout ? 4 : 14, 0xFFFFFFFF);
+        if (!compactLayout) {
+            String subtitle = Component.translatable("screen.habitrain_lottery.crate_admin.subtitle_full").getString();
+            g.drawCenteredString(font, font.plainSubstrByWidth(subtitle, editorW), width / 2, 25, 0xFFAEBBC1);
+        }
         CrateService.Definition definition = currentDefinition();
         DraftPool pool = currentPool();
         if (definition != null && !quotaPage) {
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.key_label",
+            if (!compactLayout) g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.key_label",
                     CrateService.keyItemId(definition.id())), editorX, 128, 0xFF8A979D, false);
             long total = pool.weights.values().stream().filter(v -> v != null && v > 0).mapToLong(Integer::longValue).sum();
             int active = (int) pool.weights.values().stream().filter(v -> v != null && v > 0).count();
             Component summary = pool.customPool && pool.enabled && total == 0
                     ? Component.translatable("screen.habitrain_lottery.crate_admin.empty_pool")
                     : Component.translatable("screen.habitrain_lottery.crate_admin.pool_summary", active, total);
-            g.drawString(font, font.plainSubstrByWidth(summary.getString(), editorW), editorX, footerY - 14, 0xFFD4A55A, false);
+            if (status.isBlank() && CrateClientNetwork.canEdit() && LotteryNetwork.ClientLotteryState.op)
+                g.drawString(font, font.plainSubstrByWidth(summary.getString(), editorW), editorX, footerY - 14, 0xFFD4A55A, false);
         } else if (quotaPage) {
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.quality"), editorX, 96, 0xFFD4A55A, false);
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.weekly"), editorX + editorW - 150, 96, 0xFF8AD0D9, false);
-            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.monthly"), editorX + editorW - 74, 96, 0xFFE0B56D, false);
+            int headerY = compactLayout ? 94 : 96;
+            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.quality"), editorX, headerY, 0xFFD4A55A, false);
+            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.weekly"), editorX + editorW - 150, headerY, 0xFF8AD0D9, false);
+            g.drawString(font, Component.translatable("screen.habitrain_lottery.crate_admin.monthly"), editorX + editorW - 74, headerY, 0xFFE0B56D, false);
             for (int i = capScroll; i < Math.min(SkinQuality.values().length, capScroll + visibleCapRows); i++) {
                 SkinQuality quality = SkinQuality.values()[i];
-                int y = 112 + (i - capScroll) * 26;
+                int y = quotaRowsTop + (i - capScroll) * 26;
                 g.drawString(font, Component.translatable(quality.translationKey()), editorX, y + 5, quality.color(), false);
                 int weekRemain = Math.max(0, weeklyCaps.getOrDefault(quality, 0) - weeklyUsed.getOrDefault(quality, 0));
                 int monthRemain = Math.max(0, monthlyCaps.getOrDefault(quality, 0) - monthlyUsed.getOrDefault(quality, 0));
@@ -675,8 +791,17 @@ public final class CrateAdminScreen extends Screen {
             Component text = status.startsWith("screen.") || status.startsWith("crates.")
                     ? Component.translatable(status) : Component.literal(status);
             g.drawCenteredString(font, font.plainSubstrByWidth(text.getString(), editorW), width / 2, footerY - 14, 0xFFD4A55A);
+        } else if (!CrateClientNetwork.canEdit()) {
+            g.drawCenteredString(font, Component.translatable("crates.client_outdated"), width / 2, footerY - 14, 0xFFFF6B6B);
         } else if (!LotteryNetwork.ClientLotteryState.op) {
             g.drawCenteredString(font, Component.translatable("screen.habitrain_lottery.crate_admin.readonly"), width / 2, footerY - 14, 0xFFFF6B6B);
+        }
+        if (!quotaPage) for (int slot = 0; slot < visibleRows; slot++) {
+            String key = rowKeys[slot];
+            if (key == null) continue;
+            var stack = SkinItems.preview(key);
+            if (!stack.isEmpty()) g.renderItem(stack, editorX + 2, rowsTop + slot * ROW_H + 2);
+            else g.drawString(font, "?", editorX + 7, rowsTop + slot * ROW_H + 6, 0xFFFF7777, false);
         }
         suppressNestedBackground = true;
         try { super.render(g, mouseX, mouseY, delta); }
@@ -696,6 +821,11 @@ public final class CrateAdminScreen extends Screen {
             int parsed = Integer.parseInt(value == null ? "" : value.trim());
             return parsed >= 0 && parsed <= 1_000_000_000 ? parsed : null;
         } catch (RuntimeException ignored) { return null; }
+    }
+
+    private static Integer parseCap(String value) {
+        if (value == null || value.isBlank() || "∞".equals(value.trim())) return -1;
+        return parseWeight(value);
     }
 
     private static int parseRequired(EditBox box) { return Integer.parseInt(box.getValue().trim()); }

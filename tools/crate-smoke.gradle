@@ -82,7 +82,7 @@ afterEvaluate { project ->
                 vmArg "-Dmixin.debug.export=true"
                 // 可选：-PcrateSmokeW=1920 -PcrateSmokeH=1080 -PcrateSmokeScale=1 -PcrateSmokeOut=frames-hd
                 // 参考视频是 1920×1080，用 guiScale=1 可以逐像素对照 §1/§13 的实测坐标。
-                ['W': 'width', 'H': 'height', 'Scale': 'guiScale', 'Out': 'out', 'Checks': 'checks'].each { key, prop ->
+                ['W': 'width', 'H': 'height', 'Scale': 'guiScale', 'Out': 'out', 'Checks': 'checks', 'Mode': 'mode'].each { key, prop ->
                     if (project.hasProperty("crateSmoke${key}")) {
                         vmArg "-DcrateSmoke.${prop}=${project.property("crateSmoke${key}")}"
                     }

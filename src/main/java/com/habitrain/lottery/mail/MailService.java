@@ -218,7 +218,7 @@ public final class MailService {
     }
 
     public static boolean send(ServerPlayer target, MailDraft draft) {
-        if (target == null || draft == null || !WorldLotteryPaths.ready()) {
+        if (target == null || draft == null || !WorldLotteryPaths.ready() || !publishedRewards(draft)) {
             return false;
         }
         UUID uuid = target.getUUID();
@@ -246,7 +246,7 @@ public final class MailService {
     }
 
     public static boolean sendOffline(UUID uuid, String nameHint, MailDraft draft) {
-        if (uuid == null || draft == null || !WorldLotteryPaths.ready()) {
+        if (uuid == null || draft == null || !WorldLotteryPaths.ready() || !publishedRewards(draft)) {
             return false;
         }
         synchronized (mailboxLock(uuid)) {
@@ -268,6 +268,16 @@ public final class MailService {
                 return false;
             }
         }
+    }
+
+    private static boolean publishedRewards(MailDraft draft) {
+        for (MailReward reward : draft.rewards()) {
+            if (reward == null || reward.kind() != MailReward.Kind.CRATE && reward.kind() != MailReward.Kind.KEY)
+                continue;
+            CrateCatalog.Entry entry = CrateCatalog.find(reward.factionType());
+            if (entry == null || entry.archived()) return false;
+        }
+        return true;
     }
 
     /**
@@ -581,7 +591,7 @@ public final class MailService {
                     var reward = MailReward.skinEntry(r.factionType());
                     var skin = com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType())
                             .orElseThrow(() -> new IllegalArgumentException("Skin provider unavailable: " + reward.factionType()));
-                    if (!PlayerLotteryStore.get().commitSkinAccess(uuid, skin.type(), skin.id(), true))
+                    if (!PlayerLotteryStore.get().awardSkin(uuid, skin.type(), skin.id(), Math.max(1, r.amount())))
                         throw new IllegalStateException("Skin reward could not be persisted");
                     messages.add(Component.literal("§a[邮箱] 已解锁皮肤 " + reward.factionType()));
                 }
@@ -691,6 +701,7 @@ public final class MailService {
                 data.greenApples = Math.max(0, snap.greenApples);
                 data.systemItems = snap.skins.copy().systemItems;
                 data.unlocked = snap.skins.copy().unlocked;
+                data.ownedSkinCounts = snap.skins.copy().ownedSkinCounts;
                 data.equipped = snap.skins.copy().equipped;
             });
             if (PlayerLotteryStore.get().isLoadFailed(uuid) || !PlayerLotteryStore.get().flush(uuid)) {

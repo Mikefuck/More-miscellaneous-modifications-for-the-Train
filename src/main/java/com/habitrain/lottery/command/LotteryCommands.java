@@ -72,14 +72,19 @@ public final class LotteryCommands {
                                         .then(Commands.argument("item", StringArgumentType.word())
                                                 .suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
                                                         java.util.stream.Stream.concat(
-                                                                        CrateService.definitions().stream().map(d -> "crate_" + d.id()),
-                                                                        CrateService.definitions().stream().map(CrateService.Definition::keyId))
+                                                                        com.habitrain.lottery.crate.CrateCatalog.publishedEntries().stream().map(d -> "crate_" + d.id()),
+                                                                        com.habitrain.lottery.crate.CrateCatalog.publishedEntries().stream().map(com.habitrain.lottery.crate.CrateCatalog.Entry::keyId))
                                                                 .sorted(), builder))
                                                 .then(Commands.argument("amount", IntegerArgumentType.integer(1, 100000))
                                                         .executes(ctx -> {
                                                             ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
                                                             String raw = StringArgumentType.getString(ctx, "item");
                                                             String id = raw.startsWith("crate_") || raw.startsWith("key_") ? raw : "crate_" + raw;
+                                                            String crateId = id.startsWith("crate_") ? id.substring(6) : id.substring(4);
+                                                            var entry = com.habitrain.lottery.crate.CrateCatalog.find(crateId);
+                                                            if (entry == null || entry.archived()) {
+                                                                ctx.getSource().sendFailure(Component.literal("箱子已归档或不存在")); return 0;
+                                                            }
                                                             var result = com.habitrain.lottery.api.player.HabiSystemItemApi.grant(
                                                                     target.getUUID(), net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
                                                                             CrateService.NAMESPACE, id), IntegerArgumentType.getInteger(ctx, "amount"));

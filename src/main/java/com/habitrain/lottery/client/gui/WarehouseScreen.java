@@ -3,6 +3,7 @@ package com.habitrain.lottery.client.gui;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.habitrain.lottery.client.LotteryClientNetwork;
+import com.habitrain.lottery.client.SkinClient;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.network.CardUseMenuS2C;
@@ -10,6 +11,7 @@ import com.habitrain.lottery.network.CardUseRequestC2S;
 import com.habitrain.lottery.network.LotteryNetwork.ClientLotteryState;
 import com.habitrain.lottery.network.WarehouseNetwork;
 import com.habitrain.lottery.api.skin.SkinItems;
+import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.warehouse.WarehouseEntry;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.Util;
@@ -20,12 +22,20 @@ import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.Items;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -44,6 +54,7 @@ public final class WarehouseScreen extends Screen {
     private static final String KEY = "screen.habitrain_lottery.warehouse.";
 
     private enum Page { WAREHOUSE, CARDS, ROLES }
+    private enum SortMode { QUALITY, NAME, COUNT }
 
     /** chrome 控件类型：决定各自的绘制语言（参考视频里的四类元素）。 */
     private enum Kind { ICON, NAV, TAB, PILL, SORT, PRIMARY, GHOST }
@@ -57,7 +68,12 @@ public final class WarehouseScreen extends Screen {
     private WarehouseLayout layout;
     private Page page = Page.WAREHOUSE;
     private String filter = "all", state = "all", query = "";
-    private boolean sortByCount, reducedMotion;
+    private SortMode sortMode = SortMode.QUALITY;
+    private boolean reducedMotion, draggingPreview;
+    private float previewYaw, previewPitch;
+    private BakedModel measuredSkinModel;
+    private SkinGeometry skinGeometry;
+    private static final float YAW_SENSITIVITY = 0.03F, PITCH_SENSITIVITY = 0.02F, PITCH_LIMIT = 1.4F;
     private List<WarehouseEntry> inventory = List.of();
     private List<WarehouseRole> roles = List.of();
     private final List<Tile> tiles = new ArrayList<>();
@@ -81,6 +97,7 @@ public final class WarehouseScreen extends Screen {
     private boolean handedOff;
     private float delta = 16, switchDirection = 1;
     private int requestId, requestAttempts, expectedTotal = -1, cardEpoch;
+    private long expectedInventoryRevision, incomingRevision = -1, knownInventoryRevision;
     private long cardRequestAt;
     private int cardAttempts;
     private final List<WarehouseEntry> incoming = new ArrayList<>();
@@ -213,8 +230,13 @@ public final class WarehouseScreen extends Screen {
 
         // 右侧排序下拉框：field #1A1F1E / 1px #3A4442 / r=4 / ⇅ … ∨
         sortControl = control(layout.sortFieldX(), layout.sortFieldY(), layout.sortFieldWidth(), layout.sortFieldHeight(),
-                Kind.SORT, text(sortByCount ? "count_sort" : "name_sort"), () -> {
-            sortByCount = !sortByCount; rebuildChrome(); rebuildGrid(true);
+                Kind.SORT, text(switch (sortMode) {
+                    case QUALITY -> "quality_sort";
+                    case NAME -> "name_sort";
+                    case COUNT -> "count_sort";
+                }), () -> {
+            sortMode = SortMode.values()[(sortMode.ordinal() + 1) % SortMode.values().length];
+            rebuildChrome(); rebuildGrid(true);
         }, null, null, null);
 
         // 搜索框（参考视频次级行左侧的放大镜）
@@ -225,7 +247,7 @@ public final class WarehouseScreen extends Screen {
         search.setValue(query); search.setResponder(value -> { query = value; scroll = 0; rebuildGrid(false); });
         addRenderableWidget(search);
 
-        detailBack = new Control(width - drawerWidth() + 10, Math.max(20, Math.round(30 * layout.scale())), 46, 18,
+        detailBack = new Control(width - drawerWidth() + 10, 8, 46, 18,
                 Kind.GHOST, Component.translatable("gui.back"), this::closeDetail, null, null, null);
         detailAction = new Control(width - drawerWidth() + 12, height - 42, drawerWidth() - 24, 24,
                 Kind.PRIMARY, text("use"), this::detailAction, null, null, null);
@@ -284,10 +306,15 @@ public final class WarehouseScreen extends Screen {
                 if (stateMatches(tile) && matches(tile)) result.add(tile);
             }
         }
-        Comparator<Tile> order = Comparator.comparing(t -> t.getMessage().getString(), String.CASE_INSENSITIVE_ORDER);
-        if (sortByCount) order = Comparator.<Tile>comparingInt(t -> t.entry.count()).reversed().thenComparing(order);
-        // Currency first in the warehouse; other categories share the reference's uniform grid.
-        if (page == Page.WAREHOUSE) order = Comparator.<Tile>comparingInt(t -> t.entry.kind().equals("currency") ? 0 : 1).thenComparing(order);
+        Comparator<Tile> byName = Comparator.comparing(t -> t.getMessage().getString(), String.CASE_INSENSITIVE_ORDER);
+        Comparator<Tile> order = switch (sortMode) {
+            // Only skins carry a quality. Keep ungraded entries together after the five grades.
+            case QUALITY -> Comparator.<Tile>comparingInt(t -> t.entry.kind().equals("skin")
+                    ? SkinQuality.values().length - 1 - t.entry.quality().ordinal() : SkinQuality.values().length)
+                    .thenComparing(byName);
+            case NAME -> byName;
+            case COUNT -> Comparator.<Tile>comparingInt(t -> t.entry.count()).reversed().thenComparing(byName);
+        };
         result.sort(order);
         tiles.addAll(result);
         for (int i = 0; i < tiles.size(); i++) { tiles.get(i).index = i; addWidget(tiles.get(i)); }
@@ -360,7 +387,7 @@ public final class WarehouseScreen extends Screen {
         if (resetAttempts) { requestAttempts = 0; cardsKnown = false; }
         if (!ClientPlayNetworking.canSend(WarehouseNetwork.Request.TYPE)) { error = "unavailable"; loading = false; return; }
         requestId = java.util.concurrent.ThreadLocalRandom.current().nextInt();
-        incoming.clear(); expectedTotal = -1; loading = true; error = ""; requestAt = now(); requestAttempts++;
+        incoming.clear(); expectedTotal = -1; incomingRevision = -1; loading = true; error = ""; requestAt = now(); requestAttempts++;
         ClientPlayNetworking.send(new WarehouseNetwork.Request(requestId));
         if (!CardGuiGameState.gameActiveOrStarting() && ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
             cardEpoch = ClientLotteryState.cardInventoryVersion;
@@ -377,14 +404,30 @@ public final class WarehouseScreen extends Screen {
     public void receive(WarehouseNetwork.Snapshot snapshot) {
         if (!loading || snapshot.requestId() != requestId) return;
         if (!snapshot.error().isEmpty()) { loading = false; error = snapshot.error(); return; }
+        if (snapshot.inventoryRevision() < expectedInventoryRevision
+                || incomingRevision >= 0 && incomingRevision != snapshot.inventoryRevision()) {
+            loading = false; error = "sync_error"; return;
+        }
         if (snapshot.offset() != incoming.size() || expectedTotal >= 0 && expectedTotal != snapshot.total()) {
             loading = false; error = "sync_error"; return;
         }
-        expectedTotal = snapshot.total(); incoming.addAll(snapshot.entries());
+        expectedTotal = snapshot.total(); incomingRevision = snapshot.inventoryRevision(); incoming.addAll(snapshot.entries());
         if (incoming.size() == expectedTotal) {
             inventory = List.copyOf(incoming); loading = false; known = true; error = "";
+            knownInventoryRevision = incomingRevision;
             rebuildGrid(false);
         }
+    }
+
+    public void expectInventoryRevision(long revision) {
+        expectedInventoryRevision = Math.max(expectedInventoryRevision, revision);
+        refreshAfterReturn = true;
+    }
+
+    public void receiveLateCrateResult(long revision) {
+        expectInventoryRevision(revision);
+        refreshAfterReturn = false;
+        refresh(true);
     }
 
     /** A delayed response never opens a closed screen or interrupts a different request. */
@@ -454,6 +497,8 @@ public final class WarehouseScreen extends Screen {
     private void openDetail(Tile tile) {
         if (busy() || transitioning()) return;
         detail = tile; detailAt = now(); detailClosing = false; detailScroll = 0; notice = "";
+        draggingPreview = false; previewYaw = previewPitch = 0;
+        measuredSkinModel = null; skinGeometry = null;
         setFocused(detailBack); updateControls();
     }
 
@@ -465,7 +510,7 @@ public final class WarehouseScreen extends Screen {
 
     private void closeDetailImmediately() {
         Tile previous = detail;
-        detail = null; detailClosing = false;
+        detail = null; detailClosing = false; draggingPreview = false;
         detailBack.visible = detailAction.visible = false;
         if (previous != null && tiles.contains(previous)) setFocused(previous); else setFocused(null);
         updateControls();
@@ -519,6 +564,8 @@ public final class WarehouseScreen extends Screen {
             loading = false;
             if (requestAttempts < 3) refresh(false); else error = "timeout";
         }
+        if (!loading && expectedInventoryRevision > knownInventoryRevision && requestAttempts < 3
+                && time - requestAt > 600 && !busy()) refresh(false);
         if (!waitingCard.isEmpty() && time - waitingSince > 5000) { waitingCard = ""; notice = "timeout"; }
         if (submitAt >= 0 && time - submitAt >= (reducedMotion ? 0 : 180)) {
             submitAt = -1;
@@ -548,7 +595,7 @@ public final class WarehouseScreen extends Screen {
         for (Control c : tabControls) c.on = c.value.equals(filter);
         for (Control c : stateControls) c.on = c.value.equals(state);
         for (Control c : iconControls) c.active = !busy() && !locked;
-        if (sortControl != null) { sortControl.on = sortByCount; sortControl.active = usable; }
+        if (sortControl != null) { sortControl.on = sortMode == SortMode.QUALITY; sortControl.active = usable; }
         if (motionControl != null) motionControl.glyphOn = !reducedMotion;
         if (search != null) search.active = usable;
         if (detailBack == null) return;
@@ -712,13 +759,94 @@ public final class WarehouseScreen extends Screen {
     }
 
     private int drawerWidth() { return Math.min(280, Math.max(226, width * 2 / 5)); }
+    private int detailArtTop() { return Math.max(36, Math.max(20, Math.round(30 * layout.scale())) + 8); }
+
+    private record SkinGeometry(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {}
+
+    /** Read the baked vertices once per model; display transforms may still animate each frame. */
+    private SkinGeometry skinGeometry(BakedModel model) {
+        if (model == measuredSkinModel && skinGeometry != null) return skinGeometry;
+        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY, minZ = Float.POSITIVE_INFINITY;
+        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
+        RandomSource random = RandomSource.create(42L);
+        for (int face = -1; face < Direction.values().length; face++) {
+            random.setSeed(42L);
+            Direction direction = face < 0 ? null : Direction.values()[face];
+            for (BakedQuad quad : model.getQuads(null, direction, random)) {
+                int[] vertices = quad.getVertices();
+                int stride = vertices.length / 4;
+                if (stride < 3) continue;
+                for (int i = 0; i < 4; i++) {
+                    float vx = Float.intBitsToFloat(vertices[i * stride]);
+                    float vy = Float.intBitsToFloat(vertices[i * stride + 1]);
+                    float vz = Float.intBitsToFloat(vertices[i * stride + 2]);
+                    if (!Float.isFinite(vx) || !Float.isFinite(vy) || !Float.isFinite(vz)) continue;
+                    minX = Math.min(minX, vx); minY = Math.min(minY, vy); minZ = Math.min(minZ, vz);
+                    maxX = Math.max(maxX, vx); maxY = Math.max(maxY, vy); maxZ = Math.max(maxZ, vz);
+                }
+            }
+        }
+        // A missing/custom model has no baked quads; retain a conservative item-sized box.
+        skinGeometry = minX == Float.POSITIVE_INFINITY
+                ? new SkinGeometry(0, 0, 0, 1, 1, 1)
+                : new SkinGeometry(minX, minY, minZ, maxX, maxY, maxZ);
+        measuredSkinModel = model;
+        return skinGeometry;
+    }
+
+    private record PreviewFit(Vector3f center, float radius) {}
+
+    /** Bound the model after its FIXED display transform, including any skin animation. */
+    private PreviewFit previewFit(BakedModel model) {
+        SkinGeometry bounds = skinGeometry(model);
+        var transform = new com.mojang.blaze3d.vertex.PoseStack();
+        model.getTransforms().getTransform(ItemDisplayContext.FIXED).apply(false, transform);
+        transform.translate(-.5F, -.5F, -.5F);
+        var matrix = transform.last().pose();
+        Vector3f center = new Vector3f(
+                (bounds.minX + bounds.maxX) / 2,
+                (bounds.minY + bounds.maxY) / 2,
+                (bounds.minZ + bounds.maxZ) / 2).mulPosition(matrix);
+        float radius = 0;
+        for (int i = 0; i < 8; i++) {
+            Vector3f corner = new Vector3f(
+                    (i & 1) == 0 ? bounds.minX : bounds.maxX,
+                    (i & 2) == 0 ? bounds.minY : bounds.maxY,
+                    (i & 4) == 0 ? bounds.minZ : bounds.maxZ).mulPosition(matrix);
+            radius = Math.max(radius, corner.distance(center));
+        }
+        return new PreviewFit(center, Math.max(.01F, radius));
+    }
+
+    /** Draw only the selected skin's item model, without the local player or equipped gear. */
+    private void drawSkinModel(GuiGraphics g, ItemStack skin, int x1, int y1, int x2, int y2) {
+        if (skin.isEmpty()) return;
+        BakedModel model = SkinClient.model(skin, false,
+                minecraft.getItemRenderer().getModel(skin, minecraft.level, minecraft.player, 0));
+        PreviewFit fit = previewFit(model);
+        float size = Math.min((x2 - x1 - 20) / (2 * fit.radius),
+                (y2 - y1 - 16) / (2 * fit.radius));
+        g.enableScissor(x1, y1 - detailScroll, x2, y2 - detailScroll);
+        g.pose().pushPose();
+        try {
+            g.pose().translate((x1 + x2) / 2.0F, (y1 + y2) / 2.0F, 150);
+            g.pose().mulPose(new Quaternionf().rotateY(previewYaw).rotateX(previewPitch));
+            g.pose().scale(size, -size, size);
+            g.pose().translate(-fit.center.x, -fit.center.y, -fit.center.z);
+            minecraft.getItemRenderer().render(skin, ItemDisplayContext.FIXED, false, g.pose(),
+                    g.bufferSource(), 0xF000F0, OverlayTexture.NO_OVERLAY, model);
+            g.flush();
+        } finally {
+            g.pose().popPose();
+            g.disableScissor();
+        }
+    }
 
     /** 详情抽屉：沿用参考视频确认弹窗的语汇（全屏 ~18% 黑洗 + 实心面板 + 稀有度条 + 绿色主按钮）。 */
     private void drawDetail(GuiGraphics g, int mx, int my, float partialTick) {
         float p = reducedMotion ? 1 : WarehouseMotion.ease(WarehouseMotion.progress(now(), detailAt, detailClosing ? 180 : 240));
         if (detailClosing) p = 1 - p;
         int w = drawerWidth(), x = width - w;
-        int header = Math.max(20, Math.round(30 * layout.scale()));
         int rule = Math.max(2, Math.round(3 * layout.scale()));
         // Item rendering adds 150/200 to Z: both the scrim and drawer must cover those items.
         g.pose().pushPose(); g.pose().translate(0, 0, 350);
@@ -729,17 +857,25 @@ public final class WarehouseScreen extends Screen {
         g.fill(x, 0, x + 1, height, WarehouseTheme.alpha(WarehouseTheme.BORDER, p));
         g.fill(x + 1, 0, width, rule, WarehouseTheme.alpha(detail.accent, p));
         int artH = Math.min(128, Math.max(44, height / 4));
-        int artTop = header + 8;
+        int artTop = detailArtTop();
         boolean clip = height - 56 > artTop + 2;
         if (clip) g.enableScissor(x + 2, artTop, width, height - 56);
         g.pose().pushPose(); g.pose().translate(0, -detailScroll, 0);
-        detail.drawIcon(g, x + w / 2, artTop + artH / 2, artH - 10, p);
+        if (detail.entry.kind().equals("skin") && !detail.icon.isEmpty()) {
+            g.fillGradient(x + 8, artTop, width - 8, artTop + artH,
+                    WarehouseTheme.alpha(SkinQualityStyle.top(detail.entry.quality(), 0), p),
+                    WarehouseTheme.alpha(SkinQualityStyle.bottom(detail.entry.quality()), p));
+            drawSkinModel(g, detail.icon, x + 8, artTop, width - 8, artTop + artH);
+        } else {
+            detail.drawIcon(g, x + w / 2, artTop + artH / 2, artH - 10, p);
+        }
         int y = artTop + artH + 4;
         drawTrim(g, detail.getMessage(), x + 14, y, w - 28, WarehouseTheme.alpha(WarehouseTheme.TITLE, p));
         g.drawString(font, text("quantity", detail.entry.count()), x + 14, y + 14,
                 WarehouseTheme.alpha(WarehouseTheme.BODY, p), false);
         String description = translated(detail.entry.description()).getString();
-        if (detail.entry.kind().equals("skin")) description = SkinQualityStyle.label(detail.entry.quality()).getString() + "\n" + description;
+        if (detail.entry.kind().equals("skin")) description = SkinQualityStyle.label(detail.entry.quality()).getString()
+                + "\n" + description;
         if (detail.entry.equipped()) description += "\n" + text("equipped").getString();
         if (detail.entry.kind().equals("card")) {
             description += "\n" + text(!cardsKnown ? "card_sync" : CardGuiGameState.gameActiveOrStarting() ? "lobby_only"
@@ -777,6 +913,14 @@ public final class WarehouseScreen extends Screen {
             if (busy() || detailClosing || !reducedMotion && now() - detailAt < 240) return true;
             if (detailBack.mouseClicked(x, y, button)) { setFocused(detailBack); return true; }
             if (detailAction.mouseClicked(x, y, button)) { setFocused(detailAction); return true; }
+            int artTop = detailArtTop();
+            int artH = Math.min(128, Math.max(44, height / 4));
+            if (detail.entry.kind().equals("skin") && !detail.icon.isEmpty()
+                    && x >= width - drawerWidth() + 8 && x < width - 8
+                    && y >= artTop - detailScroll && y < artTop + artH - detailScroll) {
+                draggingPreview = true;
+                return true;
+            }
             if (x < width - drawerWidth()) closeDetail();
             return true;
         }
@@ -794,10 +938,19 @@ public final class WarehouseScreen extends Screen {
         positionTiles();
     }
     @Override public boolean mouseDragged(double x, double y, int button, double dx, double dy) {
+        if (button == 0 && draggingPreview && detail != null) {
+            previewYaw -= (float) dx * YAW_SENSITIVITY;
+            previewPitch = Mth.clamp(previewPitch - (float) dy * PITCH_SENSITIVITY, -PITCH_LIMIT, PITCH_LIMIT);
+            return true;
+        }
         if (button == 0 && detail == null && !busy() && x >= layout.x() + layout.width() - 8 && x <= layout.x() + layout.width()) {
             dragScroll(y); return true;
         }
         return super.mouseDragged(x, y, button, dx, dy);
+    }
+    @Override public boolean mouseReleased(double x, double y, int button) {
+        if (button == 0 && draggingPreview) { draggingPreview = false; return true; }
+        return super.mouseReleased(x, y, button);
     }
     @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
         if (detail != null && x >= width - drawerWidth()) {
@@ -996,10 +1149,19 @@ public final class WarehouseScreen extends Screen {
             int x = getX(), y = getY() + drop;
             int wellH = layout.iconHeight(), capH = layout.captionHeight();
             float scale = layout.scale();
-            // 图标井：#454944 卡片 + 1px #5A6058 顶部高光 + 2px #2B302C 底边
-            g.fill(x, y, x + width, y + wellH, WarehouseTheme.alpha(WarehouseTheme.WELL, opacity));
-            g.hLine(x, x + width, y, WarehouseTheme.alpha(WarehouseTheme.WELL_TOP, opacity));
-            g.fill(x, y + Math.max(2, wellH - 2), x + width, y + wellH, WarehouseTheme.alpha(WarehouseTheme.WELL_EDGE, opacity));
+            // Skin quality colors the whole item well; ungraded rewards retain the neutral palette.
+            if (entry.kind().equals("skin")) {
+                g.fillGradient(x, y, x + width, y + wellH,
+                        WarehouseTheme.alpha(SkinQualityStyle.top(entry.quality(), hover), opacity),
+                        WarehouseTheme.alpha(SkinQualityStyle.bottom(entry.quality()), opacity));
+                g.hLine(x, x + width, y, WarehouseTheme.alpha(entry.quality().color(), opacity));
+                g.fill(x, y + Math.max(2, wellH - 2), x + width, y + wellH,
+                        WarehouseTheme.alpha(GuiFx.mix(WarehouseTheme.WELL_EDGE, entry.quality().color(), .48F), opacity));
+            } else {
+                g.fill(x, y, x + width, y + wellH, WarehouseTheme.alpha(WarehouseTheme.WELL, opacity));
+                g.hLine(x, x + width, y, WarehouseTheme.alpha(WarehouseTheme.WELL_TOP, opacity));
+                g.fill(x, y + Math.max(2, wellH - 2), x + width, y + wellH, WarehouseTheme.alpha(WarehouseTheme.WELL_EDGE, opacity));
+            }
             if (hover > .02F) g.fill(x, y, x + width, y + wellH, WarehouseTheme.alpha(0x1FFFFFFF, opacity * hover));
             int margin = Math.max(2, Math.round(10 * scale));
             drawIcon(g, x + width / 2, y + wellH / 2,

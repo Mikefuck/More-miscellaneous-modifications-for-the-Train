@@ -419,7 +419,25 @@ public final class PlayerLotteryStore {
             }
             String c = SkinTypeKeys.canonical(type);
             d.unlocked.computeIfAbsent(c, k -> new HashMap<>()).put(skinId, true);
+            d.ownedSkinCounts.putIfAbsent(c + "/" + skinId, 1);
         });
+    }
+
+    /** Award one or more actual copies; callers must persist the surrounding transaction. */
+    public static void awardSkin(PlayerLotteryData data, String type, String skin, int amount) {
+        if (data == null || amount <= 0 || "default".equals(skin)) throw new IllegalArgumentException("Invalid skin award");
+        String canonical = SkinTypeKeys.canonical(type);
+        String id = normalizeEquippedSkin(skin);
+        if (id == null || id.isBlank()) throw new IllegalArgumentException("Invalid skin award");
+        String key = canonical + "/" + id;
+        data.ownedSkinCounts.merge(key, amount, Math::addExact);
+        for (String writeKey : SkinTypeKeys.writeKeys(type)) {
+            data.unlocked.computeIfAbsent(writeKey, ignored -> new HashMap<>()).put(id, true);
+        }
+    }
+
+    public boolean awardSkin(UUID uuid, String type, String skin, int amount) {
+        return applyToPlayerWithRollback(uuid, data -> awardSkin(data, type, skin, amount));
     }
 
     public void lockSkin(UUID uuid, String type, String skin) {
@@ -842,6 +860,28 @@ public final class PlayerLotteryStore {
         if (data.unlocked == null) {
             data.unlocked = new HashMap<>();
         }
+        Map<String, Integer> counts = new HashMap<>();
+        if (data.ownedSkinCounts != null) data.ownedSkinCounts.forEach((raw, count) -> {
+            if (raw == null || count == null || count <= 0) return;
+            String[] parts = raw.toLowerCase(java.util.Locale.ROOT).split("/", -1);
+            if (parts.length == 2 && !parts[1].isBlank() && !"default".equals(parts[1]))
+                counts.merge(SkinTypeKeys.canonical(parts[0]) + "/" + parts[1], count, Math::max);
+        });
+        data.unlocked.forEach((rawType, skins) -> {
+            if (skins == null) return;
+            String type = SkinTypeKeys.canonical(rawType);
+            skins.forEach((rawId, unlocked) -> {
+                if (Boolean.TRUE.equals(unlocked) && rawId != null && !"default".equalsIgnoreCase(rawId))
+                    counts.putIfAbsent(type + "/" + rawId.toLowerCase(java.util.Locale.ROOT), 1);
+            });
+        });
+        data.ownedSkinCounts = counts;
+        data.crateReceipts = data.crateReceipts == null ? new java.util.LinkedHashMap<>()
+                : new java.util.LinkedHashMap<>(data.crateReceipts);
+        data.crateOpenHistory = data.crateOpenHistory == null ? new java.util.HashSet<>()
+                : new java.util.HashSet<>(data.crateOpenHistory);
+        data.crateOpenHistory.addAll(data.crateReceipts.keySet());
+        data.inventoryRevision = Math.max(0, data.inventoryRevision);
         if (data.equipped == null) {
             data.equipped = new HashMap<>();
         }

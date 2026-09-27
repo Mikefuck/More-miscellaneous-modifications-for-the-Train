@@ -80,7 +80,7 @@ public class LotteryConfigRootScreen extends Screen {
     private int lastSeenPlayerListVersion = -1;
     private int lastSeenTitleVersion = -1;
     private int lastSeenCrateConfigVersion = -1;
-    private int selectedCrateIndex;
+    private int lastSeenCrateCatalogVersion = -1;
     private JsonObject crateConfig = new JsonObject();
 
     // titles (catalog + per-player owned)
@@ -94,13 +94,14 @@ public class LotteryConfigRootScreen extends Screen {
     private EditBox titleCustomBox;
     private EditBox titlePlayerSearchBox;
     private String titlePlayerSearchQuery = "";
+    private int titleNarrowPage;
+    private String titleCustomDraft = "";
 
     // windowed side-lists (scroll survives rebuildTabContent)
     private final ScrollableButtonList playerList = new ScrollableButtonList();
     private final ScrollableButtonList titleCatalogList = new ScrollableButtonList();
     private final ScrollableButtonList titlePlayerList = new ScrollableButtonList();
     private final ScrollableButtonList titleOwnedList = new ScrollableButtonList();
-    private final ScrollableButtonList crateList = new ScrollableButtonList();
 
     private final List<AbstractWidget> tabWidgets = new ArrayList<>();
 
@@ -160,8 +161,10 @@ public class LotteryConfigRootScreen extends Screen {
                 rebuildTabContent();
             }
         }
-        if (selectedTab == TAB_CRATES && CrateClientNetwork.STATE.configVersion != lastSeenCrateConfigVersion) {
+        if (selectedTab == TAB_CRATES && (CrateClientNetwork.STATE.configVersion != lastSeenCrateConfigVersion
+                || CrateClientNetwork.STATE.catalogVersion != lastSeenCrateCatalogVersion)) {
             lastSeenCrateConfigVersion = CrateClientNetwork.STATE.configVersion;
+            lastSeenCrateCatalogVersion = CrateClientNetwork.STATE.catalogVersion;
             try {
                 crateConfig = JsonParser.parseString(CrateClientNetwork.STATE.configJson).getAsJsonObject();
             } catch (RuntimeException ignored) {
@@ -200,6 +203,9 @@ public class LotteryConfigRootScreen extends Screen {
 
     private int pageTop() {
         ConfigConsoleLayout.Rect content = consoleLayout().content();
+        if (selectedTab == TAB_TITLES && consoleLayout().mode() == ConfigConsoleLayout.Mode.NARROW) {
+            return Math.min(content.bottom(), content.y() + 4);
+        }
         return Math.min(content.bottom(), content.y() + 30);
     }
 
@@ -264,6 +270,8 @@ public class LotteryConfigRootScreen extends Screen {
         boolean visible = pageHasSaveAction();
         if (saveButton != null) {
             saveButton.visible = visible;
+            saveButton.active = visible && LotteryClientNetwork.canSendPlay()
+                    && LotteryNetwork.ClientLotteryState.op;
         }
     }
 
@@ -398,7 +406,9 @@ public class LotteryConfigRootScreen extends Screen {
             } else {
                 status = "已请求服务端新建备份…";
             }
-        }).bounds(backupX, y, backupW, 20).build());
+        }).bounds(backupX, y, backupW, 20)
+                .tooltip(Tooltip.create(Component.literal("备份保存在当前世界的 lottery_backup 目录")))
+                .build());
 
         bulkDeltaBox = addTab(new EditBox(font, bulkX, y, bulkW, 20, Component.literal("bulk")));
         bulkDeltaBox.setValue("1");
@@ -593,7 +603,7 @@ public class LotteryConfigRootScreen extends Screen {
         String[] keys = {"civilian", "neutral", "neutral_for_killer", "killer", "self_select", "limit_break"};
         int controlWidth = Math.max(0, width - 6);
         playerCardScrollLayout = PlayerCardScrollLayout.calculate(
-                y, pageBottom() - 2, controlWidth, keys.length);
+                y, pageBottom() - 14, controlWidth, keys.length);
         playerCardPanel.setBounds(
                 x, playerCardScrollLayout.viewportTop(), width,
                 Math.max(1, playerCardScrollLayout.viewportHeight()));
@@ -721,43 +731,26 @@ public class LotteryConfigRootScreen extends Screen {
     // ---------------- skins ----------------
     private void buildSkinsTab(int y, int h) {
         addTab(Button.builder(Component.literal("打开皮肤衣柜"), b -> {
-            net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
-                    new com.habitrain.lottery.skin.SkinNetwork.Request("", ""));
+            if (net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(
+                    com.habitrain.lottery.skin.SkinNetwork.Request.TYPE)) {
+                net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+                        new com.habitrain.lottery.skin.SkinNetwork.Request("", ""));
+            } else if (minecraft != null) {
+                minecraft.setScreen(new SkinWardrobeScreen(this));
+            }
         }).bounds(pageLeft(), y, 120, 20).build());
     }
 
     // ---------------- crates ----------------
     private void buildCratesTab(int y, int h) {
         int x = pageLeft();
-        int editWidth = Math.min(126, Math.max(82, (pageWidth() - 8) / 2));
-        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.crates"), b -> {
-            if (minecraft != null) minecraft.setScreen(new CrateAdminScreen(this, selectedCrateIndex));
-        }).bounds(x, y, editWidth, 20)
-                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.action.crates_hint")))
+        int manageWidth = Math.min(240, pageWidth());
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.crates_manage"), b -> {
+            if (minecraft != null) minecraft.setScreen(new CrateManageScreen(this));
+        }).bounds(x, y, manageWidth, 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.action.crates_manage_hint")))
                 .build());
-        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.crates_refresh"), b -> {
-            if (CrateClientNetwork.connected()) {
-                CrateClientNetwork.requestConfig();
-                status = Component.translatable("screen.habitrain_lottery.config.action.crates_requested").getString();
-            } else {
-                status = Component.translatable("screen.habitrain_lottery.crate_admin.offline").getString();
-            }
-        }).bounds(x + editWidth + 8, y, Math.min(100, pageWidth() - editWidth - 8), 20).build());
-        List<CrateService.Definition> crates = CrateService.definitions();
-        List<String> labels = new ArrayList<>();
-        for (int i = 0; i < crates.size(); i++) {
-            labels.add((i == selectedCrateIndex ? "§a● " : "§7○ ")
-                    + Component.translatable(crates.get(i).nameKey()).getString());
-        }
-        int listW = consoleLayout().mode() == ConfigConsoleLayout.Mode.NARROW
-                ? pageWidth() : Math.min(200, Math.max(110, pageWidth() / 2));
-        crateList.setBounds(x, y + 26, listW, Math.max(ROW_H, h - 26));
-        crateList.setItems(labels, selectedCrateIndex);
-        crateList.setOnSelect(index -> {
-            selectedCrateIndex = index;
-            rebuildTabContent();
-        });
-        crateList.rebuildWidgets(this::addTab, null);
+
     }
 
     // ---------------- mail ----------------
@@ -766,10 +759,9 @@ public class LotteryConfigRootScreen extends Screen {
             if (minecraft != null) {
                 minecraft.setScreen(new MailComposeScreen(this));
             }
-        }).bounds(pageLeft(), y, 120, 20).build());
-        addTab(Button.builder(Component.literal("命令: /hlt mail"), b -> {
-            status = "也可在游戏内执行 /hlt mail（需 OP）";
-        }).bounds(pageLeft() + 128, y, 140, 20).build());
+        }).bounds(pageLeft(), y, 120, 20)
+                .tooltip(Tooltip.create(Component.literal("也可使用 /hlt mail（需 OP）")))
+                .build());
     }
 
     // ---------------- titles ----------------
@@ -958,6 +950,10 @@ public class LotteryConfigRootScreen extends Screen {
                 && !LotteryNetwork.ClientLotteryState.titleCatalogJson.isBlank()) {
             loadWorkingTitleCatalogFromState();
         }
+        if (consoleLayout().mode() == ConfigConsoleLayout.Mode.NARROW) {
+            buildNarrowTitlesTab(y);
+            return;
+        }
 
         addTab(Button.builder(Component.literal("刷新称号"), b -> {
             if (!LotteryClientNetwork.clientRequestTitleSnapshot()) {
@@ -1050,7 +1046,7 @@ public class LotteryConfigRootScreen extends Screen {
             rebuildTabContent();
             status = "已删除模板（需保存到服务器）";
         }).bounds(pageX + templateButtonW + 4, btnY, templateButtonW, 18).build());
-        addTab(Button.builder(Component.literal("授予给选中玩家"), b -> {
+        addTab(Button.builder(narrowTitleText("grant_custom"), b -> {
             applyTitleCatalogFieldsToModel();
             ensureWorkingTitleCatalog();
             if (workingTitleCatalog.titles.isEmpty()) {
@@ -1215,6 +1211,181 @@ public class LotteryConfigRootScreen extends Screen {
                 .bounds(ownedColX + (ownedActionW + 4) * 2, opY2, ownedActionW, 18).build());
     }
 
+    private Component narrowTitleText(String key) {
+        return Component.translatable("screen.habitrain_lottery.config.titles." + key);
+    }
+
+    private void buildNarrowTitlesTab(int y) {
+        int x = pageLeft();
+        int width = pageRight() - x;
+        int gap = 4;
+        int modeWidth = (width - gap * 2) / 3;
+        String[] modes = {"templates", "players", "owned"};
+        for (int i = 0; i < modes.length; i++) {
+            final int next = i;
+            int buttonX = x + i * (modeWidth + gap);
+            int buttonWidth = i == 2 ? pageRight() - buttonX : modeWidth;
+            addTab(Button.builder(Component.literal((titleNarrowPage == i ? "● " : "○ ")
+                    + narrowTitleText(modes[i]).getString()), b -> {
+                applyTitleCatalogFieldsToModel();
+                titleNarrowPage = next;
+                rebuildTabContent();
+            }).bounds(buttonX, y, buttonWidth, 20).build());
+        }
+
+        int toolsY = y + 24;
+        if (titleNarrowPage == 0) {
+            addTab(Button.builder(narrowTitleText("refresh_titles"), b -> {
+                status = LotteryClientNetwork.clientRequestTitleSnapshot()
+                        ? "已请求称号快照" : "未连接或无权限";
+            }).bounds(x, toolsY, width, 20).build());
+            ensureWorkingTitleCatalog();
+            List<TitleCatalog.TitleEntry> titles = workingTitleCatalog.titles;
+            selectedTitleCatalogIndex = titles.isEmpty() ? 0
+                    : Mth.clamp(selectedTitleCatalogIndex, 0, titles.size() - 1);
+            List<String> labels = new ArrayList<>();
+            for (int i = 0; i < titles.size(); i++) {
+                TitleCatalog.TitleEntry title = titles.get(i);
+                String id = title == null || title.id == null ? "?" : title.id;
+                String display = title == null || title.display == null ? "" : title.display;
+                labels.add((i == selectedTitleCatalogIndex ? "§a● " : "§7○ ")
+                        + shortName(id, 18) + "  " + shortName(display, 20));
+            }
+            int listY = y + 48;
+            int listH = Math.max(20, pageBottom() - listY - 44);
+            titleCatalogList.setBounds(x, listY, width, listH);
+            titleCatalogList.setItems(labels, selectedTitleCatalogIndex);
+            titleCatalogList.setOnSelect(index -> {
+                applyTitleCatalogFieldsToModel();
+                selectedTitleCatalogIndex = index;
+                rebuildTabContent();
+            });
+            titleCatalogList.rebuildWidgets(this::addTab, null);
+
+            int editY = titleCatalogList.viewportBottom() + 3;
+            int idW = Math.max(80, width / 3);
+            titleIdBox = addTab(new EditBox(font, x, editY, idW, 18, narrowTitleText("template_id")));
+            titleDisplayBox = addTab(new EditBox(font, x + idW + gap, editY,
+                    width - idW - gap, 18, narrowTitleText("template_display")));
+            titleIdBox.setMaxLength(64);
+            titleDisplayBox.setMaxLength(128);
+            titleIdBox.setHint(narrowTitleText("template_id"));
+            titleDisplayBox.setHint(narrowTitleText("template_display"));
+            if (!titles.isEmpty()) {
+                TitleCatalog.TitleEntry selected = titles.get(selectedTitleCatalogIndex);
+                titleIdBox.setValue(selected == null || selected.id == null ? "" : selected.id);
+                titleDisplayBox.setValue(selected == null || selected.display == null ? "" : selected.display);
+            }
+            int actionY = editY + 22;
+            int actionW = (width - gap * 2) / 3;
+            addTab(Button.builder(narrowTitleText("add"), b -> {
+                applyTitleCatalogFieldsToModel();
+                int n = workingTitleCatalog.titles.size() + 1;
+                workingTitleCatalog.titles.add(new TitleCatalog.TitleEntry("title_" + n, "§e[新称号]", true));
+                selectedTitleCatalogIndex = workingTitleCatalog.titles.size() - 1;
+                rebuildTabContent();
+                status = "已添加模板（需保存）";
+            }).bounds(x, actionY, actionW, 18).build());
+            addTab(Button.builder(narrowTitleText("remove"), b -> {
+                if (workingTitleCatalog.titles.isEmpty()) return;
+                applyTitleCatalogFieldsToModel();
+                workingTitleCatalog.titles.remove(selectedTitleCatalogIndex);
+                selectedTitleCatalogIndex = Math.max(0, selectedTitleCatalogIndex - 1);
+                rebuildTabContent();
+                status = "已删除模板（需保存）";
+            }).bounds(x + actionW + gap, actionY, actionW, 18).build());
+            addTab(Button.builder(narrowTitleText("grant_template"), b -> {
+                applyTitleCatalogFieldsToModel();
+                if (workingTitleCatalog.titles.isEmpty()) return;
+                TitleCatalog.TitleEntry selected = workingTitleCatalog.titles.get(selectedTitleCatalogIndex);
+                sendTitlePlayerOp("grant", selected == null ? "" : selected.display);
+            }).bounds(x + (actionW + gap) * 2, actionY,
+                    pageRight() - x - (actionW + gap) * 2, 18).build());
+            return;
+        }
+
+        if (titleNarrowPage == 1) {
+            int refreshW = 72;
+            addTab(Button.builder(narrowTitleText("refresh_players"), b -> {
+                status = LotteryClientNetwork.clientRequestPlayerList()
+                        ? "已请求玩家列表" : "未连接或无权限";
+            }).bounds(x, toolsY, refreshW, 20).build());
+            titlePlayerSearchBox = addTab(new EditBox(font, x + refreshW + gap, toolsY,
+                    width - refreshW - gap, 20, narrowTitleText("search_players")));
+            titlePlayerSearchBox.setMaxLength(64);
+            titlePlayerSearchBox.setValue(titlePlayerSearchQuery);
+            titlePlayerSearchBox.setHint(narrowTitleText("search_players"));
+            titlePlayerSearchBox.setResponder(query -> {
+                titlePlayerSearchQuery = query == null ? "" : query;
+                rebuildTabContent();
+                titlePlayerSearchBox.setFocused(true);
+                setFocused(titlePlayerSearchBox);
+                titlePlayerSearchBox.setCursorPosition(titlePlayerSearchQuery.length());
+            });
+            List<PlayerAdminModels.PlayerRow> players = titlePlayerRows();
+            List<String> labels = new ArrayList<>();
+            for (PlayerAdminModels.PlayerRow player : players) {
+                labels.add("§7○ " + shortName(player.name, 28));
+            }
+            int listY = y + 48;
+            titlePlayerList.setBounds(x, listY, width, Math.max(20, pageBottom() - listY));
+            titlePlayerList.setItems(labels, selectedTitlePlayerIndex);
+            titlePlayerList.setOnSelect(index -> {
+                selectedTitlePlayerIndex = index;
+                selectedTitlePlayerUuid = players.get(index).uuid;
+                selectedTitleOwnedIndex = 0;
+                titleNarrowPage = 2;
+                rebuildTabContent();
+            });
+            titlePlayerList.rebuildWidgets(this::addTab, null);
+            return;
+        }
+
+        List<String> owned = titlePlayerOwned(selectedTitlePlayerUuid);
+        String current = titlePlayerCurrent(selectedTitlePlayerUuid);
+        selectedTitleOwnedIndex = owned.isEmpty() ? 0
+                : Mth.clamp(selectedTitleOwnedIndex, 0, owned.size() - 1);
+        List<String> labels = new ArrayList<>();
+        for (int i = 0; i < owned.size(); i++) {
+            String title = owned.get(i);
+            labels.add((i == selectedTitleOwnedIndex ? "§a● " : "§7○ ")
+                    + (title.equals(current) ? "★ " : "") + shortName(title, 28));
+        }
+        titleOwnedList.setBounds(x, y + 38, width, 38);
+        titleOwnedList.setItems(labels, selectedTitleOwnedIndex);
+        titleOwnedList.setOnSelect(index -> {
+            selectedTitleOwnedIndex = index;
+            rebuildTabContent();
+        });
+        titleOwnedList.rebuildWidgets(this::addTab, null);
+        int customY = y + 78;
+        int grantW = 72;
+        titleCustomBox = addTab(new EditBox(font, x, customY, width - grantW - gap, 18,
+                narrowTitleText("custom")));
+        titleCustomBox.setMaxLength(128);
+        titleCustomBox.setValue(titleCustomDraft);
+        titleCustomBox.setHint(narrowTitleText("custom"));
+        titleCustomBox.setResponder(value -> titleCustomDraft = value);
+        addTab(Button.builder(narrowTitleText("grant_custom"), b -> {
+            if (titleCustomDraft.isBlank()) {
+                status = narrowTitleText("custom_empty").getString();
+                return;
+            }
+            sendTitlePlayerOp("grant", titleCustomDraft);
+        }).bounds(pageRight() - grantW, customY, grantW, 18).build());
+        int actionY = y + 100;
+        int actionW = (width - gap * 2) / 3;
+        addTab(Button.builder(narrowTitleText("revoke"), b -> {
+            if (!owned.isEmpty()) sendTitlePlayerOp("revoke", owned.get(selectedTitleOwnedIndex));
+        }).bounds(x, actionY, actionW, 18).build());
+        addTab(Button.builder(narrowTitleText("equip"), b -> {
+            if (!owned.isEmpty()) sendTitlePlayerOp("set_current", owned.get(selectedTitleOwnedIndex));
+        }).bounds(x + actionW + gap, actionY, actionW, 18).build());
+        addTab(Button.builder(narrowTitleText("clear"), b -> sendTitlePlayerOp("clear", ""))
+                .bounds(x + (actionW + gap) * 2, actionY,
+                        pageRight() - x - (actionW + gap) * 2, 18).build());
+    }
+
     private void layoutTabs() {
         tabX = new int[TABS.length];
         tabY = new int[TABS.length];
@@ -1332,8 +1503,6 @@ public class LotteryConfigRootScreen extends Screen {
                             g.disableScissor();
                         }
                     }
-                } else if (!narrow) {
-                    g.drawString(font, "玩家数据备份目录: <world>/lottery_backup/<时间戳>/", px, py + 126, 0xFF8A92A0, false);
                 }
             } else if (!narrow) {
                 String emptyHint = (playerSearchQuery != null && !playerSearchQuery.isBlank())
@@ -1347,36 +1516,29 @@ public class LotteryConfigRootScreen extends Screen {
             g.drawString(font, "皮肤由扩展模组提供，本模组不内置皮肤", pageLeft(), yy + 14, 0xFF8A92A0, false);
             g.drawString(font, "命令: /hlt skins", pageLeft(), yy + 28, 0xFF8A92A0, false);
         } else if (selectedTab == TAB_CRATES) {
-            List<CrateService.Definition> crates = CrateService.definitions();
-            if (!crates.isEmpty() && layout.mode() != ConfigConsoleLayout.Mode.NARROW) {
-                CrateService.Definition crate = crates.get(Mth.clamp(selectedCrateIndex, 0, crates.size() - 1));
-                int detailX = pageLeft() + Math.min(200, Math.max(110, pageWidth() / 2)) + 10;
-                int detailW = Math.max(50, pageRight() - detailX);
-                JsonObject pools = crateConfig.has("pools") && crateConfig.get("pools").isJsonObject()
-                        ? crateConfig.getAsJsonObject("pools") : new JsonObject();
-                JsonObject pool = pools.has(crate.id()) && pools.get(crate.id()).isJsonObject()
-                        ? pools.getAsJsonObject(crate.id()) : new JsonObject();
-                boolean enabled = !pool.has("enabled") || pool.get("enabled").getAsBoolean();
-                boolean custom = pool.has("customPool") && pool.get("customPool").getAsBoolean();
-                boolean protect = pool.has("duplicateProtection") && pool.get("duplicateProtection").getAsBoolean();
-                String[] lines = {
-                        Component.translatable(crate.nameKey()).getString(),
-                        Component.translatable("screen.habitrain_lottery.crate_admin.key_label", CrateService.keyItemId(crate.id())).getString(),
-                        Component.translatable(enabled ? "screen.habitrain_lottery.crate_admin.enabled" : "screen.habitrain_lottery.crate_admin.disabled").getString(),
-                        Component.translatable(custom ? "screen.habitrain_lottery.crate_admin.custom_pool" : "screen.habitrain_lottery.crate_admin.default_pool").getString(),
-                        Component.translatable(protect ? "screen.habitrain_lottery.crate_admin.no_duplicates" : "screen.habitrain_lottery.crate_admin.allow_duplicates").getString()
-                };
-                for (int i = 0; i < lines.length; i++) {
-                    g.drawString(font, font.plainSubstrByWidth(lines[i], detailW), detailX, contentY + 28 + i * 16,
-                            i == 0 ? crate.color() : 0xFFB7C1C6, false);
+            var crates = com.habitrain.lottery.crate.CrateCatalog.publishedEntries();
+            Component[] lines = {
+                    CrateClientNetwork.connected()
+                            ? Component.translatable("screen.habitrain_lottery.crate_manage.overview", crates.size(),
+                                crates.stream().filter(com.habitrain.lottery.crate.CrateCatalog.Entry::enabled).count())
+                            : Component.translatable("screen.habitrain_lottery.crate_manage.overview_offline"),
+                    Component.translatable("screen.habitrain_lottery.crate_manage.overview_hint"),
+                    CrateClientNetwork.connected() ? Component.translatable("screen.habitrain_lottery.crate_manage.source_server") : Component.empty()
+            };
+            int yy = contentY + 30;
+            for (Component line : lines) {
+                for (var wrapped : font.split(line, Math.max(30, pageWidth() - 8))) {
+                    if (yy + font.lineHeight > layout.content().bottom()) break;
+                    g.drawString(font, wrapped, pageLeft(), yy, 0xFFB7C1C6, false);
+                    yy += font.lineHeight + 3;
                 }
+                yy += 5;
             }
         } else if (selectedTab == TAB_MAIL) {
             int yy = contentY + 28;
             g.drawString(font, "OP 可撰写系统邮件，发放绿苹果 / 阵营卡 / 自选卡。", pageLeft(), yy, 0xFFFFFFFF, false);
-            g.drawString(font, "邮件存于 world/habitrain_lottery/mail/players/", pageLeft(), yy + 14, 0xFF8A92A0, false);
-            g.drawString(font, "玩家在大厅「邮箱管理」领取。", pageLeft(), yy + 28, 0xFF8A92A0, false);
-        } else if (selectedTab == TAB_TITLES) {
+            g.drawString(font, "玩家在大厅「邮箱管理」领取。", pageLeft(), yy + 14, 0xFF8A92A0, false);
+        } else if (selectedTab == TAB_TITLES && layout.mode() != ConfigConsoleLayout.Mode.NARROW) {
             int leftW = Math.min(210, Math.max(150, pageWidth() / 3));
             int rightX = pageLeft() + leftW + 10;
             g.drawString(font, "模板库（页面底部保存）", pageLeft(), contentY + 26, 0xFF8A92A0, false);
@@ -1416,16 +1578,37 @@ public class LotteryConfigRootScreen extends Screen {
                     && playerCardScrollLayout.viewportHeight() > 0) {
                 playerCardPanel.renderScrollbar(g);
             }
+        } else if (selectedTab == TAB_TITLES && layout.mode() == ConfigConsoleLayout.Mode.NARROW) {
+            if (titleNarrowPage == 2) {
+                String current = titlePlayerCurrent(selectedTitlePlayerUuid);
+                String summary = selectedTitlePlayerUuid.isBlank()
+                        ? narrowTitleText("choose_player").getString()
+                        : narrowTitleText("current").getString() + ": "
+                        + (current.isBlank() ? narrowTitleText("none").getString() : current);
+                g.drawString(font, font.plainSubstrByWidth(summary, pageWidth()), pageLeft(), contentY + 24,
+                        0xFFB7C1C6, false);
+            } else if (titleNarrowPage == 0 && workingTitleCatalog.titles.isEmpty()) {
+                g.drawString(font, narrowTitleText("empty_templates"), pageLeft() + 4, contentY + 51,
+                        0xFF8A92A0, false);
+            } else if (titleNarrowPage == 1 && titlePlayerRows().isEmpty()) {
+                g.drawString(font, narrowTitleText("empty_players"), pageLeft() + 4, contentY + 51,
+                        0xFF8A92A0, false);
+            }
+            titleCatalogList.renderScrollbar(g);
+            titlePlayerList.renderScrollbar(g);
+            titleOwnedList.renderScrollbar(g);
         } else if (selectedTab == TAB_TITLES) {
             titleCatalogList.renderScrollbar(g);
             titlePlayerList.renderScrollbar(g);
             titleOwnedList.renderScrollbar(g);
-        } else if (selectedTab == TAB_CRATES) {
-            crateList.renderScrollbar(g);
         }
-        int statusY = Math.max(layout.header().bottom(), layout.footer().y() - 11);
-        g.drawString(font, Component.literal(status == null ? "" : status),
-                pageLeft(), statusY, 0xFFD4A55A, false);
+        boolean compactTitles = selectedTab == TAB_TITLES && layout.mode() == ConfigConsoleLayout.Mode.NARROW;
+        int statusX = compactTitles ? pageLeft() + 140 : pageLeft();
+        int statusY = compactTitles ? layout.footer().y() + 12
+                : Math.max(layout.header().bottom(), layout.footer().y() - 11);
+        int statusWidth = compactTitles ? Math.max(0, pageRight() - statusX - 52) : pageWidth();
+        g.drawString(font, font.plainSubstrByWidth(status == null ? "" : status, statusWidth),
+                statusX, statusY, 0xFFD4A55A, false);
     }
 
     /** 门控未授权时覆盖整个场景的「当前为未授权的访问」提示。 */
@@ -1499,7 +1682,8 @@ public class LotteryConfigRootScreen extends Screen {
                     selected ? 0xFFFFFFFF : 0xFF8A92A0, false);
             }
         }
-        if (!isNarrowPlayerDetail()) {
+        if (!isNarrowPlayerDetail()
+                && !(selectedTab == TAB_TITLES && layout.mode() == ConfigConsoleLayout.Mode.NARROW)) {
             g.drawString(font, sectionTitle(selectedTab), layout.content().x(), layout.content().y() + 4,
                     0xFFFFFFFF, false);
             g.drawString(font, sectionDescription(selectedTab), layout.content().x(), layout.content().y() + 17,
@@ -1594,12 +1778,6 @@ public class LotteryConfigRootScreen extends Screen {
                 if (playerList.getScroll() != before) {
                     rebuildTabContent();
                 }
-                return true;
-            }
-        } else if (selectedTab == TAB_CRATES) {
-            int before = crateList.getScroll();
-            if (crateList.mouseScrolled(mouseX, mouseY, verticalAmount)) {
-                if (crateList.getScroll() != before) rebuildTabContent();
                 return true;
             }
         } else if (selectedTab == TAB_TITLES) {

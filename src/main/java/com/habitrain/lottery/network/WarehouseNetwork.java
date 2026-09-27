@@ -29,17 +29,22 @@ public final class WarehouseNetwork {
     private WarehouseNetwork() {}
     private static ResourceLocation id(String path) { return ResourceLocation.fromNamespaceAndPath("habitrain_lottery", path); }
     public record Request(int requestId) implements CustomPacketPayload {
-        public static final Type<Request> TYPE = new Type<>(id("warehouse_request_v2"));
+        public static final Type<Request> TYPE = new Type<>(id("warehouse_request_v3"));
         public static final StreamCodec<RegistryFriendlyByteBuf, Request> CODEC = StreamCodec.of(
                 (b, p) -> b.writeVarInt(p.requestId), b -> new Request(b.readVarInt()));
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
     /** Error is a translation suffix, never a success-shaped empty inventory. */
-    public record Snapshot(int requestId, int offset, int total, String error, List<WarehouseEntry> entries)
+    public record Snapshot(int requestId, int offset, int total, String error, List<WarehouseEntry> entries,
+                           long inventoryRevision)
             implements CustomPacketPayload {
-        public static final Type<Snapshot> TYPE = new Type<>(id("warehouse_snapshot_v2"));
+        public Snapshot(int requestId, int offset, int total, String error, List<WarehouseEntry> entries) {
+            this(requestId, offset, total, error, entries, 0);
+        }
+        public static final Type<Snapshot> TYPE = new Type<>(id("warehouse_snapshot_v3"));
         public static final StreamCodec<RegistryFriendlyByteBuf, Snapshot> CODEC = StreamCodec.of((b, p) -> {
             b.writeVarInt(p.requestId); b.writeVarInt(p.offset); b.writeVarInt(p.total); b.writeUtf(p.error, 32);
+            b.writeVarLong(p.inventoryRevision);
             b.writeVarInt(p.entries.size());
             for (var e : p.entries) {
                 b.writeUtf(e.kind(), 24); b.writeUtf(e.id(), 128); b.writeUtf(e.name(), 256);
@@ -49,13 +54,13 @@ public final class WarehouseNetwork {
             }
         }, b -> {
             int request = b.readVarInt(), offset = b.readVarInt(), total = b.readVarInt();
-            String error = b.readUtf(32); int size = b.readVarInt();
+            String error = b.readUtf(32); long revision = b.readVarLong(); int size = b.readVarInt();
             if (total < 0 || total > MAX_ENTRIES || offset < 0 || size < 0 || size > CHUNK_SIZE || offset + size > total)
                 throw new io.netty.handler.codec.DecoderException("Invalid warehouse chunk");
             var entries = new ArrayList<WarehouseEntry>(size);
             for (int i = 0; i < size; i++) entries.add(new WarehouseEntry(b.readUtf(24), b.readUtf(128),
                     b.readUtf(256), b.readUtf(1024), b.readUtf(128), b.readVarInt(), b.readInt(), b.readBoolean(), SkinQuality.fromId(b.readUtf(16))));
-            return new Snapshot(request, offset, total, error, List.copyOf(entries));
+            return new Snapshot(request, offset, total, error, List.copyOf(entries), revision);
         });
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
@@ -101,7 +106,7 @@ public final class WarehouseNetwork {
                     if ("default".equals(skin) || !seen.add(entry)) return;
                     int color = HabiSkinApi.find(type, skin).map(d -> d.color()).orElse(0xFFA3ACBC);
                     rows.add(new WarehouseEntry("skin", entry, "skin.habitrain_lottery." + type + "." + skin,
-                            key("skin_hint"), "minecraft:leather_chestplate", 1, color,
+                            key("skin_hint"), "minecraft:leather_chestplate", data.ownedSkinCounts.getOrDefault(entry, 1), color,
                             skin.equals(store.getEquipped(player.getUUID(), type)),
                             HabiSkinApi.quality(type, skin).orElse(SkinQuality.WHITE)));
                 });
@@ -114,9 +119,14 @@ public final class WarehouseNetwork {
                         key("title_hint"), "minecraft:name_tag", 1, 0xFFC9B784, id.equals(titles.current))));
             }
             if (rows.size() > MAX_ENTRIES) { fail(player, request, "too_many"); return; }
+            if (rows.isEmpty()) {
+                ServerPlayNetworking.send(player, new Snapshot(request, 0, 0, "", List.of(), data.inventoryRevision));
+                return;
+            }
             for (int offset = 0; offset < rows.size(); offset += CHUNK_SIZE)
                 ServerPlayNetworking.send(player, new Snapshot(request, offset, rows.size(), "",
-                        List.copyOf(rows.subList(offset, Math.min(rows.size(), offset + CHUNK_SIZE)))));
+                        List.copyOf(rows.subList(offset, Math.min(rows.size(), offset + CHUNK_SIZE))),
+                        data.inventoryRevision));
         } catch (RuntimeException ex) {
             HabiLotteryMod.LOGGER.error("Unable to read warehouse for {}", player.getUUID(), ex);
             fail(player, request, "storage_error");

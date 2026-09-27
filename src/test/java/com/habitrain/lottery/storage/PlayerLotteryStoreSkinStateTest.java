@@ -50,4 +50,17 @@ class PlayerLotteryStoreSkinStateTest {
         assertEquals("zombie_bat", copied.equipped.get("bat"));
         assertTrue(Boolean.TRUE.equals(copied.unlocked.get("bat").get("zombie_bat")));
     }
+
+    @Test
+    void crateSkinAwardsCountEveryCopyAndUnlockLegacyAliases() {
+        PlayerLotteryData data = new PlayerLotteryData();
+
+        PlayerLotteryStore.awardSkin(data, "gun", "vintage_gun", 2);
+        PlayerLotteryStore.awardSkin(data, "revolver", "vintage_gun", 1);
+
+        assertEquals(3, data.ownedSkinCounts.get("revolver/vintage_gun"));
+        assertTrue(Boolean.TRUE.equals(data.unlocked.get("gun").get("vintage_gun")));
+        assertTrue(Boolean.TRUE.equals(data.unlocked.get("revolver").get("vintage_gun")));
+        assertEquals(3, data.copy().ownedSkinCounts.get("revolver/vintage_gun"));
+    }
 }

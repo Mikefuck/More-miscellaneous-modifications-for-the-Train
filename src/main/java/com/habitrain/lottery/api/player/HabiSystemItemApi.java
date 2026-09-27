@@ -30,6 +30,13 @@ public final class HabiSystemItemApi {
             throw new IllegalArgumentException("Duplicate system item: " + definition.id());
     }
 
+    /** World-owned definitions may change after initialization; balances keep their stable ids. */
+    public static synchronized void replaceWorldDefinitions(Map<String, Definition> definitions) {
+        DEFINITIONS.keySet().removeIf(id -> id.startsWith("habitrain_lottery:crate_")
+                || id.startsWith("habitrain_lottery:key_"));
+        if (definitions != null) DEFINITIONS.putAll(definitions);
+    }
+
     public static Definition definition(String id) { return DEFINITIONS.get(id); }
 
     public static Map<String, Integer> balances(UUID uuid) {

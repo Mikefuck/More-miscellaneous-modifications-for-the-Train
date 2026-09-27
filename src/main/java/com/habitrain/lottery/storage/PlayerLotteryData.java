@@ -17,6 +17,12 @@ public final class PlayerLotteryData {
     /** Virtual system rewards, separate from the physical player inventory. */
     public Map<String, Integer> systemItems = new HashMap<>();
     public Map<String, Map<String, Boolean>> unlocked = new HashMap<>();
+    /** Canonical type/id -> number of copies awarded. Access-only grants stay idempotent. */
+    public Map<String, Integer> ownedSkinCounts = new HashMap<>();
+    /** Durable crate receipts prevent a repeated network request from granting a second reward. */
+    public Map<String, String> crateReceipts = new java.util.LinkedHashMap<>();
+    public java.util.Set<String> crateOpenHistory = new java.util.HashSet<>();
+    public long inventoryRevision;
     public Map<String, String> equipped = new HashMap<>();
     /** Durable grant keys (insertion-order LRU, cap {@link #RECENT_GRANTS_CAP}). */
     public Set<String> recentGrants = new RecentGrants();
@@ -53,6 +59,10 @@ public final class PlayerLotteryData {
         c.greenApples = greenApples;
         if (systemItems != null) c.systemItems.putAll(systemItems);
         unlocked.forEach((k, v) -> c.unlocked.put(k, new HashMap<>(v)));
+        if (ownedSkinCounts != null) c.ownedSkinCounts.putAll(ownedSkinCounts);
+        if (crateReceipts != null) c.crateReceipts.putAll(crateReceipts);
+        if (crateOpenHistory != null) c.crateOpenHistory.addAll(crateOpenHistory);
+        c.inventoryRevision = inventoryRevision;
         c.equipped.putAll(equipped);
         c.recentGrants = new RecentGrants(recentGrants);
         c.lastLoginEpochDay = lastLoginEpochDay;
