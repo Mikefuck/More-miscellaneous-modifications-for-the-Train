@@ -106,6 +106,7 @@ public final class CrateSmoke implements ClientModInitializer {
     private volatile Throwable writerFailure;
     private int lastManageCaptureTick = -1;
     private final RewardEditorSmoke rewardEditorSmoke = new RewardEditorSmoke();
+    private final OutputQuotaSmoke outputQuotaSmoke = new OutputQuotaSmoke();
     private final CrateSaveNetworkSmoke saveNetworkSmoke = new CrateSaveNetworkSmoke();
 
     /** One grabbed frame: the index, the wall-clock offset it was taken at and the raw pixels. */
@@ -157,6 +158,7 @@ public final class CrateSmoke implements ClientModInitializer {
 
             ++ticks;
             if ("rewards".equals(MODE)) { rewardEditorSmoke.tick(mc, ticks); return; }
+            if ("quotas".equals(MODE)) { outputQuotaSmoke.tick(mc, ticks); return; }
             if ("manage".equals(MODE)) { driveManage(mc); return; }
             if ("menu".equals(MODE)) { driveMenu(mc); return; }
             drive(mc);
@@ -634,6 +636,7 @@ public final class CrateSmoke implements ClientModInitializer {
     private void capture(Minecraft mc) throws Exception {
         if (finished) return;
         if ("rewards".equals(MODE)) { rewardEditorSmoke.capture(mc, ticks); return; }
+        if ("quotas".equals(MODE)) { outputQuotaSmoke.capture(mc, ticks); return; }
         if ("menu".equals(MODE)) {
             if ((ticks == 80 || ticks == 86 || ticks == 90 || ticks == 105 || ticks == 112 || ticks == 118
                     || ticks == 130 || ticks == 140 || ticks == 155 || ticks == 180

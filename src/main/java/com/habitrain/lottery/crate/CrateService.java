@@ -18,7 +18,6 @@ import com.habitrain.lottery.warehouse.SystemItemBalances;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -99,6 +98,8 @@ public final class CrateService {
         public boolean allowSameSkinInOneOpen;
         public String rewardMode = "skin_plus_bonus";
         public List<ExtraReward> extraRewards = new ArrayList<>();
+        /** Independent material quantities for each quality in this crate. */
+        public Map<String, CrateOutputQuota.Limit> outputLimits = CrateOutputQuota.defaults();
     }
 
     public static final class ExtraReward {
@@ -119,6 +120,7 @@ public final class CrateService {
         public Map<String, Integer> skinDelta = new LinkedHashMap<>();
         public Map<String, Integer> weeklyDelta = new LinkedHashMap<>();
         public Map<String, Integer> monthlyDelta = new LinkedHashMap<>();
+        public Map<String, Long> outputDelta = new LinkedHashMap<>();
         public int apples;
         public long inventoryRevision;
     }
@@ -132,6 +134,10 @@ public final class CrateService {
         public Map<String, Integer> monthlyCaps = new LinkedHashMap<>();
         public Map<String, Integer> weeklyUsed = new LinkedHashMap<>();
         public Map<String, Integer> monthlyUsed = new LinkedHashMap<>();
+        public Map<String, Integer> crateWeeklyUsed = new LinkedHashMap<>();
+        public Map<String, Integer> crateMonthlyUsed = new LinkedHashMap<>();
+        public Map<String, Map<String, Long>> outputWeeklyUsed = new LinkedHashMap<>();
+        public Map<String, Map<String, Long>> outputMonthlyUsed = new LinkedHashMap<>();
         public Map<String, CratePool> pools = new LinkedHashMap<>();
         public Map<String, CratePool> crates = new LinkedHashMap<>();
         public Map<String, Integer> skinLifetimeCaps = new LinkedHashMap<>();
@@ -233,19 +239,14 @@ public final class CrateService {
     private static void normalizeState() {
         if (state == null) state = new State();
         boolean migrateRewards = state.schemaVersion < 4;
-        String week = weekKey(), month = monthKey();
-        if (!week.equals(state.weekKey)) {
-            state.weekKey = week;
-            state.weeklyUsed = new LinkedHashMap<>();
-        }
-        if (!month.equals(state.monthKey)) {
-            state.monthKey = month;
-            state.monthlyUsed = new LinkedHashMap<>();
-        }
+        boolean migrateOutput = state.schemaVersion < 5;
+        CrateOutputQuota.resetWindows(state, LocalDate.now(ZoneOffset.UTC));
         if (state.weeklyCaps == null) state.weeklyCaps = new LinkedHashMap<>();
         if (state.monthlyCaps == null) state.monthlyCaps = new LinkedHashMap<>();
         if (state.weeklyUsed == null) state.weeklyUsed = new LinkedHashMap<>();
         if (state.monthlyUsed == null) state.monthlyUsed = new LinkedHashMap<>();
+        if (state.crateWeeklyUsed == null) state.crateWeeklyUsed = new LinkedHashMap<>();
+        if (state.crateMonthlyUsed == null) state.crateMonthlyUsed = new LinkedHashMap<>();
         for (SkinQuality q : SkinQuality.values()) {
             state.weeklyCaps.putIfAbsent(q.id(), DEFAULT_WEEKLY.get(q));
             state.monthlyCaps.putIfAbsent(q.id(), DEFAULT_MONTHLY.get(q));
@@ -273,6 +274,8 @@ public final class CrateService {
         for (Definition definition : DEFINITIONS.values()) {
             CratePool pool = state.crates.get(definition.id());
             if (pool == null) continue;
+            if (migrateOutput) CrateOutputQuota.migrate(pool, state.weeklyCaps);
+            CrateOutputQuota.validate(pool.outputLimits);
             if (pool.skinWeights == null) pool.skinWeights = new LinkedHashMap<>();
             if (pool.extraRewards == null) pool.extraRewards = new ArrayList<>();
             normalizePool(definition, pool);
@@ -288,7 +291,7 @@ public final class CrateService {
             }
         }
         state.pools.clear();
-        state.schemaVersion = 4;
+        state.schemaVersion = 5;
         refreshDefinitions();
     }
 
@@ -370,13 +373,6 @@ public final class CrateService {
         // available skins without injecting them into every crate's saved reward list.
     }
 
-    private static String weekKey() {
-        LocalDate date = LocalDate.now(ZoneOffset.UTC);
-        return date.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString();
-    }
-
-    private static String monthKey() { return LocalDate.now(ZoneOffset.UTC).withDayOfMonth(1).toString(); }
-
     private static boolean saveState() {
         if (!WorldLotteryPaths.ready()) return false;
         return AtomicJsonFiles.writeJson(WorldLotteryPaths.configFile(STATE_FILE), state, GSON, true);
@@ -428,9 +424,11 @@ public final class CrateService {
         try {
             State proposed = GSON.fromJson(json == null ? "" : json, State.class);
             if (proposed == null) return false;
+            if (proposed.schemaVersion != 5) {
+                configError = "crates.client_outdated";
+                return false;
+            }
             if (proposed.revision != state.revision) throw new IllegalArgumentException("stale revision");
-            normalizeMap(proposed.weeklyCaps);
-            normalizeMap(proposed.monthlyCaps);
             Map<String, CratePool> next = new LinkedHashMap<>();
             if (proposed.crates == null || proposed.crates.isEmpty()) throw new IllegalArgumentException("missing crates");
             if (proposed.crates.size() > 256) throw new IllegalArgumentException("too many crates");
@@ -448,21 +446,10 @@ public final class CrateService {
             for (CrateCatalog.Entry builtin : CrateCatalog.builtins()) {
                 if (!next.containsKey(builtin.id())) throw new IllegalArgumentException("built-in crate removed");
             }
-            if (proposed.skinLifetimeCaps == null) proposed.skinLifetimeCaps = Map.of();
-            if (proposed.skinLifetimeCaps.size() > 4096) throw new IllegalArgumentException("too many lifetime caps");
-            Map<String, Integer> caps = new LinkedHashMap<>();
-            proposed.skinLifetimeCaps.forEach((key, value) -> {
-                String normalized = normalizeSkinKey(key);
-                if (value != null && (value < 0 || value > 1_000_000_000))
-                    throw new IllegalArgumentException("invalid lifetime cap");
-                caps.put(normalized, value);
-            });
-            state.weeklyCaps = proposed.weeklyCaps;
-            state.monthlyCaps = proposed.monthlyCaps;
             state.crates = next;
-            state.skinLifetimeCaps = caps;
+            state.skinLifetimeCaps = new LinkedHashMap<>();
             state.revision++;
-            state.schemaVersion = 4;
+            state.schemaVersion = 5;
             if (saveState()) {
                 refreshDefinitions();
                 return true;
@@ -503,6 +490,7 @@ public final class CrateService {
         if (pool.skinDrawCount < 0 || pool.skinDrawCount > 10 || pool.rollCount < 1 || pool.rollCount > 10
                 || pool.minimumSkinCount < 0 || pool.minimumSkinCount > pool.rollCount)
             throw new IllegalArgumentException("invalid draw count");
+        CrateOutputQuota.validate(pool.outputLimits);
         if (!"unified_pool".equals(pool.rewardMode) || !pool.customPool || pool.minimumSkinCount != 0)
             throw new IllegalArgumentException("invalid reward mode");
         if (pool.extraRewards == null || pool.extraRewards.size() > 32)
@@ -520,15 +508,6 @@ public final class CrateService {
                 throw new IllegalArgumentException("invalid card kind");
             String kind = "card".equals(reward.type) ? "card/" + reward.cardKind : reward.type;
             if (!seenRewards.add(kind)) throw new IllegalArgumentException("duplicate extra reward");
-        }
-    }
-
-    private static void normalizeMap(Map<String, Integer> map) {
-        if (map == null) throw new IllegalArgumentException("missing caps");
-        for (SkinQuality q : SkinQuality.values()) {
-            int value = map.getOrDefault(q.id(), 0);
-            if (value < 0 || value > MAX_WEIGHT) throw new IllegalArgumentException("invalid cap");
-            map.put(q.id(), value);
         }
     }
 
@@ -601,6 +580,7 @@ public final class CrateService {
         copy.minimumSkinCount = source.minimumSkinCount;
         copy.allowSameSkinInOneOpen = source.allowSameSkinInOneOpen;
         copy.rewardMode = source.rewardMode;
+        copy.outputLimits = CrateOutputQuota.copyLimits(source.outputLimits);
         copy.extraRewards = source.extraRewards == null ? new ArrayList<>() : new ArrayList<>();
         if (source.extraRewards != null) for (ExtraReward reward : source.extraRewards) {
             ExtraReward item = new ExtraReward();
@@ -671,46 +651,62 @@ public final class CrateService {
         List<Reward> rewards = new ArrayList<>();
         Map<String, Integer> stagedSkins = new HashMap<>();
         Map<String, Integer> stagedWeekly = new HashMap<>(), stagedMonthly = new HashMap<>();
+        Map<String, Long> stagedOutput = new LinkedHashMap<>();
+        EnumMap<SkinQuality, CrateOutputQuota.Progress> outputBudget = new EnumMap<>(SkinQuality.class);
+        for (SkinQuality quality : SkinQuality.values()) outputBudget.put(quality,
+                CrateOutputQuota.progress(state, canonicalCrate, quality, CrateOutputQuota.limit(pool, quality)));
         Map<String, Integer> stagedExtras = new HashMap<>();
         int guaranteed = "unified_pool".equals(pool.rewardMode) ? pool.minimumSkinCount : pool.skinDrawCount;
         if (guaranteed > 0 && skins.isEmpty()) return fail(canonicalCrate, canonicalKey, "crates.no_skins");
         for (int i = 0; i < guaranteed; i++) {
-            WeightedSkin picked = choose(skins, player, pool, stagedSkins, stagedWeekly, stagedMonthly);
+            WeightedSkin picked = choose(skins, player, pool, stagedSkins, outputBudget, stagedOutput);
             if (picked == null) return fail(canonicalCrate, canonicalKey, "crates.quota_reached");
             addSkinReward(rewards, stagedSkins, stagedWeekly, stagedMonthly, picked.skin());
+            stagedOutput.merge(picked.skin().quality().id(), 1L, Long::sum);
         }
         if ("unified_pool".equals(pool.rewardMode)) {
             for (int i = guaranteed; i < pool.rollCount; i++) {
                 WeightedSkin picked = null;
                 ExtraReward extra = null;
                 long total = 0;
-                List<WeightedSkin> available = availableSkins(skins, player, pool, stagedSkins, stagedWeekly, stagedMonthly);
+                List<WeightedSkin> available = availableSkins(skins, player, pool, stagedSkins, outputBudget, stagedOutput);
                 for (WeightedSkin skin : available) total += skin.weight();
                 for (int j = 0; j < pool.extraRewards.size(); j++) {
                     ExtraReward reward = pool.extraRewards.get(j);
-                    if (reward.weight > 0 && extraEligible(reward, stagedExtras.getOrDefault(String.valueOf(j), 0), current,
+                    if (reward.weight > 0 && outputBudget.get(SkinQuality.WHITE).allows(stagedOutput.getOrDefault("white", 0L), reward.amount)
+                            && extraEligible(reward, stagedExtras.getOrDefault(String.valueOf(j), 0), current,
                             player.getUUID()))
                         total += reward.weight;
                 }
-                if (total <= 0) return fail(canonicalCrate, canonicalKey, "crates.no_rewards");
+                if (total <= 0) return fail(canonicalCrate, canonicalKey, "crates.output_unavailable");
                 long roll = ThreadLocalRandom.current().nextLong(total);
                 for (WeightedSkin skin : available) {
                     roll -= skin.weight();
                     if (roll < 0) { picked = skin; break; }
                 }
-                if (picked != null) addSkinReward(rewards, stagedSkins, stagedWeekly, stagedMonthly, picked.skin());
+                if (picked != null) {
+                    addSkinReward(rewards, stagedSkins, stagedWeekly, stagedMonthly, picked.skin());
+                    stagedOutput.merge(picked.skin().quality().id(), 1L, Long::sum);
+                }
                 else for (int j = 0; j < pool.extraRewards.size(); j++) {
                     ExtraReward candidate = pool.extraRewards.get(j);
-                    if (candidate.weight <= 0 || !extraEligible(candidate,
+                    if (candidate.weight <= 0 || !outputBudget.get(SkinQuality.WHITE).allows(stagedOutput.getOrDefault("white", 0L), candidate.amount)
+                            || !extraEligible(candidate,
                             stagedExtras.getOrDefault(String.valueOf(j), 0), current, player.getUUID())) continue;
                     roll -= candidate.weight;
                     if (roll < 0) { extra = candidate; stagedExtras.merge(String.valueOf(j), 1, Integer::sum); break; }
                 }
-                if (extra != null) rewards.add(toReward(extra));
+                if (extra != null) {
+                    rewards.add(toReward(extra));
+                    stagedOutput.merge("white", (long) extra.amount, Long::sum);
+                }
             }
         } else for (ExtraReward extra : pool.extraRewards) {
-            if (extra.chance > 0 && ThreadLocalRandom.current().nextDouble() < extra.chance)
+            if (extra.chance > 0 && outputBudget.get(SkinQuality.WHITE).allows(stagedOutput.getOrDefault("white", 0L), extra.amount)
+                    && ThreadLocalRandom.current().nextDouble() < extra.chance) {
                 rewards.add(toReward(extra));
+                stagedOutput.merge("white", (long) extra.amount, Long::sum);
+            }
         }
         if (rewards.isEmpty()) return fail(canonicalCrate, canonicalKey, "crates.no_rewards");
         Map<String, Integer> cardAmounts = new LinkedHashMap<>();
@@ -749,6 +745,7 @@ public final class CrateService {
         pending.skinDelta = stagedSkins;
         pending.weeklyDelta = stagedWeekly;
         pending.monthlyDelta = stagedMonthly;
+        pending.outputDelta = stagedOutput;
         pending.apples = apples;
         state.pendingOpens.put(openId, pending);
         if (!saveState()) {
@@ -761,6 +758,7 @@ public final class CrateService {
     private static OpenResult finishPending(PendingOpen pending, ServerPlayer online) {
         if (pending == null || pending.openId == null || pending.rewards == null || pending.rewards.isEmpty())
             return fail("", "", "crates.invalid_request");
+        CrateOutputQuota.resetWindows(state, LocalDate.now(ZoneOffset.UTC));
         UUID uuid;
         try { uuid = UUID.fromString(pending.playerId); }
         catch (RuntimeException error) { return fail(pending.crateId, pending.keyId, "crates.invalid_request"); }
@@ -812,11 +810,15 @@ public final class CrateService {
             }
             if (state.pendingOpens.containsKey(pending.openId)) {
                 State snapshot = copyState(state);
-                if (state.weekKey.equals(pending.weekKey)) pending.weeklyDelta.forEach((q, n) -> state.weeklyUsed.merge(q, n, Integer::sum));
-                if (state.monthKey.equals(pending.monthKey)) pending.monthlyDelta.forEach((q, n) -> state.monthlyUsed.merge(q, n, Integer::sum));
-                pending.skinDelta.forEach((skin, n) -> state.skinProduced.merge(skin, n, Math::addExact));
-                state.pendingOpens.remove(pending.openId);
-                if (!saveState()) { state = snapshot; return fail(pending.crateId, pending.keyId, "crates.pending"); }
+                try {
+                    CrateOutputQuota.commit(state, pending);
+                    pending.skinDelta.forEach((skin, n) -> state.skinProduced.merge(skin, n, Math::addExact));
+                    state.pendingOpens.remove(pending.openId);
+                    if (!saveState()) { state = snapshot; return fail(pending.crateId, pending.keyId, "crates.pending"); }
+                } catch (RuntimeException error) {
+                    state = snapshot;
+                    throw error;
+                }
             }
             if (online != null) {
                 PlayerLotteryData committed = store.getOrLoad(uuid);
@@ -836,9 +838,11 @@ public final class CrateService {
         Reward primary = pending.rewards.stream().filter(r -> "skin".equals(r.kind())).findFirst().orElse(pending.rewards.get(0));
         String[] parts = "skin".equals(primary.kind()) ? primary.id().split("/", 2) : new String[]{primary.kind(), primary.id()};
         SkinQuality quality = SkinQuality.fromId(pending.primaryQualityId);
+        CrateOutputQuota.Limit cap = CrateOutputQuota.limit(state.crates.get(pending.crateId), quality);
+        long remaining = CrateOutputQuota.progress(state, pending.crateId, quality, cap).remaining();
         return new OpenResult(true, pending.crateId, pending.keyId, parts[0], parts[1], quality,
-                "crates.opened", remaining(state.weeklyCaps, state.weeklyUsed, quality),
-                remaining(state.monthlyCaps, state.monthlyUsed, quality), List.copyOf(pending.rewards),
+                "crates.opened", "weekly".equals(cap.period) ? (int)Math.min(Integer.MAX_VALUE, remaining) : Integer.MAX_VALUE,
+                "monthly".equals(cap.period) ? (int)Math.min(Integer.MAX_VALUE, remaining) : Integer.MAX_VALUE, List.copyOf(pending.rewards),
                 pending.inventoryRevision);
     }
 
@@ -886,10 +890,6 @@ public final class CrateService {
                 "", "", SkinQuality.WHITE, message, 0, 0, List.of(), 0);
     }
 
-    private static int remaining(Map<String, Integer> caps, Map<String, Integer> used, SkinQuality q) {
-        return Math.max(0, caps.getOrDefault(q.id(), 0) - used.getOrDefault(q.id(), 0));
-    }
-
     private record WeightedSkin(SkinDefinition skin, int weight) {}
 
     private static List<WeightedSkin> eligibleSkins(Definition definition) {
@@ -918,21 +918,13 @@ public final class CrateService {
     }
 
     private static List<WeightedSkin> availableSkins(List<WeightedSkin> skins, ServerPlayer player, CratePool pool,
-                                                     Map<String, Integer> stagedSkins, Map<String, Integer> stagedWeekly,
-                                                     Map<String, Integer> stagedMonthly) {
+                                                     Map<String, Integer> stagedSkins,
+                                                     Map<SkinQuality, CrateOutputQuota.Progress> outputBudget,
+                                                     Map<String, Long> stagedOutput) {
         List<WeightedSkin> available = skins.stream().filter(s -> {
             String key = skinKey(s.skin());
-            Integer cap = state.skinLifetimeCaps.get(key);
-            int reservedSkin = state.pendingOpens.values().stream().mapToInt(p -> p.skinDelta.getOrDefault(key, 0)).sum();
-            int reservedWeek = state.pendingOpens.values().stream().filter(p -> state.weekKey.equals(p.weekKey))
-                    .mapToInt(p -> p.weeklyDelta.getOrDefault(s.skin().quality().id(), 0)).sum();
-            int reservedMonth = state.pendingOpens.values().stream().filter(p -> state.monthKey.equals(p.monthKey))
-                    .mapToInt(p -> p.monthlyDelta.getOrDefault(s.skin().quality().id(), 0)).sum();
             return (pool.allowSameSkinInOneOpen || stagedSkins.getOrDefault(key, 0) == 0)
-                    && (long) state.skinProduced.getOrDefault(key, 0) + reservedSkin + stagedSkins.getOrDefault(key, 0) < Integer.MAX_VALUE
-                    && (cap == null || (long) state.skinProduced.getOrDefault(key, 0) + reservedSkin + stagedSkins.getOrDefault(key, 0) < cap)
-                    && remaining(state.weeklyCaps, state.weeklyUsed, s.skin().quality()) > reservedWeek + stagedWeekly.getOrDefault(s.skin().quality().id(), 0)
-                    && remaining(state.monthlyCaps, state.monthlyUsed, s.skin().quality()) > reservedMonth + stagedMonthly.getOrDefault(s.skin().quality().id(), 0);
+                    && outputBudget.get(s.skin().quality()).allows(stagedOutput.getOrDefault(s.skin().quality().id(), 0L), 1);
         }).toList();
         if (pool.duplicateProtection && player != null) {
             List<WeightedSkin> fresh = available.stream()
@@ -944,9 +936,9 @@ public final class CrateService {
     }
 
     private static WeightedSkin choose(List<WeightedSkin> skins, ServerPlayer player, CratePool pool,
-                                       Map<String, Integer> stagedSkins, Map<String, Integer> stagedWeekly,
-                                       Map<String, Integer> stagedMonthly) {
-        List<WeightedSkin> available = availableSkins(skins, player, pool, stagedSkins, stagedWeekly, stagedMonthly);
+                                       Map<String, Integer> stagedSkins,
+                                       Map<SkinQuality, CrateOutputQuota.Progress> outputBudget, Map<String, Long> stagedOutput) {
+        List<WeightedSkin> available = availableSkins(skins, player, pool, stagedSkins, outputBudget, stagedOutput);
         if (available.isEmpty()) return null;
         long total = available.stream().mapToLong(WeightedSkin::weight).sum();
         if (total <= 0) return null;
@@ -967,6 +959,10 @@ public final class CrateService {
         copy.monthlyCaps = new LinkedHashMap<>(source.monthlyCaps);
         copy.weeklyUsed = new LinkedHashMap<>(source.weeklyUsed);
         copy.monthlyUsed = new LinkedHashMap<>(source.monthlyUsed);
+        copy.crateWeeklyUsed = new LinkedHashMap<>(source.crateWeeklyUsed);
+        copy.crateMonthlyUsed = new LinkedHashMap<>(source.crateMonthlyUsed);
+        copy.outputWeeklyUsed = CrateOutputQuota.copyCounters(source.outputWeeklyUsed);
+        copy.outputMonthlyUsed = CrateOutputQuota.copyCounters(source.outputMonthlyUsed);
         copy.pools = new LinkedHashMap<>();
         if (source.pools != null) {
             source.pools.forEach((id, pool) -> copy.pools.put(id, copyPool(pool)));

@@ -98,9 +98,18 @@ public final class CrateNetwork {
     }
 
     public record ConfigSaveC2S(String json) implements CustomPacketPayload {
-        public static final Type<ConfigSaveC2S> TYPE = new Type<>(id("crate_config_save_v3"));
+        public static final Type<ConfigSaveC2S> TYPE = new Type<>(id("crate_config_save_v5"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ConfigSaveC2S> CODEC = StreamCodec.of(
                 (b, p) -> b.writeUtf(p.json == null ? "" : p.json, 512_000), b -> new ConfigSaveC2S(b.readUtf(512_000)));
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Pre-material-quota editors cannot round-trip the per-crate settings safely. */
+    public record LegacyV3ConfigSaveC2S(String json) implements CustomPacketPayload {
+        public static final Type<LegacyV3ConfigSaveC2S> TYPE = new Type<>(id("crate_config_save_v3"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, LegacyV3ConfigSaveC2S> CODEC = StreamCodec.of(
+                (b, p) -> b.writeUtf(p.json == null ? "" : p.json, 512_000),
+                b -> new LegacyV3ConfigSaveC2S(b.readUtf(512_000)));
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
@@ -126,6 +135,7 @@ public final class CrateNetwork {
         PayloadTypeRegistry.playC2S().register(LegacyOpenRequestC2S.TYPE, LegacyOpenRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(ConfigRequestC2S.TYPE, ConfigRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(ConfigSaveC2S.TYPE, ConfigSaveC2S.CODEC);
+        PayloadTypeRegistry.playC2S().register(LegacyV3ConfigSaveC2S.TYPE, LegacyV3ConfigSaveC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(LegacyConfigSaveC2S.TYPE, LegacyConfigSaveC2S.CODEC);
         PayloadTypeRegistry.playS2C().register(InventoryS2C.TYPE, InventoryS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(CatalogS2C.TYPE, CatalogS2C.CODEC);
@@ -176,6 +186,9 @@ public final class CrateNetwork {
         ServerPlayNetworking.registerGlobalReceiver(LegacyConfigSaveC2S.TYPE, (payload, ctx) ->
                 ctx.server().execute(() -> sendIfSupported(ctx.player(),
                         new ConfigS2C(CrateService.configJson(), "crates.client_outdated"))));
+        ServerPlayNetworking.registerGlobalReceiver(LegacyV3ConfigSaveC2S.TYPE, (payload, ctx) ->
+                ctx.server().execute(() -> sendIfSupported(ctx.player(),
+                        new ConfigS2C("{}", "crates.client_outdated"))));
     }
 
     /** A local world owner can configure their own crates without enabling cheats. LAN guests still need OP. */

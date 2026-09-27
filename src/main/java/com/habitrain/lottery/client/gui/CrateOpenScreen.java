@@ -132,6 +132,8 @@ public final class CrateOpenScreen extends Screen {
     private float frameDelta = 16.0F;
 
     private final List<Hotspot> hotspots = new ArrayList<>();
+    private final CrateParticles particles = new CrateParticles();
+    private long lastParticleSpawn = 0;
 
     public CrateOpenScreen(Screen parent, String crateId) {
         super(Component.translatable(KEY + "hud.title"));
@@ -169,12 +171,65 @@ public final class CrateOpenScreen extends Screen {
         super.tick();
         refreshFromState();
         long time = now();
+        particles.tick(frameDelta);
+        
+        // 粒子生成逻辑
+        spawnParticles(time);
+        
         // 与服务端等待上限一致：超时后停下转盘，允许玩家重试。
         if (stage.active() && !stage.hasResult() && !failure
                 && time - stage.openedAt() > CrateStage.SPIN_TIMEOUT_MS) {
             fail("screen.habitrain_lottery.crate.timeout");
         }
         if (departAt >= 0 && !leaving) finishLeaving();
+    }
+    
+    private void spawnParticles(long time) {
+        if (time - lastParticleSpawn < 33) return; // 30 FPS 粒子生成
+        lastParticleSpawn = time;
+        
+        CrateStage.Phase phase = stage.phase(time);
+        int qualityColor = CrateEffects.qualityColor(resultQuality());
+        float cx = canvasW * 0.5F;
+        float cy = 570.0F;
+        float width = 330.0F * stage.crateScale(time, enteredAt);
+        
+        // 箱子周围环境粒子
+        if (!stage.cardsGone(time) && phase != CrateStage.Phase.BRIDGE) {
+            particles.spawnAmbientDust(cx, cy - width * 0.3F, width * 0.6F, 
+                GuiFx.alpha(qualityColor, 180), 0.3F);
+        }
+        
+        // 开盖爆发
+        if (phase == CrateStage.Phase.CAROUSEL && stage.lid(time) > 0.1F && stage.lid(time) < 0.3F) {
+            if (time % 100 < 50) { // 只在开盖初期生成
+                particles.spawnOpenBurst(cx, cy - width * 0.4F, qualityColor, 3);
+            }
+        }
+        
+        // 转盘运动拖尾
+        if (phase == CrateStage.Phase.CAROUSEL && stage.hasResult()) {
+            float cardW = cardWidth();
+            float pitch = cardW * CrateStage.CARD_PITCH;
+            for (int i = 0; i < 3; i++) {
+                int index = resultSlot + i - 1;
+                float offset = stage.reelOffset(time, index);
+                if (Math.abs(offset) < 1.5F) {
+                    float x = cx + offset * pitch;
+                    particles.spawnCardTrail(x, REEL_CENTER_Y, 
+                        GuiFx.alpha(qualityColor, 120), 0.5F);
+                }
+            }
+        }
+        
+        // 物品展示光环
+        if (phase == CrateStage.Phase.REVEAL && stage.revealing(time) > 0.5F) {
+            float reveal = stage.revealing(time);
+            if (reveal > 0.85F && time % 200 < 50) {
+                particles.spawnItemHalo(REVEAL_ITEM_X, REVEAL_ITEM_Y, 
+                    REF_H * 0.25F, qualityColor, 8);
+            }
+        }
     }
 
     public void refreshFromState() {
@@ -448,6 +503,11 @@ public final class CrateOpenScreen extends Screen {
 
         // ---- 2. 合焦薄雾：硬切之后的 533ms ----
 
+        // ---- 3. 粒子层（背景） ----
+        g.pose().pushPose();
+        g.pose().translate(0.0F, 0.0F, SCENE_Z - 50.0F);
+        particles.render(g, 0.85F);
+        g.pose().popPose();
 
         // ---- 4. 场景（箱子 + 接地阴影）----
         // 入场动作取自参考视频：箱子从画面上缘线性落下，同时从 65° 侧倾、−40° 偏航自行扶正。
@@ -533,10 +593,17 @@ public final class CrateOpenScreen extends Screen {
         float yaw = CrateStage.entryYaw(time, enteredAt);
         float lid = stage.lidAngle(time);
         float open = CrateStage.clamp01(lid / 100.0F);
+        
+        int qualityColor = CrateEffects.qualityColor(resultQuality());
 
+        // 增强地面光效 - 替代简单阴影
         if (open < .01F && drop > -1) {
-            CrateArt.groundShadow(g, centreX, baseY + width * .03F, width,
-                    .7F * CrateStage.righting(time, enteredAt));
+            float glowIntensity = .7F * CrateStage.righting(time, enteredAt);
+            CrateEffects.crateGlow(g, centreX, baseY, width, qualityColor, glowIntensity, time);
+        } else if (open > .01F) {
+            // 开盖后的强光效
+            CrateEffects.crateGlow(g, centreX, baseY, width, qualityColor, 
+                open * (1.0F - reveal * 0.7F), time);
         }
 
         g.pose().pushPose();
@@ -549,6 +616,13 @@ public final class CrateOpenScreen extends Screen {
 
         // Shadow belongs to the ground, not the rotating model.
         drawCrate(g, centreX, baseY, width, lid, open * (1.0F - 0.55F * reveal));
+        
+        // 箱子边缘辉光
+        if (open > 0.1F && reveal < 0.5F) {
+            CrateEffects.crateEdgeGlow(g, centreX, baseY, width, qualityColor, 
+                open * (1.0F - reveal));
+        }
+        
         g.pose().popPose();
     }
 
@@ -573,6 +647,33 @@ public final class CrateOpenScreen extends Screen {
                 + 2.0F * (float) Math.sin(idlePhase * Math.PI) * settled;
         float roll = 1.5F * (float) Math.sin(idlePhase * Math.PI) * settled;
         py += 4.0F * (float) Math.sin(idlePhase * Math.PI) * settled;
+        
+        int qualityColor = CrateEffects.qualityColor(resultQuality());
+        int qualityGlow = CrateEffects.qualityGlow(resultQuality());
+        
+        // 背景光环特效
+        if (settled > 0.1F) {
+            CrateEffects.itemHalo(g, px, py, REF_H * 0.25F, qualityGlow, 
+                settled * 0.9F, time, 12);
+        }
+        
+        // 登场能量波纹
+        if (morph < 0.8F) {
+            CrateEffects.itemPulse(g, px, py, REF_H * 0.35F, qualityColor, 
+                morph, 0.8F);
+        }
+        
+        // 射线特效（金色/红色品质）
+        if (settled > 0.3F && (resultQuality() == SkinQuality.GOLD || resultQuality() == SkinQuality.RED)) {
+            CrateEffects.itemRays(g, px, py, REF_H * 0.3F, qualityGlow, 
+                settled * 0.7F, time, 8);
+        }
+        
+        // 镜头光晕（高品质物品）
+        if (settled > 0.5F && resultQuality().ordinal() >= SkinQuality.PURPLE.ordinal()) {
+            CrateEffects.lensFlare(g, px - 100, py - 50, qualityGlow, 
+                settled * 0.6F, time);
+        }
 
         g.pose().pushPose();
         g.pose().translate(0.0F, 0.0F, 20.0F);
@@ -669,6 +770,13 @@ public final class CrateOpenScreen extends Screen {
         float cy = REEL_CENTER_Y;
         float pitch = cardW * CrateStage.CARD_PITCH;
         int winner = resultSlot;
+        int qualityColor = CrateEffects.qualityColor(resultQuality());
+        
+        // 转盘背景光圈
+        if (stage.hasResult()) {
+            CrateEffects.carouselBackglow(g, cx, cy, cardW * 1.5F, qualityColor, 
+                entry * 0.7F, time);
+        }
 
         g.enableScissor((int)(canvasX + (cx - canvasW * .5F * entry) * unit),
                 (int)(canvasY + 370 * unit),
@@ -690,8 +798,31 @@ public final class CrateOpenScreen extends Screen {
             float h = cardH * scale;
             float x = cx + offset * pitch - w * 0.5F;
             float y = cy - h * 0.5F;
+            
+            SkinQuality cardQuality = qualityAt(index);
+            int cardColor = CrateEffects.qualityColor(cardQuality);
 
-            CrateArt.card(g, x, y, w, h, tint, haze, qualityAt(index).color(), entry);
+            // 卡片基础渲染
+            CrateArt.card(g, x, y, w, h, tint, haze, cardQuality.color(), entry);
+            
+            // 卡片边框光效（靠近中心时更强）
+            float centerProximity = 1.0F - Math.min(1.0F, distance / 1.5F);
+            if (centerProximity > 0.1F && stage.hasResult()) {
+                CrateEffects.cardBorderGlow(g, x, y, w, h, cardColor, 
+                    centerProximity * entry * 0.8F, time);
+            }
+            
+            // 中心聚光（光标下的卡片）
+            if (distance < 0.5F && stage.hasResult()) {
+                CrateEffects.cardSpotlight(g, x, y, w, h, cardColor, 
+                    (1.0F - distance * 2) * entry);
+            }
+            
+            // 景深模糊
+            if (distance > 1.0F) {
+                CrateEffects.cardDepthBlur(g, x, y, w, h, (distance - 1.0F) * 0.3F);
+            }
+            
             if (!chosen) {
                 float roll = 0.0F;
                 // 皮肤美术在参考视频里横向占满卡片；Minecraft 的物品图是正方形，
@@ -712,10 +843,10 @@ public final class CrateOpenScreen extends Screen {
                 VIGNETTE_INNER, VIGNETTE_OUTER, 0xFF000000, VIGNETTE_ALPHA * close * entry);
         g.pose().popPose();
 
-        // 固定黄线
+        // 增强光标扫描线效果
         g.pose().pushPose();
         g.pose().translate(0.0F, 0.0F, CURSOR_Z);
-        CrateArt.cursor(g, cx, CURSOR_Y0, CURSOR_Y1, entry);
+        CrateEffects.cursorScanline(g, cx, CURSOR_Y0, CURSOR_Y1, GOLD_LINE, entry, time);
         g.pose().popPose();
     }
 

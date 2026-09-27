@@ -43,7 +43,7 @@ final class CrateSaveNetworkSmoke {
         switch (phase) {
             case 0 -> {
                 if (ticks < 30) return;
-                output = mc.gameDirectory.toPath().resolve("save-network-1.1.39"); Files.createDirectories(output);
+                output = mc.gameDirectory.toPath().resolve(System.getProperty("crateSmoke.out", "save-network-1.1.40")); Files.createDirectories(output);
                 mc.options.renderDistance().set(2); mc.options.simulationDistance().set(5);
                 mc.options.guiScale().set(2);
                 org.lwjgl.glfw.GLFW.glfwSetWindowSize(mc.getWindow().getWindow(), 1280, 720); mc.resizeDisplay();
@@ -136,12 +136,146 @@ final class CrateSaveNetworkSmoke {
             case 9 -> {
                 if (!serverWork.isDone()) return;
                 check(serverWork.join(), "service-restart-retains-saved-config");
+                click(MANAGE + "limits");
+                editQuota("white", "120"); editQuota("gold", "2");
+                var box = quotaInput("gold");
+                var period = screen.children().stream().filter(c -> c instanceof Button b && b.getY() == box.getY() && b.getX() < box.getX())
+                        .map(c -> (Button)c).findFirst().orElseThrow();
+                screen.mouseClicked(period.getX() + 5, period.getY() + 5, 0);
+                click(MANAGE + "save"); phase++;
+            }
+            case 10 -> {
+                if ((boolean)get(screen, "pending")) return;
+                check("crates.config_saved".equals(CrateClientNetwork.STATE.configMessage), "output-limit-network-save-acknowledged");
+                serverWork = mc.getSingleplayerServer().submit(() -> {
+                    try { return checkOutputSettlement(mc.getSingleplayerServer().getPlayerList().getPlayers().getFirst()); }
+                    catch (Exception error) { throw new RuntimeException(error); }
+                });
+                phase++;
+            }
+            case 11 -> {
+                if (!serverWork.isDone()) return;
+                check(serverWork.join(), "material-quota-settlement-complete");
+                CrateClientNetwork.requestConfig(); waitTicks = 15; phase++;
+            }
+            case 12 -> {
+                if (waitTicks-- > 0) return;
+                var saved = (CrateService.State)get(screen, "latestQuotaState");
+                check(saved.outputWeeklyUsed.get("woodland").get("white") == 83L, "real-server-usage-synchronized-to-progress");
+                try (var image = Screenshot.takeScreenshot(mc.getMainRenderTarget())) { image.writeToFile(output.resolve("output-quotas-saved.png")); }
                 Files.write(output.resolve("checks.txt"), checks);
                 HabiLotteryMod.LOGGER.info("CRATE_SAVE_NETWORK PASS {} checks", checks.size());
-                phase = 12; mc.stop();
+                phase = 13; mc.stop();
             }
         }
     }
+
+    private boolean checkOutputSettlement(net.minecraft.server.level.ServerPlayer player) throws Exception {
+        var disk = GSON.fromJson(Files.readString(WorldLotteryPaths.configFile("crates.json")), CrateService.State.class);
+        var pool = disk.crates.get("woodland");
+        check(pool.outputLimits.get("white").limit == 120 && pool.outputLimits.get("gold").limit == 2
+                && pool.outputLimits.get("gold").period.equals("monthly"), "quota-ui-values-persisted-on-server");
+        String crate = CrateService.crateItemId("woodland"), key = CrateService.keyItemId("woodland");
+        HabiSystemItemApi.grant(player.getUUID(), ResourceLocation.parse(crate), 20);
+        HabiSystemItemApi.grant(player.getUUID(), ResourceLocation.parse(key), 20);
+        pool.allowSameSkinInOneOpen = true; pool.rollCount = 2;
+        check(CrateService.applyConfigJson(GSON.toJson(disk)), "configure-two-materials-per-open");
+        var before = CrateService.inventory(player.getUUID());
+        var failed = CrateService.open(player, "woodland", key);
+        check(!failed.success() && before.equals(CrateService.inventory(player.getUUID()))
+                && current().outputMonthlyUsed.get("woodland").get("gold") == 1L, "multi-draw-insufficient-quota-is-atomic");
+        var next = current(); next.crates.get("woodland").outputLimits.get("gold").limit = 3;
+        check(CrateService.applyConfigJson(GSON.toJson(next)), "increase-cap-without-resetting-usage");
+        String request = UUID.randomUUID().toString();
+        var success = CrateService.open(player, "woodland", key, request);
+        check(success.success() && success.rewards().size() == 2
+                && current().outputMonthlyUsed.get("woodland").get("gold") == 3L, "one-opening-counts-two-skins");
+        before = CrateService.inventory(player.getUUID());
+        check(CrateService.open(player, "woodland", key, request).success()
+                && before.equals(CrateService.inventory(player.getUUID()))
+                && current().outputMonthlyUsed.get("woodland").get("gold") == 3L, "request-replay-never-double-counts");
+        check(!CrateService.open(player, "woodland", key).success()
+                && before.equals(CrateService.inventory(player.getUUID())), "exhausted-quality-keeps-crate-and-key");
+
+        next = current(); pool = next.crates.get("woodland"); pool.rollCount = 1;
+        pool.skinWeights.put("knife/quota_blue", 100); pool.outputLimits.get("blue").limit = 1;
+        check(CrateService.applyConfigJson(GSON.toJson(next)), "configure-blue-alternative");
+        success = CrateService.open(player, "woodland", key);
+        check(success.success() && success.rewards().getFirst().id().equals("knife/quota_blue")
+                && current().outputWeeklyUsed.get("woodland").get("blue") == 1L, "capped-gold-does-not-block-blue");
+
+        next = current(); var other = next.crates.get("cobalt"); other.enabled = true;
+        other.skinWeights.put("knife/capture_0", 100); other.outputLimits.get("gold").limit = 1;
+        check(CrateService.applyConfigJson(GSON.toJson(next)), "configure-independent-crate");
+        HabiSystemItemApi.grant(player.getUUID(), ResourceLocation.parse(CrateService.crateItemId("cobalt")), 2);
+        HabiSystemItemApi.grant(player.getUUID(), ResourceLocation.parse(CrateService.keyItemId("cobalt")), 2);
+        success = CrateService.open(player, "cobalt", CrateService.keyItemId("cobalt"));
+        check(success.success() && current().outputWeeklyUsed.get("cobalt").get("gold") == 1L
+                && current().outputWeeklyUsed.get("woodland").get("gold") == 3L, "different-crates-have-independent-output");
+
+        next = current(); pool = next.crates.get("woodland"); pool.skinWeights.replaceAll((id, weight) -> 0);
+        pool.extraRewards.clear(); var apples = new CrateService.ExtraReward(); apples.amount = 80; pool.extraRewards.add(apples);
+        check(CrateService.applyConfigJson(GSON.toJson(next)), "configure-material-bundle");
+        success = CrateService.open(player, "woodland", key);
+        check(success.success() && success.rewards().getFirst().amount() == 80
+                && current().outputWeeklyUsed.get("woodland").get("white") == 80L, "apple-bundle-counts-eighty-units");
+        before = CrateService.inventory(player.getUUID());
+        check(!CrateService.open(player, "woodland", key).success() && before.equals(CrateService.inventory(player.getUUID()))
+                && current().outputWeeklyUsed.get("woodland").get("white") == 80L, "insufficient-bundle-quota-does-not-partially-award");
+
+        next = current(); pool = next.crates.get("woodland"); pool.extraRewards.clear();
+        var card = new CrateService.ExtraReward(); card.type = "card"; card.cardKind = "civilian"; card.amount = 3;
+        pool.extraRewards.add(card); pool.outputLimits.get("white").limit = 83;
+        check(CrateService.applyConfigJson(GSON.toJson(next)), "configure-card-output");
+        success = CrateService.open(player, "woodland", key);
+        check(success.success() && success.rewards().getFirst().kind().equals("card")
+                && current().outputWeeklyUsed.get("woodland").get("white") == 83L, "cards-count-actual-white-quantity");
+        next = current(); next.crates.get("woodland").outputLimits.get("white").period = "monthly";
+        next.outputWeeklyUsed.clear(); next.outputMonthlyUsed.clear(); next.pendingOpens.clear();
+        check(CrateService.applyConfigJson(GSON.toJson(next)) && current().outputWeeklyUsed.get("woodland").get("white") == 83L,
+                "config-save-cannot-forge-server-counters");
+        check(!CrateService.open(player, "woodland", key).success(), "switching-period-does-not-reset-usage");
+        CrateService.onServerStopping(); CrateService.onServerStarted();
+        check(current().outputWeeklyUsed.get("woodland").get("white") == 83L
+                && current().outputMonthlyUsed.get("woodland").get("white") == 83L,
+                "production-counts-survive-service-restart");
+        next = current(); next.crates.get("cobalt").outputLimits.get("gold").limit = 2;
+        check(CrateService.applyConfigJson(GSON.toJson(next)), "configure-pending-recovery-check");
+        var stateField = CrateService.class.getDeclaredField("state"); stateField.setAccessible(true);
+        var live = (CrateService.State)stateField.get(null);
+        int previousLifetime = live.skinProduced.get("knife/capture_0");
+        live.skinProduced.put("knife/capture_0", Integer.MAX_VALUE); // Force a post-award commit failure.
+        String pendingRequest = UUID.randomUUID().toString();
+        failed = CrateService.open(player, "cobalt", CrateService.keyItemId("cobalt"), pendingRequest);
+        check(!failed.success() && failed.message().equals("crates.pending")
+                && current().outputWeeklyUsed.get("cobalt").get("gold") == 1L
+                && current().pendingOpens.containsKey(pendingRequest), "commit-exception-rolls-back-quota-counters");
+        before = CrateService.inventory(player.getUUID());
+        check(!CrateService.open(player, "cobalt", CrateService.keyItemId("cobalt"), pendingRequest).success()
+                && before.equals(CrateService.inventory(player.getUUID()))
+                && current().outputWeeklyUsed.get("cobalt").get("gold") == 1L,
+                "retry-pending-keeps-award-and-counters-idempotent");
+        var progress = com.habitrain.lottery.crate.CrateOutputQuota.progress(current(), "cobalt",
+                com.habitrain.lottery.api.skin.SkinQuality.GOLD, current().crates.get("cobalt").outputLimits.get("gold"));
+        check(progress.reserved() == 1 && progress.remaining() == 0, "pending-material-reserves-final-slot");
+        ((CrateService.State)stateField.get(null)).skinProduced.put("knife/capture_0", previousLifetime);
+        CrateService.onServerStopping(); CrateService.onServerStarted();
+        check(!current().pendingOpens.containsKey(pendingRequest)
+                && current().outputWeeklyUsed.get("cobalt").get("gold") == 2L
+                && before.equals(CrateService.inventory(player.getUUID())), "restart-recovers-intent-without-double-award");
+        check(CrateService.open(player, "cobalt", CrateService.keyItemId("cobalt"), pendingRequest).success()
+                && current().outputWeeklyUsed.get("cobalt").get("gold") == 2L,
+                "recovered-receipt-replay-does-not-recount");
+        return true;
+    }
+
+    private static CrateService.State current() { return GSON.fromJson(CrateService.configJson(), CrateService.State.class); }
+    private EditBox quotaInput(String quality) {
+        String name = Component.translatable(MANAGE + "output_limit_label", Component.translatable("skin.habitrain_lottery.quality." + quality)).getString();
+        return screen.children().stream().filter(c -> c instanceof EditBox b && b.getMessage().getString().equals(name))
+                .map(c -> (EditBox)c).findFirst().orElseThrow();
+    }
+    private void editQuota(String quality, String value) { quotaInput(quality).setValue(value); }
 
     private void click(String key) {
         clickOn(screen, key);

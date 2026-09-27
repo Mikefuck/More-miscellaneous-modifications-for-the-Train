@@ -13,5 +13,7 @@ public final class CrateFixtureSkins implements SkinRegistrar {
                     ResourceLocation.fromNamespaceAndPath("starrailexpress", "item/" + models[i % 3]),
                     SkinQuality.GOLD));
         }
+        HabiSkinApi.register(new SkinDefinition("knife", "quota_blue", 0xFFFFFFFF,
+                ResourceLocation.fromNamespaceAndPath("starrailexpress", "item/knife"), SkinQuality.BLUE));
     }
 }
