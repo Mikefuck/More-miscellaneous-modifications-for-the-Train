@@ -18,54 +18,72 @@ import java.util.Map;
 /**
  * 开箱界面的美术件：参考视频重建的箱体与庭院、实时翻盖几何，以及卡片 / 面板 / 按钮。
  *
- * <p>箱体仍是等距投影的三张贴图面；箱盖绕后铰链翻转，翻过 90° 之后露出的是
- * 被箱内光照亮的盖底（贴图压暗 + 自下而上的加色辉光），而不是一块纯黑多边形。
- * {@code glow} 统一描述「箱内的光」：关盖时从缝隙、锁扣与徽标漏出，开盖后照亮内腔与盖底。</p>
+ * <p>箱子是原版箱子比例的真 3D 模型（14×9×14 空心底座 + 14×5×14 后铰链箱盖 + 2×4×1 锁扣），
+ * 按固定的偏航 / 俯仰角正交投影，逐面做背面剔除与受光（顶亮、正面中、侧面暗，暖色主光 + 冷色环境光，
+ * 贴地一侧压暗）。贴图由 {@code tools/generate_chest_art.py} 生成，每个 MC 像素 4 个贴图像素。
+ * {@code glow} 统一描述「箱内的光」：关盖时从盖缝与锁孔漏出，开盖后照亮内腔与盖底。</p>
  */
 public final class CrateArt {
 
     // =====================================================================
     // 调色板
     // =====================================================================
-    public static final int BODY_FRONT = 0xFF2A2017, BODY_FRONT_LOW = 0xFF1C130D,
-            BODY_SIDE = 0xFF231A12, BODY_SIDE_LOW = 0xFF170F09,
-            BODY_BACK = 0xFF140D08, BODY_INTERIOR = 0xFF0B0B0B, BODY_INTERIOR_DEEP = 0xFF050506,
-            EDGE = 0xFF514437, EDGE_DARK = 0xFF0D0906,
-            HAZARD = 0xFFE8C21A, HAZARD_DEEP = 0xFFD9A31A, HAZARD_INK = 0xFF1A1A1A,
-            STEEL = 0xFF3B2C25, STEEL_LIGHT = 0xFF695545, RIB = 0xFF23201C,
-            PLATE = 0xFFBB9F85;
     /** 界面金线（光标、分隔线）。 */
     public static final int GOLD_LINE = 0xFFF2D25A;
     /** 暖白：箱内光的基色，与箱子强调色混合，不泄露结果品质。 */
     public static final int WARM_LIGHT = 0xFFFFE6B3;
+    /** 原版铁锁扣：灰阶贴图 × 该色。 */
+    public static final int IRON = 0xFFE6E6EA;
 
     private CrateArt() {
     }
 
     // =====================================================================
-    // 等距投影
+    // 投影
     // =====================================================================
 
+    /** 模型尺寸（MC 像素）：底座高 9、箱盖高 5，铰链在底座顶面后沿 (y=9, z=14)。 */
+    private static final float SIZE = 14, BASE_H = 9, LID_H = 5, HINGE_Y = 9, HINGE_Z = 14;
+    private static final double YAW = Math.toRadians(22), PITCH = Math.toRadians(24);
+    private static final float CY = (float) Math.cos(YAW), SY = (float) Math.sin(YAW),
+            CP = (float) Math.cos(PITCH), SP = (float) Math.sin(PITCH);
+    /** 模型 1px 的屏幕尺寸 = crateWidth × FIT；0.82 让新箱子与旧箱子的视觉体量相当。 */
+    private static final float FIT = .82F / (SIZE * (CY + SY));
+    /** 指向观察者的单位向量，用于背面剔除。 */
+    private static final float VX = CP * SY, VY = SP, VZ = -CP * CY;
+    /** 主光方向（左上前方），已归一化。 */
+    private static final float LX = -.449F, LY = .799F, LZ = -.399F;
+
     /**
-     * 正交等距投影。{@code crateWidth} 是箱子（含左右两个可见侧面）在屏幕上的总宽度，
-     * {@code baseY} 是箱子底面中心落在屏幕上的位置。
+     * 箱子的正交投影。{@code crateWidth} 沿用旧箱子的「屏幕总宽」语义，{@code baseY} 是箱底中心的屏幕位置。
+     * {@link #px}/{@link #py} 的单位坐标：x/z 0..1 覆盖箱子占地（z=0 为正面），y 0..1 是底座高度，y=1 即箱口。
      */
     public static final class Iso {
-        private final float ox, oy, w;
+        private final float ox, oy, s;
         public Iso(float centerX, float baseY, float crateWidth) {
-            ox = centerX; oy = baseY; w = Math.max(4, crateWidth);
+            ox = centerX; oy = baseY; s = Math.max(4, crateWidth) * FIT;
         }
-        public float px(float x, float y, float z) { return ox + ((x - .5F) * .74F + (z - .5F) * .26F) * w; }
-        public float py(float x, float y, float z) { return oy + ((x - .5F) * .06F - (z - .5F) * .15F - y * .46F) * w; }
-        public float scale() { return w * .5F; }
-        public float heightScale() { return w * .46F; }
+        /** 模型坐标（MC 像素）→ 屏幕。 */
+        float sx(float x, float y, float z) { return ox + s * ((x - 7) * CY + (z - 7) * SY); }
+        float sy(float x, float y, float z) { return oy - s * (-(x - 7) * SP * SY + y * CP + (z - 7) * SP * CY); }
+        public float px(float x, float y, float z) { return sx(x * SIZE, y * BASE_H, z * SIZE); }
+        public float py(float x, float y, float z) { return sy(x * SIZE, y * BASE_H, z * SIZE); }
+        public float scale() { return s * SIZE * .5F; }
+        public float heightScale() { return s * BASE_H; }
     }
 
     private static ResourceLocation art(String name) {
         return ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/crate/" + name + ".png");
     }
-    private static final ResourceLocation FRONT = art("case_front"), SIDE = art("case_side"), LID = art("case_lid");
+    private static final ResourceLocation CHEST = art("chest");
     private static final ResourceLocation[] COURTYARD = {art("courtyard_4"), art("courtyard_12"), art("courtyard_24")};
+    private static final float ATLAS = 256;
+    // 图集区域 {u, v, w, h}，与 tools/generate_chest_art.py 的 REGIONS 一致
+    private static final int[] BASE_FRONT = {0, 0, 56, 36}, BASE_SIDE = {56, 0, 56, 36},
+            LID_FRONT = {0, 36, 56, 20}, LID_SIDE = {56, 36, 56, 20}, LID_TOP = {112, 0, 56, 56},
+            LID_UNDER = {168, 0, 56, 56}, RIM = {112, 56, 56, 56}, FLOOR = {168, 56, 48, 48},
+            WALL_BACK = {0, 112, 48, 32}, WALL_SIDE = {48, 112, 48, 32},
+            LOCK_FRONT = {96, 112, 8, 16}, LOCK_SIDE = {104, 112, 4, 16}, LOCK_TOP = {108, 112, 8, 4};
 
     /** 与 {@link RenderType#text} 相同，但关闭背面剔除：翻过去的盖底也要画出来。 */
     private static final Map<ResourceLocation, RenderType> FACE_TYPES = new HashMap<>();
@@ -80,36 +98,13 @@ public final class CrateArt {
         });
     }
 
-    /** 四个本地坐标点（左上、右上、右下、左下）贴一张贴图，按 {@code tint} 着色。 */
-    private static void face(GuiGraphics g, Iso iso, ResourceLocation texture, float[][] points, int tint, float alpha) {
-        g.flush();
-        VertexConsumer v = g.bufferSource().getBuffer(faceType(texture));
-        Matrix4f pose = g.pose().last().pose();
-        int r = tint >> 16 & 0xFF, gr = tint >> 8 & 0xFF, b = tint & 0xFF, a = (int) (255 * Mth.clamp(alpha, 0, 1));
-        float[][] uv = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-        for (int i : new int[]{0, 3, 2, 1}) {
-            float[] p = points[i];
-            v.addVertex(pose, iso.px(p[0], p[1], p[2]), iso.py(p[0], p[1], p[2]), 0)
-                    .setColor(r, gr, b, a).setUv(uv[i][0], uv[i][1]).setLight(15728880);
-        }
-        g.flush();
-    }
-
-    private static float[] xs(Iso iso, float[][] p) {
-        float[] out = new float[p.length];
-        for (int i = 0; i < p.length; i++) out[i] = iso.px(p[i][0], p[i][1], p[i][2]);
-        return out;
-    }
-
-    private static float[] ys(Iso iso, float[][] p) {
-        float[] out = new float[p.length];
-        for (int i = 0; i < p.length; i++) out[i] = iso.py(p[i][0], p[i][1], p[i][2]);
-        return out;
-    }
-
     // =====================================================================
     // 箱体
     // =====================================================================
+
+    private static final float[] N_FRONT = {0, 0, -1}, N_BACK = {0, 0, 1}, N_RIGHT = {1, 0, 0},
+            N_LEFT = {-1, 0, 0}, N_UP = {0, 1, 0}, N_DOWN = {0, -1, 0};
+    private static final int WHITE = 0xFFFFFFFF;
 
     /** 兼容旧调用点：无箱内光、原色。 */
     public static void crate(GuiGraphics g, float cx, float baseY, float width, float lidAngle,
@@ -118,7 +113,7 @@ public final class CrateArt {
     }
 
     /**
-     * 画一个开箱中的箱子。
+     * 画一个开箱中的箱子（铁锁扣）。
      *
      * @param lidAngle 箱盖翻转角度，0 为关闭，约 112° 为完全掀开
      * @param ambient  整体受光色（压暗场景时传入灰色）
@@ -127,67 +122,10 @@ public final class CrateArt {
      */
     public static void crateLit(GuiGraphics g, float cx, float baseY, float width, float lidAngle,
                                 int ambient, float glow, int light, float alpha) {
-        Iso iso = new Iso(cx, baseY, width);
-        float theta = (float) Math.toRadians(Mth.clamp(lidAngle, 0, 120));
-        float sin = (float) Math.sin(theta), cos = (float) Math.cos(theta);
-        // The lid is shallow; its projected rise must not cross the title block.
-        float lift = sin * .34F;
-        float open = Mth.clamp(lidAngle / 100F, 0, 1);
-        float lit = Mth.clamp(glow, 0, 1);
-
-        // ---- 内腔：开盖后由箱内光自下而上照亮 ----
-        float[][] mouth = {{0, 1, 0}, {1, 1, 0}, {1, 1, 1}, {0, 1, 1}};
-        int deep = GuiFx.mix(BODY_INTERIOR_DEEP, light, 0.30F * lit * open);
-        int near = GuiFx.mix(BODY_INTERIOR, light, 0.85F * lit * open);
-        quadColors(g, xs(iso, mouth), ys(iso, mouth), GuiFx.fade(near, alpha), GuiFx.fade(near, alpha),
-                GuiFx.fade(deep, alpha), GuiFx.fade(deep, alpha));
-
-        // ---- 盖底：翻过 90° 之后可见 ----
-        float[][] lidPoints = {{0, 1.012F, 1}, {1, 1.012F, 1}, {1, 1.012F + lift, 1 - cos}, {0, 1.012F + lift, 1 - cos}};
-        if (lidAngle > 90) {
-            int under = GuiFx.mix(GuiFx.shade(ambient | 0xFF000000, -0.62F), light, 0.25F * lit);
-            face(g, iso, LID, lidPoints, under, alpha);
-            // 箱内光从铰链一侧照上盖底
-            float[] lx = xs(iso, lidPoints), ly = ys(iso, lidPoints);
-            int hot = GuiFx.fade(light, 0.55F * lit * alpha);
-            quadColorsAdd(g, lx, ly, hot, hot, light & 0xFFFFFF, light & 0xFFFFFF);
-        }
-
-        // ---- 箱体两面 ----
-        int body = ambient | 0xFF000000;
-        face(g, iso, FRONT, new float[][]{{0, 1, 0}, {1, 1, 0}, {1, 0, 0}, {0, 0, 0}}, body, alpha);
-        face(g, iso, SIDE, new float[][]{{1, 1, 0}, {1, 1, 1}, {1, 0, 1}, {1, 0, 0}}, GuiFx.shade(body, -0.06F), alpha);
-
-        // ---- 盖顶 ----
-        if (lidAngle <= 90) face(g, iso, LID, lidPoints, GuiFx.shade(body, 0.04F), alpha);
-
-        // ---- 盖沿厚度：翻开后的前沿是一条被照亮的金属边 ----
-        if (lidAngle > 2) {
-            float t = 0.035F;
-            float[][] rim = {{0, 1.012F + lift, 1 - cos}, {1, 1.012F + lift, 1 - cos},
-                    {1, 1.012F + lift - t * cos, 1 - cos - t * sin}, {0, 1.012F + lift - t * cos, 1 - cos - t * sin}};
-            int edge = GuiFx.mix(GuiFx.shade(EDGE, -0.2F), light, 0.6F * lit);
-            quadColors(g, xs(iso, rim), ys(iso, rim), GuiFx.fade(edge, alpha), GuiFx.fade(edge, alpha),
-                    GuiFx.fade(GuiFx.shade(edge, -0.4F), alpha), GuiFx.fade(GuiFx.shade(edge, -0.4F), alpha));
-        }
-        // 箱口前沿的一条亮边
-        line(g, iso.px(0, 1, 0), iso.py(0, 1, 0), iso.px(1, 1, 0), iso.py(1, 1, 0), 1.5F,
-                GuiFx.fade(GuiFx.mix(EDGE, light, 0.7F * lit), alpha));
-
-        // ---- 关盖时的漏光：缝隙、锁扣、徽标 ----
-        float leak = lit * (1 - open);
-        if (leak > 0.01F) {
-            float w = iso.scale() * 2;
-            CrateFx.lineGlow(g, iso.px(0, 1, 0), iso.py(0, 1, 0), iso.px(1, 1, 0), iso.py(1, 1, 0),
-                    w * 0.006F, w * 0.05F, light, leak * alpha);
-            CrateFx.lineGlow(g, iso.px(1, 1, 0), iso.py(1, 1, 0), iso.px(1, 1, 1), iso.py(1, 1, 1),
-                    w * 0.005F, w * 0.04F, light, leak * 0.8F * alpha);
-            CrateFx.glow(g, iso.px(1, .88F, .18F), iso.py(1, .88F, .18F), w * 0.07F, w * 0.07F, light, leak * 0.9F * alpha, true);
-            CrateFx.glow(g, iso.px(.5F, .52F, 0), iso.py(.5F, .52F, 0), w * 0.22F, w * 0.26F, light, leak * 0.35F * alpha, true);
-        }
+        chest(g, cx, baseY, width, lidAngle, ambient, glow, light, IRON, alpha);
     }
 
-    /** 可配置箱子：同一套几何与光照，外加强调色面板与徽记。 */
+    /** 可配置箱子：同一套橡木箱体，锁扣按强调色染色。{@code preset}/{@code badge} 仅为兼容保留。 */
     public static void crateStyled(GuiGraphics g, float cx, float baseY, float width, float lidAngle,
                                    int accent, float intensity, String preset, String badge) {
         crateStyledLit(g, cx, baseY, width, lidAngle, accent, preset, badge, 0xFFFFFFFF, 0, WARM_LIGHT, 1);
@@ -195,27 +133,172 @@ public final class CrateArt {
 
     public static void crateStyledLit(GuiGraphics g, float cx, float baseY, float width, float lidAngle, int accent,
                                       String preset, String badge, int ambient, float glow, int light, float alpha) {
-        crateLit(g, cx, baseY, width, lidAngle, ambient, glow, light, alpha);
+        chest(g, cx, baseY, width, lidAngle, ambient, glow, light, GuiFx.mix(IRON, accent | 0xFF000000, .55F), alpha);
+    }
+
+    private static void chest(GuiGraphics g, float cx, float baseY, float width, float lidAngle, int ambient,
+                              float glow, int light, int metal, float alpha) {
         Iso iso = new Iso(cx, baseY, width);
-        int tintedAccent = GuiFx.fade(multiply(accent, ambient), alpha);
-        int dark = GuiFx.fade(0xFF000000 | ((multiply(accent, ambient) & 0xFEFEFE) >> 1), alpha);
-        float low = "industrial".equals(preset) ? .23F : .30F;
-        float high = "hazard".equals(preset) ? .65F : .55F;
-        polygon(g, new float[]{iso.px(.12F, low, 0), iso.px(.88F, low, 0), iso.px(.88F, high, 0), iso.px(.12F, high, 0)},
-                new float[]{iso.py(.12F, low, 0), iso.py(.88F, low, 0), iso.py(.88F, high, 0), iso.py(.12F, high, 0)}, 4, dark);
-        line(g, iso.px(.12F, high, 0), iso.py(.12F, high, 0), iso.px(.88F, high, 0), iso.py(.88F, high, 0), 1.5F, tintedAccent);
-        if ("diamond".equals(badge) || "star".equals(badge) || "bolt".equals(badge)) {
-            float[] xs = {iso.px(.50F, .59F, 0), iso.px(.63F, .43F, 0), iso.px(.50F, .27F, 0), iso.px(.37F, .43F, 0)};
-            float[] ys = {iso.py(.50F, .59F, 0), iso.py(.63F, .43F, 0), iso.py(.50F, .27F, 0), iso.py(.37F, .43F, 0)};
-            polygon(g, xs, ys, 4, tintedAccent);
+        float angle = Mth.clamp(lidAngle, 0, 120);
+        Chest p = new Chest(g, iso, angle, ambient, alpha);
+        float lit = Mth.clamp(glow, 0, 1), open = Mth.clamp(lidAngle / 100F, 0, 1);
+        // 盖子翻过 90° 后整体落在底座后方，先画；之前整体在底座上方，后画
+        if (angle > 90) drawLid(p, metal, light, lit * open);
+        drawBase(p, light, lit * open);
+        if (angle <= 90) drawLid(p, metal, light, lit * open);
+
+        // 关盖时的漏光：前 / 右盖缝与锁孔
+        float leak = lit * (1 - open);
+        if (leak > .01F) {
+            float w = iso.scale() * 2;
+            float[] a = {0, BASE_H, 0}, b = {SIZE, BASE_H, 0}, c = {SIZE, BASE_H, SIZE};
+            CrateFx.lineGlow(g, p.x(a), p.y(a), p.x(b), p.y(b), w * .008F, w * .07F, light, leak * p.alpha);
+            CrateFx.lineGlow(g, p.x(b), p.y(b), p.x(c), p.y(c), w * .006F, w * .05F, light, leak * .8F * p.alpha);
+            float[] key = p.lid(new float[]{7, 8.6F, -1.05F});
+            CrateFx.glow(g, p.x(key), p.y(key), w * .07F, w * .08F, light, leak * .9F * p.alpha, true);
         }
     }
 
-    private static int multiply(int color, int tint) {
-        int r = (color >> 16 & 0xFF) * (tint >> 16 & 0xFF) / 255;
-        int gr = (color >> 8 & 0xFF) * (tint >> 8 & 0xFF) / 255;
-        int b = (color & 0xFF) * (tint & 0xFF) / 255;
-        return (color & 0xFF000000) | r << 16 | gr << 8 | b;
+    /** 底座：内腔（底板、内后壁、内左壁 + 箱内光）→ 外壁 → 箱沿。 */
+    private static void drawBase(Chest p, int light, float inner) {
+        if (p.angle > .5F) {
+            float[] floor = p.face(new float[][]{{1, 1, 13}, {13, 1, 13}, {13, 1, 1}, {1, 1, 1}}, N_UP, FLOOR, false, WHITE, true);
+            float[] back = p.face(new float[][]{{1, 9, 13}, {13, 9, 13}, {13, 1, 13}, {1, 1, 13}}, N_FRONT, WALL_BACK, false, WHITE, true);
+            float[] side = p.face(new float[][]{{1, 9, 1}, {1, 9, 13}, {1, 1, 13}, {1, 1, 1}}, N_RIGHT, WALL_SIDE, false, WHITE, true);
+            if (inner > .01F) {
+                float k = inner * p.alpha;
+                glowFace(p.g, floor, light, .45F * k, .45F * k, .90F * k, .90F * k);
+                glowFace(p.g, back, light, .18F * k, .18F * k, .62F * k, .62F * k);
+                glowFace(p.g, side, light, .16F * k, .16F * k, .50F * k, .50F * k);
+            }
+        }
+        p.face(new float[][]{{0, 9, 0}, {14, 9, 0}, {14, 0, 0}, {0, 0, 0}}, N_FRONT, BASE_FRONT, false, WHITE, false);
+        p.face(new float[][]{{14, 9, 0}, {14, 9, 14}, {14, 0, 14}, {14, 0, 0}}, N_RIGHT, BASE_SIDE, false, WHITE, false);
+        p.face(new float[][]{{0, 9, 14}, {0, 9, 0}, {0, 0, 0}, {0, 0, 14}}, N_LEFT, BASE_SIDE, false, WHITE, false);
+        p.face(new float[][]{{14, 9, 14}, {0, 9, 14}, {0, 0, 14}, {14, 0, 14}}, N_BACK, BASE_SIDE, false, WHITE, false);
+        if (p.angle > .5F) {
+            p.face(new float[][]{{0, 9, 14}, {14, 9, 14}, {14, 9, 0}, {0, 9, 0}}, N_UP, RIM, false, WHITE, false);
+        }
+    }
+
+    /** 箱盖与锁扣：锁扣在盖正面外侧，正面朝向镜头时锁扣在前，否则被盖挡住。 */
+    private static void drawLid(Chest p, int metal, int light, float inner) {
+        boolean lockInFront = p.visible(p.lidNormal(N_FRONT));
+        if (!lockInFront) drawLock(p, metal);
+        p.face(new float[][]{{0, 14, 0}, {14, 14, 0}, {14, 9, 0}, {0, 9, 0}}, N_FRONT, LID_FRONT, true, WHITE, false);
+        p.face(new float[][]{{14, 14, 0}, {14, 14, 14}, {14, 9, 14}, {14, 9, 0}}, N_RIGHT, LID_SIDE, true, WHITE, false);
+        p.face(new float[][]{{0, 14, 14}, {0, 14, 0}, {0, 9, 0}, {0, 9, 14}}, N_LEFT, LID_SIDE, true, WHITE, false);
+        p.face(new float[][]{{14, 14, 14}, {0, 14, 14}, {0, 9, 14}, {14, 9, 14}}, N_BACK, LID_SIDE, true, WHITE, false);
+        float[] top = p.face(new float[][]{{0, 14, 14}, {14, 14, 14}, {14, 14, 0}, {0, 14, 0}}, N_UP, LID_TOP, true, WHITE, false);
+        float[] under = p.face(new float[][]{{0, 9, 0}, {14, 9, 0}, {14, 9, 14}, {0, 9, 14}}, N_DOWN, LID_UNDER, true, WHITE, false);
+        // 盖底被箱内光照亮，靠铰链一侧最亮
+        if (under != null && inner > .01F) {
+            float k = inner * p.alpha;
+            glowFace(p.g, under, light, .16F * k, .16F * k, .72F * k, .72F * k);
+        }
+        // 盖顶前沿迎着主光的一道细高光
+        if (top != null) {
+            int sheen = GuiFx.fade(0xFFFFF1D8, .16F * p.alpha * p.brightness);
+            line(p.g, top[6], top[7], top[4], top[5], Math.max(1, p.iso.s * .45F), sheen);
+        }
+        if (lockInFront) drawLock(p, metal);
+    }
+
+    private static void drawLock(Chest p, int metal) {
+        p.face(new float[][]{{6, 11, -1}, {8, 11, -1}, {8, 7, -1}, {6, 7, -1}}, N_FRONT, LOCK_FRONT, true, metal, false);
+        p.face(new float[][]{{8, 11, -1}, {8, 11, 0}, {8, 7, 0}, {8, 7, -1}}, N_RIGHT, LOCK_SIDE, true, metal, false);
+        p.face(new float[][]{{6, 11, 0}, {6, 11, -1}, {6, 7, -1}, {6, 7, 0}}, N_LEFT, LOCK_SIDE, true, metal, false);
+        p.face(new float[][]{{6, 11, 0}, {8, 11, 0}, {8, 11, -1}, {6, 11, -1}}, N_UP, LOCK_TOP, true, metal, false);
+        p.face(new float[][]{{6, 7, -1}, {8, 7, -1}, {8, 7, 0}, {6, 7, 0}}, N_DOWN, LOCK_TOP, true, metal, false);
+    }
+
+    /** 投影后的面叠一层加色辉光；{@code k0..k3} 为四个角（左上、右上、右下、左下）的强度。 */
+    private static void glowFace(GuiGraphics g, float[] q, int light, float k0, float k1, float k2, float k3) {
+        if (q == null) return;
+        quadColorsAdd(g, new float[]{q[0], q[2], q[4], q[6]}, new float[]{q[1], q[3], q[5], q[7]},
+                GuiFx.fade(light, k0), GuiFx.fade(light, k1), GuiFx.fade(light, k2), GuiFx.fade(light, k3));
+    }
+
+    /** 一次绘制的箱子状态：投影、箱盖角度、整体受光与透明度；负责面的剔除、受光与贴图。 */
+    private static final class Chest {
+        final GuiGraphics g;
+        final Iso iso;
+        final float angle, alpha, brightness;
+        private final float cos, sin, ar, ag, ab;
+
+        Chest(GuiGraphics g, Iso iso, float angle, int ambient, float alpha) {
+            this.g = g;
+            this.iso = iso;
+            this.angle = angle;
+            this.alpha = Mth.clamp(alpha, 0, 1);
+            double t = Math.toRadians(angle);
+            cos = (float) Math.cos(t);
+            sin = (float) Math.sin(t);
+            ar = (ambient >> 16 & 0xFF) / 255F;
+            ag = (ambient >> 8 & 0xFF) / 255F;
+            ab = (ambient & 0xFF) / 255F;
+            brightness = (ar + ag + ab) / 3;
+        }
+
+        /** 箱盖局部坐标 → 模型坐标：绕铰链 (y=9, z=14) 在 y-z 平面内向后翻。 */
+        float[] lid(float[] p) {
+            float dy = p[1] - HINGE_Y, dz = p[2] - HINGE_Z;
+            return new float[]{p[0], HINGE_Y + dy * cos - dz * sin, HINGE_Z + dy * sin + dz * cos};
+        }
+
+        float[] lidNormal(float[] n) {
+            return new float[]{n[0], n[1] * cos - n[2] * sin, n[1] * sin + n[2] * cos};
+        }
+
+        boolean visible(float[] n) {
+            return n[0] * VX + n[1] * VY + n[2] * VZ > 1e-3F;
+        }
+
+        float x(float[] p) { return iso.sx(p[0], p[1], p[2]); }
+        float y(float[] p) { return iso.sy(p[0], p[1], p[2]); }
+
+        /**
+         * 画一个面：{@code pts} 按贴图的左上、右上、右下、左下给出（MC 像素，箱盖件为局部坐标）。
+         * 背对镜头时不画并返回 null，否则返回投影后的 {x0,y0,…,x3,y3}。
+         */
+        float[] face(float[][] pts, float[] normal, int[] uv, boolean onLid, int tint, boolean interior) {
+            float[] n = onLid ? lidNormal(normal) : normal;
+            if (!visible(n)) return null;
+            float diffuse = Math.max(0, n[0] * LX + n[1] * LY + n[2] * LZ);
+            // 右侧 ≈ .46、正面 ≈ .71、顶面 ≈ .96，接近原版方块的分面明暗
+            float lum = .46F + .62F * diffuse;
+            // 暖色主光 + 冷色天光：迎光面偏暖，背光面偏冷
+            float wr = Mth.lerp(diffuse, .86F, 1.00F), wg = Mth.lerp(diffuse, .90F, .97F), wb = Mth.lerp(diffuse, 1.00F, .88F);
+            float tr = (tint >> 16 & 0xFF) / 255F, tg = (tint >> 8 & 0xFF) / 255F, tb = (tint & 0xFF) / 255F;
+            float u0 = uv[0] / ATLAS, v0 = uv[1] / ATLAS, u1 = (uv[0] + uv[2]) / ATLAS, v1 = (uv[1] + uv[3]) / ATLAS;
+            float[] us = {u0, u1, u1, u0}, vs = {v0, v0, v1, v1};
+            int a = (int) (255 * alpha);
+            float[] out = new float[8];
+            g.flush();
+            VertexConsumer v = g.bufferSource().getBuffer(faceType(CHEST));
+            Matrix4f pose = g.pose().last().pose();
+            for (int i = 0; i < 4; i++) {
+                float[] p = onLid ? lid(pts[i]) : pts[i];
+                float k = lum * occlusion(p[1], interior);
+                out[i * 2] = x(p);
+                out[i * 2 + 1] = y(p);
+                v.addVertex(pose, out[i * 2], out[i * 2 + 1], 0)
+                        .setColor(channel(wr * tr * ar * k), channel(wg * tg * ag * k), channel(wb * tb * ab * k), a)
+                        .setUv(us[i], vs[i]).setLight(15728880);
+            }
+            g.flush();
+            return out;
+        }
+    }
+
+    /** 贴地压暗：外壁下半部渐暗；内腔越深越暗。 */
+    private static float occlusion(float y, boolean interior) {
+        if (interior) return .40F + .60F * Mth.clamp((y - 1) / (BASE_H - 1), 0, 1);
+        return .74F + .26F * Mth.clamp(y / 5F, 0, 1);
+    }
+
+    private static int channel(float v) {
+        return (int) (255 * Mth.clamp(v, 0, 1));
     }
 
     // =====================================================================
@@ -478,12 +561,5 @@ public final class CrateArt {
         if (a <= 0.01F || x1 <= x0) return;
         CrateFx.hairline(g, x0, x1, y0, 2, (x1 - x0) * 0.3F, GuiFx.fade(color, a), false);
         CrateFx.hairline(g, x0, x1, y0 - 4, 10, (x1 - x0) * 0.35F, GuiFx.fade(color, 0.3F * a), true);
-    }
-
-    /** 箱子徽标（危险黄三角 + 白星 + 铭牌）。 */
-    public static void crateBadge(GuiGraphics g, int x, int y, int size, int accent, float alpha) {
-        g.setColor(1, 1, 1, alpha);
-        g.blit(art("case_badge"), x, y, size, size, 0, 0, 96, 96, 96, 96);
-        g.setColor(1, 1, 1, 1);
     }
 }
