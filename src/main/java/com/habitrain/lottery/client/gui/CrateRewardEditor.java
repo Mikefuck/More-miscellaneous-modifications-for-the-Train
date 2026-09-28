@@ -318,8 +318,20 @@ final class CrateRewardEditor {
         return null;
     }
     private void onlySelectedReward() {
-        for (String key : rewards) host.rewardValue(skin(key) ? key : key + ".weight",
-                String.valueOf(key.equals(selected) ? Math.max(1, weight(key)) : 0));
+        if (selected.isEmpty() || missing(selected)) return;
+        manualPool();
+        boolean selectedSkin = skin(selected);
+        for (String key : rewards) {
+            boolean chosen = key.equals(selected);
+            host.rewardValue(skin(key) ? key : key + ".weight",
+                    String.valueOf(chosen ? Math.max(1, weight(key)) : 0));
+            if (!skin(key)) {
+                // In skin_plus_bonus, items use independent chances instead of weights.
+                host.rewardValue(key + ".chance", chosen ? "100" : "0");
+            }
+        }
+        host.rewardValue("skin_draw_count", selectedSkin ? "1" : "0");
+        host.rewardValue("minimum_skin_count", "0");
         host.rewardValue("roll_count", "1");
         host.rewardChanged();
     }

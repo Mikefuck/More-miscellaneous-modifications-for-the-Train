@@ -28,7 +28,7 @@ import java.util.Set;
 public final class CrateManageScreen extends Screen {
     private static final Gson GSON = new Gson();
     private static final String KEY = "screen.habitrain_lottery.crate_manage.";
-    private static final String[] TABS = {"profile", "appearance", "rewards", "limits"};
+    private static final String[] TABS = {"profile", "rewards", "limits"};
     private final Screen parent;
     private CrateService.State draft;
     private CrateService.State latestQuotaState;
@@ -118,18 +118,14 @@ public final class CrateManageScreen extends Screen {
             case 0 -> {
                 result.add(row("id", id(), 48));
                 result.add(row("name", p.name, 64));
-                result.add(row("description", p.description, 256));
+                // Built-in descriptions are stored as translation keys. Show the actual
+                // warehouse text so editing this field writes a literal description.
+                String description = p.description == null ? "" : p.description;
+                result.add(row("description", Component.translatableWithFallback(description, description).getString(), 256));
                 result.add(row("tier", p.tier, 24));
                 result.add(row("enabled", String.valueOf(p.enabled), 5));
                 result.add(row("archived", String.valueOf(p.archived), 5));
                 result.add(row("key_name", p.keyName, 64));
-            }
-            case 1 -> {
-                result.add(row("appearance_preset", p.appearancePreset, 48));
-                result.add(row("color", String.format(Locale.ROOT, "#%06X", p.color & 0xFFFFFF), 7));
-                result.add(row("badge", p.badge, 48));
-                result.add(row("icon", p.icon, 128));
-                result.add(row("key_icon", p.keyIcon, 128));
             }
             default -> { }
         }
@@ -138,11 +134,11 @@ public final class CrateManageScreen extends Screen {
 
     private void rebuild() {
         clearWidgets(); activeBoxes.clear();
-        boolean compact = height < 180 || (tab == 2 && height < 300) || (tab == 3 && height < 240);
+        boolean compact = height < 180 || (tab == 1 && height < 300) || (tab == 2 && height < 240);
         x = width < 420 ? 8 : 16; w = width - x * 2;
-        contentTop = tab == 2 ? (compact ? 88 : 108) : (compact ? 64 : 84);
+        contentTop = tab == 1 ? (compact ? 88 : 108) : (compact ? 64 : 84);
         footerY = height - 24;
-        visibleRows = Math.max(1, (footerY - contentTop - (tab == 2 ? 20 : 6)) / 25);
+        visibleRows = Math.max(1, (footerY - contentTop - (tab == 1 ? 20 : 6)) / 25);
         int tabW = (w - (TABS.length - 1) * 2) / TABS.length;
         int tabY = compact ? 18 : 30;
         int navY = compact ? 40 : 56;
@@ -153,8 +149,6 @@ public final class CrateManageScreen extends Screen {
                 }).bounds(x + i * (tabW + 2), tabY,
                         i == TABS.length - 1 ? width - x - (x + i * (tabW + 2)) : tabW, 20).build()).active = i != tab;
         }
-        if (tab == 1) addRenderableWidget(Button.builder(Component.translatable(KEY + "preview"), b -> openAppearancePreview())
-                .bounds(width - x - 68, compact ? 0 : 8, 68, 20).build());
         int newW = Math.max(36, Math.min(52, w / 6));
         int navW = Math.max(16, Math.min(22, w / 12));
         addRenderableWidget(Button.builder(Component.literal("‹"), b -> { selected = Math.floorMod(selected - 1, ids.size()); scroll = 0; rebuild(); })
@@ -182,9 +176,9 @@ public final class CrateManageScreen extends Screen {
                 .bounds(right - newW * 2 - 2, navY, newW, 20).build()).active = draft != null;
         addRenderableWidget(Button.builder(Component.translatable(KEY + "copy"), b -> create(true))
                 .bounds(right - newW, navY, newW, 20).build()).active = pool() != null;
-        rows = tab == 2 ? List.of() : buildRows();
-        if (tab == 2 && pool() != null) rewardEditor.build(x, navY + 24, w, footerY - 18);
-        if (tab == 3 && pool() != null) quotaEditor.build(x, navY + 24, w, footerY - 18);
+        rows = tab == 1 ? List.of() : buildRows();
+        if (tab == 1 && pool() != null) rewardEditor.build(x, navY + 24, w, footerY - 18);
+        if (tab == 2 && pool() != null) quotaEditor.build(x, navY + 24, w, footerY - 18);
         scroll = Mth.clamp(scroll, 0, Math.max(0, rows.size() - visibleRows));
         int labelW = labelWidth();
         for (int i = scroll; i < rows.size() && i < scroll + visibleRows; i++) {
@@ -208,7 +202,9 @@ public final class CrateManageScreen extends Screen {
             EditBox box = new EditBox(font, x + labelW + 4, y, w - labelW - 4, 20, Component.literal(row.label()));
             box.setMaxLength(row.maxLength());
             box.setValue(row.value());
-            String hint = row.key().startsWith("cap.") ? row.label() + " · " + row.key().substring(4)
+            String hint = "description".equals(row.key())
+                    ? Component.translatable(KEY + "description_hint").getString()
+                    : row.key().startsWith("cap.") ? row.label() + " · " + row.key().substring(4)
                     + " · " + (draft.skinProduced == null ? 0 : draft.skinProduced.getOrDefault(row.key().substring(4), 0))
                     : row.label();
             box.setTooltip(Tooltip.create(Component.literal(hint)));
@@ -288,21 +284,10 @@ public final class CrateManageScreen extends Screen {
 
     private static boolean isChoice(String key) {
         return switch (key) {
-            case "tier", "enabled", "archived", "appearance_preset", "badge", "reward_mode", "same_skin",
+            case "tier", "enabled", "archived", "reward_mode", "same_skin",
                     "custom_pool", "duplicate_protection", "quota_period" -> true;
             default -> false;
         };
-    }
-
-    private void openAppearancePreview() {
-        CrateService.CratePool p = pool();
-        if (p == null || minecraft == null) return;
-        int color = p.color;
-        String raw = value("color", String.format(Locale.ROOT, "#%06X", color & 0xFFFFFF));
-        if (raw.matches("#[0-9a-fA-F]{6}")) color = 0xFF000000 | Integer.parseInt(raw.substring(1), 16);
-        minecraft.setScreen(new CrateAppearancePreviewScreen(this, value("name", p.name),
-                value("appearance_preset", p.appearancePreset), value("badge", p.badge), color,
-                value("icon", p.icon), value("key_icon", p.keyIcon)));
     }
 
     private static Component choiceDisplay(String key, String value) {
@@ -323,8 +308,6 @@ public final class CrateManageScreen extends Screen {
     private static String nextChoice(String key, String current) {
         String[] values = switch (key) {
             case "tier" -> new String[]{"white", "blue", "purple", "gold", "red"};
-            case "appearance_preset" -> new String[]{"woodland", "cobalt", "amethyst", "gilded", "crimson", "prismatic", "industrial", "hazard"};
-            case "badge" -> new String[]{"star", "diamond", "bolt", "none"};
             case "reward_mode" -> new String[]{"skin_plus_bonus", "unified_pool"};
             case "quota_period" -> new String[]{"weekly", "monthly"};
             default -> new String[]{"false", "true"};
@@ -378,13 +361,6 @@ public final class CrateManageScreen extends Screen {
             p.enabled = booleanValue(fields.getOrDefault(prefix + "enabled", String.valueOf(p.enabled)));
             p.archived = booleanValue(fields.getOrDefault(prefix + "archived", String.valueOf(p.archived)));
             p.keyName = fields.getOrDefault(prefix + "key_name", p.keyName).trim();
-            p.appearancePreset = fields.getOrDefault(prefix + "appearance_preset", p.appearancePreset).trim();
-            String color = fields.getOrDefault(prefix + "color", String.format(Locale.ROOT, "#%06X", p.color & 0xFFFFFF));
-            if (!color.matches("#[0-9a-fA-F]{6}")) throw new IllegalArgumentException();
-            p.color = 0xFF000000 | Integer.parseInt(color.substring(1), 16);
-            p.badge = fields.getOrDefault(prefix + "badge", p.badge).trim();
-            p.icon = fields.getOrDefault(prefix + "icon", p.icon).trim();
-            p.keyIcon = fields.getOrDefault(prefix + "key_icon", p.keyIcon).trim();
             p.rewardMode = fields.getOrDefault(prefix + "reward_mode", p.rewardMode).trim();
             for (SkinQuality quality : SkinQuality.values()) {
                 var cap = CrateOutputQuota.limit(p, quality);
@@ -566,14 +542,7 @@ public final class CrateManageScreen extends Screen {
             g.drawString(font, font.plainSubstrByWidth(label, labelW - 3), x, contentTop + (i - scroll) * 25 + 6,
                     0xFFC9D2D1, false);
         }
-        if (tab == 1 && pool() != null && width >= 300) {
-            int color = pool().color;
-            String colorDraft = value("color", String.format(Locale.ROOT, "#%06X", color & 0xFFFFFF));
-            if (colorDraft.matches("#[0-9a-fA-F]{6}")) color = 0xFF000000 | Integer.parseInt(colorDraft.substring(1), 16);
-            if (height >= 320) CrateArt.crateStyled(g, width / 2.0F, footerY - 10, 84, 0,
-                    color, 0, value("appearance_preset", pool().appearancePreset), value("badge", pool().badge));
-        }
-        if (height >= 180 && !(tab == 2 && height < 300) && !(tab == 3 && height < 240)) {
+        if (height >= 180 && !(tab == 1 && height < 300) && !(tab == 2 && height < 240)) {
             if (!CrateClientNetwork.connected()) g.drawCenteredString(font, Component.translatable("screen.habitrain_lottery.crate_admin.offline"),
                     width / 2, 20, 0xFFFFD18A);
             else if (!CrateClientNetwork.canEdit()) g.drawCenteredString(font, Component.translatable("crates.client_outdated"),
@@ -582,7 +551,7 @@ public final class CrateManageScreen extends Screen {
                     Component.translatable(status.startsWith("crates.") || status.startsWith("screen.") ? status : KEY + status), width / 2,
                     20, 0xFFFFD18A);
         }
-        if ((tab == 2 || tab == 3) && pool() != null) {
+        if ((tab == 1 || tab == 2) && pool() != null) {
             Component ruleError = rewardEditor.validationError();
             Component feedback = !CrateClientNetwork.connected() ? Component.translatable("screen.habitrain_lottery.crate_admin.offline")
                     : !CrateClientNetwork.canEdit() ? Component.translatable("crates.client_outdated")

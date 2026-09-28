@@ -57,6 +57,7 @@ public class LotteryConfigRootScreen extends Screen {
     private int[] tabX;
     private int[] tabY;
     private int[] tabW;
+    private Button refreshButton;
     private Button saveButton;
 
     // players
@@ -85,6 +86,7 @@ public class LotteryConfigRootScreen extends Screen {
 
     // titles (catalog + per-player owned)
     private TitleCatalog workingTitleCatalog = new TitleCatalog();
+    private boolean titleCatalogDirty;
     private int selectedTitleCatalogIndex;
     private int selectedTitleOwnedIndex;
     private int selectedTitlePlayerIndex;
@@ -156,7 +158,9 @@ public class LotteryConfigRootScreen extends Screen {
         // title snapshot arrived — refresh working catalog + lists on titles tab
         if (LotteryNetwork.ClientLotteryState.titleVersion != lastSeenTitleVersion) {
             lastSeenTitleVersion = LotteryNetwork.ClientLotteryState.titleVersion;
-            loadWorkingTitleCatalogFromState();
+            if (!titleCatalogDirty || titleCatalogMatchesSnapshot()) {
+                loadWorkingTitleCatalogFromState();
+            }
             if (selectedTab == TAB_TITLES) {
                 rebuildTabContent();
             }
@@ -227,17 +231,28 @@ public class LotteryConfigRootScreen extends Screen {
         ConfigConsoleLayout layout = consoleLayout();
         int by = layout.footer().y() + Math.max(2, (layout.footer().height() - 20) / 2);
         int x = pageLeft();
-        addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.refresh"), b -> {
-            if (LotteryClientNetwork.canSendPlay()) {
-                LotteryClientNetwork.clientRequestPlayerList();
-                LotteryClientNetwork.clientRequestTitleSnapshot();
-                status = "已请求服务器管理数据";
-            } else {
-                status = "未连接服务器";
+        refreshButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.refresh"), b -> {
+            if (selectedTab == TAB_CRATES) {
+                if (CrateClientNetwork.connected()) {
+                    CrateClientNetwork.requestConfig();
+                    status = "已请求开箱配置";
+                } else {
+                    status = "未连接服务器";
+                }
+                return;
             }
-            rebuildTabContent();
+            if (!LotteryClientNetwork.canSendPlay()) {
+                status = "未连接服务器";
+                return;
+            }
+            boolean players = LotteryClientNetwork.clientRequestPlayerList();
+            if (titleCatalogDirty) {
+                status = players ? "已请求玩家数据；称号模板有未保存修改，已保留草稿" : "玩家数据刷新请求发送失败";
+            } else {
+                boolean titles = LotteryClientNetwork.clientRequestTitleSnapshot();
+                status = players && titles ? "已请求玩家与称号数据" : "管理数据刷新请求发送失败";
+            }
         }).bounds(x, by, 42, 20)
-                .tooltip(Tooltip.create(Component.literal("重新读取玩家与称号数据")))
                 .build());
 
         saveButton = addRenderableWidget(Button.builder(Component.translatable("screen.habitrain_lottery.config.action.save"), b -> {
@@ -268,6 +283,11 @@ public class LotteryConfigRootScreen extends Screen {
 
     private void updateFooterState() {
         boolean visible = pageHasSaveAction();
+        if (refreshButton != null) {
+            refreshButton.visible = selectedTab == TAB_PLAYERS || selectedTab == TAB_TITLES || selectedTab == TAB_CRATES;
+            refreshButton.setTooltip(Tooltip.create(Component.literal(selectedTab == TAB_CRATES
+                    ? "重新读取开箱配置" : "重新读取玩家与称号数据")));
+        }
         if (saveButton != null) {
             saveButton.visible = visible;
             saveButton.active = visible && LotteryClientNetwork.canSendPlay()
@@ -317,11 +337,8 @@ public class LotteryConfigRootScreen extends Screen {
         if (selectedTab == TAB_SKINS || selectedTab == TAB_CRATES) {
             return;
         }
-        boolean onlineNonOp = LotteryClientNetwork.canSendPlay() && !LotteryNetwork.ClientLotteryState.op;
-        if (!onlineNonOp) {
-            for (AbstractWidget w : tabWidgets) {
-                w.active = true;
-            }
+        boolean readOnly = !LotteryClientNetwork.canSendPlay() || !LotteryNetwork.ClientLotteryState.op;
+        if (!readOnly) {
             return;
         }
         for (AbstractWidget w : tabWidgets) {
@@ -334,13 +351,11 @@ public class LotteryConfigRootScreen extends Screen {
                         || msg.equals("刷新称号") || msg.equals("刷新玩家")
                         || msg.equals(Component.translatable(
                         "screen.habitrain_lottery.config.players.back_to_list").getString())) {
-                    w.active = true;
                     continue;
                 }
             }
             // Search boxes are read-only navigation aids — keep usable for non-OP viewers.
             if (w == playerSearchBox || w == titlePlayerSearchBox) {
-                w.active = true;
                 continue;
             }
             w.active = false;
@@ -412,26 +427,20 @@ public class LotteryConfigRootScreen extends Screen {
 
         bulkDeltaBox = addTab(new EditBox(font, bulkX, y, bulkW, 20, Component.literal("bulk")));
         bulkDeltaBox.setValue("1");
-        bulkDeltaBox.setHint(Component.literal("±N"));
+        bulkDeltaBox.setHint(Component.literal("N"));
 
-        addTab(Button.builder(Component.literal("全员+N"), b -> {
-            int n = (int) parseD(bulkDeltaBox, 1);
-            if (!LotteryClientNetwork.clientModifyGreenApples("add_all_online", "", n)) {
-                status = "需要进服且为 OP";
-            }
-        }).bounds(actionsX, y, actionW, 20).build());
-        addTab(Button.builder(Component.literal("全员-N"), b -> {
-            int n = (int) parseD(bulkDeltaBox, 1);
-            if (!LotteryClientNetwork.clientModifyGreenApples("add_all_online", "", -Math.abs(n))) {
-                status = "需要进服且为 OP";
-            }
-        }).bounds(actionsX + actionW + 4, y, actionW, 20).build());
-        addTab(Button.builder(Component.literal("全员= N"), b -> {
-            int n = (int) parseD(bulkDeltaBox, 0);
-            if (!LotteryClientNetwork.clientModifyGreenApples("set_all_online", "", n)) {
-                status = "需要进服且为 OP";
-            }
-        }).bounds(actionsX + (actionW + 4) * 2, y, actionW, 20).build());
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.players.online_add"), b -> {
+            modifyGreenApples("add_all_online", "", bulkDeltaBox, false, false);
+        }).bounds(actionsX, y, actionW, 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.players.online_hint"))).build());
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.players.online_subtract"), b -> {
+            modifyGreenApples("add_all_online", "", bulkDeltaBox, true, false);
+        }).bounds(actionsX + actionW + 4, y, actionW, 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.players.online_hint"))).build());
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.players.online_set"), b -> {
+            modifyGreenApples("set_all_online", "", bulkDeltaBox, false, true);
+        }).bounds(actionsX + (actionW + 4) * 2, y, actionW, 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.players.online_hint"))).build());
 
         playerSearchBox = addTab(new EditBox(font, pageX, y + 24, Math.min(180, pageWidth() / 3), 18, Component.literal("搜索")));
         playerSearchBox.setMaxLength(64);
@@ -513,14 +522,11 @@ public class LotteryConfigRootScreen extends Screen {
                         ? List.of()
                         : LotteryNetwork.ClientLotteryState.playerList.players;
                 boolean hasAny = allPlayers != null && !allPlayers.isEmpty();
-                Component empty = Component.translatable(hasAny
-                        ? "screen.habitrain_lottery.config.players.no_match"
-                        : "screen.habitrain_lottery.config.players.no_data");
-                addTab(Button.builder(empty, b -> {
-                            if (!hasAny) {
-                                LotteryClientNetwork.clientRequestPlayerList();
-                            }
-                        }).bounds(pageX, listTop, Math.min(pageWidth(), 220), 20).build());
+                if (!hasAny) {
+                    addTab(Button.builder(Component.translatable("screen.habitrain_lottery.config.players.no_data"),
+                            b -> LotteryClientNetwork.clientRequestPlayerList())
+                            .bounds(pageX, listTop, Math.min(pageWidth(), 220), 20).build());
+                }
             }
             return;
         }
@@ -565,23 +571,20 @@ public class LotteryConfigRootScreen extends Screen {
                 int baseY = narrow ? py + 24 : py + 72;
                 singleDeltaBox = addTab(new EditBox(font, px, baseY, 50, 20, Component.literal("d")));
                 singleDeltaBox.setValue("1");
-                singleDeltaBox.setHint(Component.literal("±"));
+                singleDeltaBox.setHint(Component.literal("N"));
 
                 addTab(Button.builder(Component.literal("此人+"), b -> {
-                    int n = (int) parseD(singleDeltaBox, 1);
-                    LotteryClientNetwork.clientModifyGreenApples("add_one", sel.uuid, Math.abs(n));
+                    modifyGreenApples("add_one", sel.uuid, singleDeltaBox, false, false);
                 }).bounds(px + 54, baseY, 40, 20).build());
                 addTab(Button.builder(Component.literal("此人-"), b -> {
-                    int n = (int) parseD(singleDeltaBox, 1);
-                    LotteryClientNetwork.clientModifyGreenApples("add_one", sel.uuid, -Math.abs(n));
+                    modifyGreenApples("add_one", sel.uuid, singleDeltaBox, true, false);
                 }).bounds(px + 98, baseY, 40, 20).build());
 
                 singleSetBox = addTab(new EditBox(font, px, baseY + 26, 50, 20, Component.literal("set")));
                 singleSetBox.setValue(String.valueOf(sel.greenApples));
                 singleSetBox.setHint(Component.literal("="));
                 addTab(Button.builder(Component.literal("设为"), b -> {
-                    int n = (int) parseD(singleSetBox, sel.greenApples);
-                    LotteryClientNetwork.clientModifyGreenApples("set_one", sel.uuid, n);
+                    modifyGreenApples("set_one", sel.uuid, singleSetBox, false, true);
                 }).bounds(px + 54, baseY + 26, 50, 20).build());
             }
         } else {
@@ -589,10 +592,7 @@ public class LotteryConfigRootScreen extends Screen {
                     ? List.of()
                     : LotteryNetwork.ClientLotteryState.playerList.players;
             boolean hasAny = allPlayers != null && !allPlayers.isEmpty();
-            if (hasAny) {
-                addTab(Button.builder(Component.literal("无匹配玩家"), b -> {})
-                        .bounds(px, py, Math.min(180, pw), 20).build());
-            } else {
+            if (!hasAny) {
                 addTab(Button.builder(Component.literal("无数据 — 点刷新列表"), b -> LotteryClientNetwork.clientRequestPlayerList())
                         .bounds(px, py, Math.min(180, pw), 20).build());
             }
@@ -636,13 +636,13 @@ public class LotteryConfigRootScreen extends Screen {
             cardEditWidgets.add(step);
 
             Button decrease = addTab(Button.builder(Component.literal("−"), b ->
-                            sendCardMutation(player, key, "ADD", -cardStep(key)))
+                            sendCardStepMutation(player, key, -1))
                     .bounds(minusX, rowY, 24, 20)
                     .tooltip(Tooltip.create(Component.translatable(
                             "screen.habitrain_lottery.config.cards.decrease"))).build());
             decrease.visible = rowVisible;
             Button increase = addTab(Button.builder(Component.literal("+"), b ->
-                            sendCardMutation(player, key, "ADD", cardStep(key)))
+                            sendCardStepMutation(player, key, 1))
                     .bounds(plusX, rowY, 24, 20)
                     .tooltip(Tooltip.create(Component.translatable(
                             "screen.habitrain_lottery.config.cards.increase"))).build());
@@ -661,19 +661,48 @@ public class LotteryConfigRootScreen extends Screen {
             cardEditWidgets.add(set);
             Button setButton = addTab(Button.builder(Component.translatable(
                             "screen.habitrain_lottery.config.cards.set"), b ->
-                            sendCardMutation(player, key, "SET", cardSetValue(key, current)))
+                            sendCardSetMutation(player, key))
                     .bounds(setButtonX, rowY, setButtonWidth, 20).build());
             setButton.visible = rowVisible;
             cardEditWidgets.add(setButton);
         }
     }
 
-    private int cardStep(String key) {
-        return Mth.clamp((int) parseD(cardStepBoxes.get(key), 1), 1, 1000);
+    private void sendCardStepMutation(PlayerAdminModels.PlayerRow player, String key, int direction) {
+        Integer step = readWholeNumber(cardStepBoxes.get(key), 1, 1000, "角色卡增减数量");
+        if (step != null) {
+            sendCardMutation(player, key, "ADD", direction * step);
+        }
     }
 
-    private int cardSetValue(String key, int fallback) {
-        return Mth.clamp((int) parseD(cardSetBoxes.get(key), fallback), 0, 100000);
+    private void sendCardSetMutation(PlayerAdminModels.PlayerRow player, String key) {
+        Integer value = readWholeNumber(cardSetBoxes.get(key), 0, 100000, "角色卡设定数量");
+        if (value != null) {
+            sendCardMutation(player, key, "SET", value);
+        }
+    }
+
+    private void modifyGreenApples(String mode, String playerUuid, EditBox input,
+                                   boolean subtract, boolean allowZero) {
+        Integer amount = readWholeNumber(input, allowZero ? 0 : 1, Integer.MAX_VALUE, "绿苹果数量");
+        if (amount == null) {
+            return;
+        }
+        int value = subtract ? -amount : amount;
+        status = LotteryClientNetwork.clientModifyGreenApples(mode, playerUuid, value)
+                ? "已提交绿苹果修改…" : "绿苹果修改发送失败：请确认已进服且有权限";
+    }
+
+    private Integer readWholeNumber(EditBox input, int min, int max, String label) {
+        try {
+            int value = Integer.parseInt(input.getValue().trim());
+            if (value >= min && value <= max) {
+                return value;
+            }
+        } catch (RuntimeException ignored) {
+        }
+        status = label + "必须是 " + min + " 至 " + max + " 的整数";
+        return null;
     }
 
     private int cardCount(PlayerAdminModels.PlayerRow player, String key) {
@@ -782,6 +811,24 @@ public class LotteryConfigRootScreen extends Screen {
         if (workingTitleCatalog.titles == null) {
             workingTitleCatalog.titles = new ArrayList<>();
         }
+        titleCatalogDirty = false;
+    }
+
+    private boolean titleCatalogMatchesSnapshot() {
+        try {
+            TitleCatalog snapshot = GSON.fromJson(LotteryNetwork.ClientLotteryState.titleCatalogJson, TitleCatalog.class);
+            return snapshot != null && GSON.toJsonTree(snapshot).equals(GSON.toJsonTree(workingTitleCatalog));
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private void refreshTitles() {
+        if (titleCatalogDirty) {
+            status = "称号模板有未保存修改；请先保存，或返回后重新打开以放弃草稿";
+            return;
+        }
+        status = LotteryClientNetwork.clientRequestTitleSnapshot() ? "已请求称号快照" : "未连接或无权限";
     }
 
     private void ensureWorkingTitleCatalog() {
@@ -791,6 +838,16 @@ public class LotteryConfigRootScreen extends Screen {
         if (workingTitleCatalog.titles == null) {
             workingTitleCatalog.titles = new ArrayList<>();
         }
+    }
+
+    private String nextTitleTemplateId() {
+        java.util.Set<String> used = new java.util.HashSet<>();
+        for (TitleCatalog.TitleEntry entry : workingTitleCatalog.titles) {
+            if (entry != null && entry.id != null) used.add(entry.id.trim());
+        }
+        int n = 1;
+        while (used.contains("title_" + n)) n++;
+        return "title_" + n;
     }
 
     private List<PlayerAdminModels.PlayerRow> titlePlayerRows() {
@@ -877,10 +934,14 @@ public class LotteryConfigRootScreen extends Screen {
             workingTitleCatalog.titles.set(selectedTitleCatalogIndex, e);
         }
         if (titleIdBox != null) {
-            e.id = titleIdBox.getValue() == null ? "" : titleIdBox.getValue().trim();
+            String next = titleIdBox.getValue() == null ? "" : titleIdBox.getValue().trim();
+            titleCatalogDirty |= !java.util.Objects.equals(e.id, next);
+            e.id = next;
         }
         if (titleDisplayBox != null) {
-            e.display = titleDisplayBox.getValue() == null ? "" : titleDisplayBox.getValue();
+            String next = titleDisplayBox.getValue() == null ? "" : titleDisplayBox.getValue();
+            titleCatalogDirty |= !java.util.Objects.equals(e.display, next);
+            e.display = next;
         }
     }
 
@@ -944,23 +1005,13 @@ public class LotteryConfigRootScreen extends Screen {
         int pageX = pageLeft();
         int pageR = pageRight();
         ensureWorkingTitleCatalog();
-        // Prefer latest snapshot catalog if working is empty
-        if (workingTitleCatalog.titles.isEmpty()
-                && LotteryNetwork.ClientLotteryState.titleCatalogJson != null
-                && !LotteryNetwork.ClientLotteryState.titleCatalogJson.isBlank()) {
-            loadWorkingTitleCatalogFromState();
-        }
         if (consoleLayout().mode() == ConfigConsoleLayout.Mode.NARROW) {
             buildNarrowTitlesTab(y);
             return;
         }
 
         addTab(Button.builder(Component.literal("刷新称号"), b -> {
-            if (!LotteryClientNetwork.clientRequestTitleSnapshot()) {
-                status = "未连接或无权限";
-            } else {
-                status = "已请求称号快照";
-            }
+            refreshTitles();
             if (LotteryNetwork.ClientLotteryState.op) {
                 LotteryClientNetwork.clientRequestPlayerList();
             }
@@ -1018,6 +1069,8 @@ public class LotteryConfigRootScreen extends Screen {
             titleIdBox.setValue("");
             titleDisplayBox.setValue("");
         }
+        titleIdBox.setResponder(value -> applyTitleCatalogFieldsToModel());
+        titleDisplayBox.setResponder(value -> applyTitleCatalogFieldsToModel());
 
         int btnY = editY + 22;
         int templateButtonW = Math.min(48, Math.max(40, (leftW - 8) / 3));
@@ -1026,8 +1079,8 @@ public class LotteryConfigRootScreen extends Screen {
         addTab(Button.builder(Component.literal("+模板"), b -> {
             applyTitleCatalogFieldsToModel();
             ensureWorkingTitleCatalog();
-            int n = workingTitleCatalog.titles.size() + 1;
-            workingTitleCatalog.titles.add(new TitleCatalog.TitleEntry("title_" + n, "§e[新称号]", true));
+            workingTitleCatalog.titles.add(new TitleCatalog.TitleEntry(nextTitleTemplateId(), "§e[新称号]", true));
+            titleCatalogDirty = true;
             selectedTitleCatalogIndex = workingTitleCatalog.titles.size() - 1;
             titleCatalogList.ensureSelectedVisible();
             rebuildTabContent();
@@ -1042,6 +1095,7 @@ public class LotteryConfigRootScreen extends Screen {
             applyTitleCatalogFieldsToModel();
             selectedTitleCatalogIndex = Mth.clamp(selectedTitleCatalogIndex, 0, workingTitleCatalog.titles.size() - 1);
             workingTitleCatalog.titles.remove(selectedTitleCatalogIndex);
+            titleCatalogDirty = true;
             selectedTitleCatalogIndex = Math.max(0, selectedTitleCatalogIndex - 1);
             rebuildTabContent();
             status = "已删除模板（需保存到服务器）";
@@ -1180,6 +1234,8 @@ public class LotteryConfigRootScreen extends Screen {
         titleCustomBox = addTab(new EditBox(font, ownedColX, opY, customFieldW, 18, Component.literal("custom")));
         titleCustomBox.setMaxLength(128);
         titleCustomBox.setHint(Component.literal("自定义 display"));
+        titleCustomBox.setValue(titleCustomDraft);
+        titleCustomBox.setResponder(value -> titleCustomDraft = value);
         addTab(Button.builder(Component.literal("授予自定义"), b -> {
             String text = titleCustomBox == null ? "" : titleCustomBox.getValue();
             if (text == null || text.isBlank()) {
@@ -1207,8 +1263,9 @@ public class LotteryConfigRootScreen extends Screen {
             selectedTitleOwnedIndex = Mth.clamp(selectedTitleOwnedIndex, 0, owned.size() - 1);
             sendTitlePlayerOp("set_current", owned.get(selectedTitleOwnedIndex));
         }).bounds(ownedColX + ownedActionW + 4, opY2, ownedActionW, 18).build());
-        addTab(Button.builder(Component.literal("清空"), b -> sendTitlePlayerOp("clear", ""))
-                .bounds(ownedColX + (ownedActionW + 4) * 2, opY2, ownedActionW, 18).build());
+        addTab(Button.builder(narrowTitleText("clear"), b -> sendTitlePlayerOp("set_current", ""))
+                .bounds(ownedColX + (ownedActionW + 4) * 2, opY2, ownedActionW, 18)
+                .tooltip(Tooltip.create(narrowTitleText("clear_hint"))).build());
     }
 
     private Component narrowTitleText(String key) {
@@ -1236,8 +1293,7 @@ public class LotteryConfigRootScreen extends Screen {
         int toolsY = y + 24;
         if (titleNarrowPage == 0) {
             addTab(Button.builder(narrowTitleText("refresh_titles"), b -> {
-                status = LotteryClientNetwork.clientRequestTitleSnapshot()
-                        ? "已请求称号快照" : "未连接或无权限";
+                refreshTitles();
             }).bounds(x, toolsY, width, 20).build());
             ensureWorkingTitleCatalog();
             List<TitleCatalog.TitleEntry> titles = workingTitleCatalog.titles;
@@ -1276,12 +1332,14 @@ public class LotteryConfigRootScreen extends Screen {
                 titleIdBox.setValue(selected == null || selected.id == null ? "" : selected.id);
                 titleDisplayBox.setValue(selected == null || selected.display == null ? "" : selected.display);
             }
+            titleIdBox.setResponder(value -> applyTitleCatalogFieldsToModel());
+            titleDisplayBox.setResponder(value -> applyTitleCatalogFieldsToModel());
             int actionY = editY + 22;
             int actionW = (width - gap * 2) / 3;
             addTab(Button.builder(narrowTitleText("add"), b -> {
                 applyTitleCatalogFieldsToModel();
-                int n = workingTitleCatalog.titles.size() + 1;
-                workingTitleCatalog.titles.add(new TitleCatalog.TitleEntry("title_" + n, "§e[新称号]", true));
+                workingTitleCatalog.titles.add(new TitleCatalog.TitleEntry(nextTitleTemplateId(), "§e[新称号]", true));
+                titleCatalogDirty = true;
                 selectedTitleCatalogIndex = workingTitleCatalog.titles.size() - 1;
                 rebuildTabContent();
                 status = "已添加模板（需保存）";
@@ -1290,6 +1348,7 @@ public class LotteryConfigRootScreen extends Screen {
                 if (workingTitleCatalog.titles.isEmpty()) return;
                 applyTitleCatalogFieldsToModel();
                 workingTitleCatalog.titles.remove(selectedTitleCatalogIndex);
+                titleCatalogDirty = true;
                 selectedTitleCatalogIndex = Math.max(0, selectedTitleCatalogIndex - 1);
                 rebuildTabContent();
                 status = "已删除模板（需保存）";
@@ -1381,9 +1440,10 @@ public class LotteryConfigRootScreen extends Screen {
         addTab(Button.builder(narrowTitleText("equip"), b -> {
             if (!owned.isEmpty()) sendTitlePlayerOp("set_current", owned.get(selectedTitleOwnedIndex));
         }).bounds(x + actionW + gap, actionY, actionW, 18).build());
-        addTab(Button.builder(narrowTitleText("clear"), b -> sendTitlePlayerOp("clear", ""))
+        addTab(Button.builder(narrowTitleText("clear"), b -> sendTitlePlayerOp("set_current", ""))
                 .bounds(x + (actionW + gap) * 2, actionY,
-                        pageRight() - x - (actionW + gap) * 2, 18).build());
+                        pageRight() - x - (actionW + gap) * 2, 18)
+                .tooltip(Tooltip.create(narrowTitleText("clear_hint"))).build());
     }
 
     private void layoutTabs() {
@@ -1504,6 +1564,12 @@ public class LotteryConfigRootScreen extends Screen {
                         }
                     }
                 }
+            } else if (narrow && currentPlayerRows().isEmpty()
+                    && LotteryNetwork.ClientLotteryState.playerList != null
+                    && LotteryNetwork.ClientLotteryState.playerList.players != null
+                    && !LotteryNetwork.ClientLotteryState.playerList.players.isEmpty()) {
+                g.drawString(font, Component.translatable("screen.habitrain_lottery.config.players.no_match"),
+                        pageLeft(), contentY + 46, 0xFF8A92A0, false);
             } else if (!narrow) {
                 String emptyHint = (playerSearchQuery != null && !playerSearchQuery.isBlank())
                         ? "无匹配玩家"
@@ -1830,14 +1896,4 @@ public class LotteryConfigRootScreen extends Screen {
         return s.length() <= max ? s : s.substring(0, max - 1) + "…";
     }
 
-    private static double parseD(EditBox box, double def) {
-        if (box == null) {
-            return def;
-        }
-        try {
-            return Double.parseDouble(box.getValue().trim());
-        } catch (Exception e) {
-            return def;
-        }
-    }
 }

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -37,6 +38,23 @@ class LocalTitleStoreTest {
         LocalTitleStore.revokeInMemory(d, "§b[赞助]");
         assertEquals("", d.current);
         assertEquals(1, d.owned.size());
+    }
+
+    @Test
+    void unequipOfflinePersistsWithoutRevokingOwnedTitles() {
+        WorldLotteryPaths.initForTests(temp);
+        UUID id = UUID.fromString("22222222-2222-2222-2222-222222222222");
+        var store = LocalTitleStore.get();
+        assertTrue(store.grant(id, "§6[服主]"));
+        assertTrue(store.grant(id, "§b[赞助]"));
+        assertTrue(store.setCurrent(id, "§b[赞助]"));
+
+        assertTrue(TitleService.setCurrentOffline(id, ""));
+        store.reset();
+        var reloaded = store.loadPlayerDetailed(id).data();
+        assertNotNull(reloaded);
+        assertEquals("", reloaded.current);
+        assertEquals(List.of("§6[服主]", "§b[赞助]"), reloaded.owned);
     }
 
     @Test
