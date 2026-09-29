@@ -182,6 +182,16 @@ public final class CrateStage {
     /** 本轮失败：保留时间轴，用于播完退场再走失败提示。 */
     public CrateStage failure() { return new CrateStage(openedAt, resultAt, true); }
 
+    /**
+     * 把整条时间轴平移，让 {@code moment} 恰好落在 {@code now}（长按跳过用）。
+     * 所有关键时刻都由 {@code openedAt / resultAt} 加常量推出，整体平移后相对节奏与转盘落点不变。
+     */
+    public CrateStage skipTo(long moment, long now) {
+        if (openedAt < 0 || moment == Long.MAX_VALUE || moment <= now) return this;
+        long shift = now - moment;
+        return new CrateStage(openedAt + shift, resultAt < 0 ? resultAt : resultAt + shift, failed);
+    }
+
     public boolean active() { return openedAt >= 0; }
     public boolean hasResult() { return resultAt >= 0; }
     public long openedAt() { return openedAt; }

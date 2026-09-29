@@ -9,7 +9,8 @@
         "BackpackScreenMixin",
         "LoginCalendarBlockClientMixin",
         "IndependentSkinRendererMixin",
-        "SkinScreenTakeoverMixin"
+        "SkinScreenTakeoverMixin",
+        "WarehouseHoldKeyMixin"
     ],
     "injectors": {
         "defaultRequire": 1

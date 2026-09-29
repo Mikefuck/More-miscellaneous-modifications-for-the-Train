@@ -7,6 +7,7 @@ import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.network.CrateNetwork;
 import com.google.gson.Gson;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.resources.ResourceLocation;
@@ -132,6 +133,20 @@ public final class CrateOpenScreen extends Screen {
     private int lastTickSlot = Integer.MIN_VALUE;
     private long lastTickAt;
 
+    // ---- 长按空格跳过 ----
+    /** 按住空格多久触发跳过。 */
+    private static final long SKIP_HOLD_MS = 1000L;
+    /** 松手后进度条回落的速度（毫秒走完整条）。 */
+    private static final float SKIP_DECAY_MS = 220.0F;
+    /** 本次按下空格的时刻；−1 表示没有在蓄力。 */
+    private long skipHeldSince = -1;
+    /** 空格当前是否按着，用来区分新按下与系统连发。 */
+    private boolean spaceDown;
+    /** 蓄力已满但服务端结果未到：结果一到就跳。 */
+    private boolean skipQueued;
+    /** 显示用的进度（松手时平滑回落，而不是瞬间清零）。 */
+    private float skipShown;
+
     public CrateOpenScreen(Screen parent, String crateId) {
         super(Component.translatable(KEY + "hud.title"));
         this.parent = parent;
@@ -215,9 +230,12 @@ public final class CrateOpenScreen extends Screen {
             reel = List.copyOf(next);
             reelQuality = List.copyOf(nextQuality);
         }
+        if (skipQueued) applySkip(now);
     }
 
     private void fail(String key) {
+        skipHeldSince = -1;
+        skipQueued = false;
         failure = true;
         message = key;
         toastAt = now();
@@ -465,6 +483,7 @@ public final class CrateOpenScreen extends Screen {
         mouseX = (mx - canvasX) / unit;
         mouseY = (my - canvasY) / unit;
 
+        updateSkip(time);
         driveEvents(time);
         particles.tick(frameDelta);
 
@@ -1172,6 +1191,7 @@ public final class CrateOpenScreen extends Screen {
             float pulse = 0.65F + 0.35F * (float) Math.sin(time / 260.0);
             textSpaced(g, status, REF_W / 2, 1034, 19, 2, GuiFx.fade(TEXT_GOLD, enter * pulse), true);
         }
+        renderSkipHint(g, time, enter);
 
         // ---- 状态提示：失败、缺少物品、操作被锁 ----
         Component notice = null;
@@ -1478,6 +1498,17 @@ public final class CrateOpenScreen extends Screen {
             onClose();
             return true;
         }
+        if (key == 32) {
+            boolean fresh = !spaceDown;
+            spaceDown = true;
+            // 只认开箱过程中的新按下：确认开箱那一下一直按住不会顺势跳过。
+            if (fresh && canSkip(now())) {
+                skipHeldSince = now();
+                return true;
+            }
+            // 系统连发一律吞掉：跳过后继续按住不能顺势触发「再开一次」。
+            if (!fresh || skipHeldSince >= 0 || skipQueued) return true;
+        }
         buildHotspots(now());
         if (key == 258) {
             if (!hotspots.isEmpty()) {
@@ -1502,6 +1533,15 @@ public final class CrateOpenScreen extends Screen {
             return true;
         }
         return super.keyPressed(key, scan, modifiers);
+    }
+
+    @Override public boolean keyReleased(int key, int scan, int modifiers) {
+        if (key == 32) {
+            spaceDown = false;
+            skipHeldSince = -1;
+            return true;
+        }
+        return super.keyReleased(key, scan, modifiers);
     }
 
     @Override public boolean charTyped(char c, int modifiers) { return true; }
@@ -1543,10 +1583,108 @@ public final class CrateOpenScreen extends Screen {
         modalCancelled = false;
         firedHold = firedOpen = firedStop = firedReveal = false;
         lastTickSlot = Integer.MIN_VALUE;
+        skipHeldSince = -1;
+        skipQueued = false;
         particles.clear();
         buildReel();
         buildStrip();
         activeOpenId = CrateClientNetwork.open(crateId, selectedKey);
         if (activeOpenId == null) fail("crates.pending");
+    }
+
+    // =====================================================================
+    // 长按空格跳过
+    // =====================================================================
+
+    /** 只有开箱动画还没进入暗场时才能跳；物品登场之后本来就可以直接操作。 */
+    private boolean canSkip(long time) {
+        if (!stage.active() || failure || departAt >= 0 || skipQueued) return false;
+        CrateStage.Phase phase = stage.phase(time);
+        return phase == CrateStage.Phase.DISMISS || phase == CrateStage.Phase.HOLD
+                || phase == CrateStage.Phase.CAROUSEL;
+    }
+
+    private float skipProgress(long time) {
+        if (skipQueued) return 1.0F;
+        return skipHeldSince < 0 ? 0.0F : CrateStage.clamp01((time - skipHeldSince) / (float) SKIP_HOLD_MS);
+    }
+
+    private void updateSkip(long time) {
+        if (spaceDown || skipHeldSince >= 0) {
+            // 失焦或切屏时可能收不到 keyReleased，这里直接问一次物理按键状态兜底。
+            boolean held = minecraft != null && InputConstants.isKeyDown(minecraft.getWindow().getWindow(), 32);
+            if (!held) spaceDown = false;
+            if (skipHeldSince >= 0) {
+                if (!held || !canSkip(time)) skipHeldSince = -1;
+                else if (time - skipHeldSince >= SKIP_HOLD_MS) {
+                    skipHeldSince = -1;
+                    if (stage.hasResult()) applySkip(time);
+                    else skipQueued = true;
+                }
+            }
+        }
+        float target = skipProgress(time);
+        skipShown = target >= skipShown ? target : Math.max(target, skipShown - frameDelta / SKIP_DECAY_MS);
+    }
+
+    /** 直接切到暗场：被跳过的一次性声效与粒子不再补放，暗场之后照常播物品登场。 */
+    private void applySkip(long time) {
+        skipQueued = false;
+        if (failure || !stage.hasResult() || time >= stage.swapAt()) return;
+        stage = stage.skipTo(stage.swapAt(), time);
+        firedHold = firedOpen = firedStop = true;
+        lastTickSlot = Integer.MIN_VALUE;
+        particles.clear();
+        sound(SoundEvents.PLAYER_ATTACK_SWEEP, 1.25F, 0.35F);
+    }
+
+    /**
+     * 底栏右侧的跳过指引：键帽 + 文案。按住时键帽自左向右灌满金色、整块微微抬起并向外发光，
+     * 下方细线同步走进度；松手后进度平滑回落。结果未到时蓄满会停在满格，显示「即将跳过」。
+     */
+    private void renderSkipHint(GuiGraphics g, long time, float enter) {
+        boolean show = canSkip(time) || skipQueued || skipShown > 0.01F;
+        if (!show || enter <= 0.02F || stage.cardsGone(time)) return;
+        float a = enter * CrateStage.easeOutCubic(CrateStage.progress(time, stage.openedAt() + CrateStage.DISMISS_MS, 300));
+        if (a <= 0.02F) return;
+        float p = skipShown;
+        boolean holding = skipHeldSince >= 0 || skipQueued;
+
+        Component cap = Component.translatable("key.keyboard.space");
+        Component label = Component.translatable(KEY + (skipQueued ? "skip.queued"
+                : holding ? "skip.holding" : "skip.hint"));
+        float capW = Math.max(96, textWidth(cap, 17) + 40), capH = 34;
+        float lift = 3 * CrateStage.easeOutCubic(p);
+        float cy = 1045 - lift;
+        float capX1 = REF_W - 72, capX0 = capX1 - capW, capY0 = cy - capH / 2, capY1 = cy + capH / 2;
+
+        // 键帽：底座阴影 + 斜切面板 + 金色灌注
+        int base = GuiFx.fade(0xFF020303, a * 0.8F);
+        CrateFx.bevelPanel(g, capX0, capY0 + 4 + lift, capX1, capY1 + 4 + lift, 6, base, base);
+        CrateFx.bevelPanel(g, capX0, capY0, capX1, capY1, 6, GuiFx.fade(0xFF2A302E, a), GuiFx.fade(0xFF141817, a));
+        if (p > 0.001F) {
+            float fillX = capX0 + 1 + (capX1 - capX0 - 2) * p;
+            CrateFx.hGradient(g, capX0 + 1, capY0 + 1, fillX, capY1 - 1,
+                    GuiFx.fade(0xFF8C6A1E, a * 0.9F), GuiFx.fade(TEXT_GOLD, a * 0.95F), false);
+            int edge = GuiFx.fade(0xFFFFF6D8, a);
+            CrateFx.rect(g, fillX - 2, capY0 + 1, fillX, capY1 - 1, edge, edge, edge, edge, true);
+            CrateFx.rectGlow(g, capX0, capY0, capX1, capY1, 10 + 14 * p, TEXT_GOLD, a * 0.35F * p);
+        }
+        CrateFx.bevelOutline(g, capX0, capY0, capX1, capY1, 6, 1.5F,
+                holding ? GuiFx.fade(TEXT_GOLD, a) : GuiFx.fade(0x80FFFFFF, a));
+        boolean dark = p > 0.55F;
+        textCentered(g, cap, (capX0 + capX1) / 2, cy - 6, 17,
+                dark ? GuiFx.fade(0xFF1A1405, a) : GuiFx.fade(TEXT_BRIGHT, a), !dark);
+
+        // 文案：待机时轻轻呼吸，按住时转金色
+        float breathe = holding ? 1 : 0.7F + 0.3F * (float) Math.sin(time / 420.0);
+        textRight(g, label, capX0 - 16, cy - 8, 18, GuiFx.fade(holding ? TEXT_GOLD : TEXT_DIM, a * breathe), true);
+
+        // 下方细进度线，直观给出「还要按多久」
+        float lineX0 = capX0 - 16 - textWidth(label, 18), lineY = capY1 + 7 + lift;
+        int track = GuiFx.fade(0x30FFFFFF, a);
+        CrateFx.rect(g, lineX0, lineY, capX1, lineY + 2, track, track, track, track, false);
+        if (p > 0.001F) CrateFx.hairline(g, lineX0, lineX0 + (capX1 - lineX0) * p, lineY, 2, 12,
+                GuiFx.fade(TEXT_GOLD, a), true);
     }
 }

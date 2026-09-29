@@ -148,6 +148,25 @@ public final class CrateFx {
         g.flush();
     }
 
+    /**
+     * 实心圆弧环带：内外半径 {@code r0 / r1}，从 {@code start} 弧度起顺时针扫过 {@code sweep} 弧度
+     * （屏幕坐标 y 向下，−π/2 即正上方）。用来画长按进度环。
+     */
+    public static void arc(GuiGraphics g, float cx, float cy, float r0, float r1, float start, float sweep,
+                           int color, boolean add) {
+        if ((color >>> 24) == 0 || sweep <= 0.0001F || r1 <= r0) return;
+        VertexConsumer v = begin(g, add);
+        Matrix4f pose = g.pose().last().pose();
+        int segments = Math.max(2, (int) Math.ceil(64 * sweep / (Math.PI * 2)));
+        for (int i = 0; i < segments; i++) {
+            double t0 = start + sweep * i / segments, t1 = start + sweep * (i + 1) / segments;
+            float c0 = (float) Math.cos(t0), s0 = (float) Math.sin(t0), c1 = (float) Math.cos(t1), s1 = (float) Math.sin(t1);
+            quad(v, pose, cx + c0 * r0, cy + s0 * r0, color, cx + c0 * r1, cy + s0 * r1, color,
+                    cx + c1 * r1, cy + s1 * r1, color, cx + c1 * r0, cy + s1 * r0, color);
+        }
+        g.flush();
+    }
+
     /** 沿椭圆均布的短划线，旋转后就是展台上的符文环。 */
     public static void dashRing(GuiGraphics g, float cx, float cy, float rx, float ry, int count, float fill,
                                 float rotation, float width, int color, float strength) {
