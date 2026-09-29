@@ -127,6 +127,8 @@ public final class CardUseService {
             if (LIMIT_BREAK_KEY.equals(questKey) && "bonus".equals(mode)) {
                 if (!LimitBreakCardService.useFromBackpack(player)) {
                     player.sendSystemMessage(Component.literal("§c[突破上限卡] 卡牌不足、今日额外次数已满，或存档不可写"));
+                } else {
+                    com.habitrain.lottery.daily.config.DailyTaskTracker.onCardUsed(player, LIMIT_BREAK_KEY);
                 }
             } else if (SELF_SELECT_KEY.equals(questKey) && MODE_SELF.equals(mode)) {
                 doSelfSelect(player, roleId == null ? "" : roleId);
@@ -159,6 +161,9 @@ public final class CardUseService {
         boolean ok = BackpackManager.activateCard(player, type);
         if (!ok) {
             player.sendSystemMessage(Component.literal("§c[职业卡] 使用失败"));
+        } else {
+            com.habitrain.lottery.daily.config.DailyTaskTracker.onCardUsed(player,
+                    type.name().toLowerCase(java.util.Locale.ROOT));
         }
         // Success path (record/daily-use/persist) is handled by BackpackManagerMixin.
     }
@@ -183,6 +188,7 @@ public final class CardUseService {
             player.sendSystemMessage(Component.literal("§c[自选卡] 卡牌或次数不足，或存档写入失败，未激活；存档异常请联系管理员"));
             return;
         }
+        com.habitrain.lottery.daily.config.DailyTaskTracker.onCardUsed(player, SELF_SELECT_KEY);
         player.sendSystemMessage(Component.literal("§a[自选卡] 已自选 " + role.getName().getString()
                 + "，消耗 1 张自选卡；下局名额不足时退还"));
     }

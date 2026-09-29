@@ -44,14 +44,16 @@ public final class HabiLotteryMod implements ModInitializer {
 
         ModBlocks.register();
         CrateService.register();
-        // 内置的「每日登录」任务：登录即达标，玩家在每日任务终端领取 160 绿苹果。
-        // 它取代了旧的每日自动 4 张阵营卡与自动签到绿苹果（见 DailyLoginRewardTask）。
-        DailyLoginRewardTask.register();
+        // 每日任务改为世界级可配置任务（config/daily_tasks.json，Mod Menu「每日任务」页编辑）。
+        // 默认配置里的 daily_login 延续旧「每日登录 160 绿苹果」，因此不再静态注册 DailyLoginRewardTask。
+        com.habitrain.lottery.daily.config.DailyTaskTracker.register();
         SkinContentBootstrap.registerAll();
         com.habitrain.lottery.skin.SkinComponents.register();
         com.habitrain.lottery.skin.SkinNetwork.register();
         LotteryNetwork.registerServer();
         com.habitrain.lottery.network.CrateNetwork.register();
+        com.habitrain.lottery.network.DailyTaskAdminNetwork.register();
+        com.habitrain.lottery.network.DailyShopNetwork.register();
         SkinStateCoordinator.registerLifecycle();
         // Skin effects API v1: thrown-projectile skin inheritance, impact dispatch and the
         // delayed-action queue behind SkinImpactContext#schedule.
@@ -74,6 +76,8 @@ public final class HabiLotteryMod implements ModInitializer {
                 }
                 PlayerLotteryStore.get().onServerStarted(s);
                 CrateService.onServerStarted();
+                com.habitrain.lottery.daily.config.DailyTaskConfigService.onServerStarted();
+                com.habitrain.lottery.daily.shop.DailyShopService.onServerStarted();
                 LOGGER.info("World player-data root: {}", WorldLotteryPaths.root());
             } catch (Throwable e) {
                 LOGGER.error("Player store SERVER_STARTED init failed; refusing player store startup", e);
@@ -99,6 +103,10 @@ public final class HabiLotteryMod implements ModInitializer {
                 }
                 runQuietly("PlayerLotteryStore.onServerStopping", () -> PlayerLotteryStore.get().onServerStopping());
                 runQuietly("CrateService.onServerStopping", CrateService::onServerStopping);
+                runQuietly("DailyTaskConfigService.onServerStopping",
+                        com.habitrain.lottery.daily.config.DailyTaskConfigService::onServerStopping);
+                runQuietly("DailyShopService.onServerStopping",
+                        com.habitrain.lottery.daily.shop.DailyShopService::onServerStopping);
                 if (!runQuietly("LocalTitleStore.flushAll", () -> LocalTitleStore.get().flushAll())) {
                     LOGGER.error("Title flushAll reported failures during server stopping");
                 }
@@ -145,6 +153,7 @@ public final class HabiLotteryMod implements ModInitializer {
                 LotteryNetwork.clearRateLimits(handler.player.getUUID());
                 // 皮肤镜像按玩家缓存背包指纹，也要随之释放，否则离线玩家的条目会一直留在内存里。
                 com.habitrain.lottery.bridge.SkinStateCoordinator.forget(handler.player.getUUID());
+                com.habitrain.lottery.daily.config.DailyTaskTracker.forget(handler.player.getUUID());
             }
         });
 

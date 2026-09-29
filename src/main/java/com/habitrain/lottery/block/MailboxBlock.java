@@ -16,8 +16,8 @@ import net.minecraft.world.level.material.PushReaction;
 import net.minecraft.world.phys.BlockHitResult;
 
 /**
- * Mailbox block: right-click opens the in-game mailbox UI
- * ({@code MailboxScreen}) via the server-synced {@code OpenMailboxS2C} path.
+ * Mailbox block: right-click opens the daily task terminal on its mailbox tab
+ * ({@code DailyTaskScreen}) via the server-synced {@code OpenMailboxS2C} path.
  */
 public final class MailboxBlock extends Block {
     public static final MapCodec<MailboxBlock> CODEC = simpleCodec(MailboxBlock::new);

@@ -12,10 +12,10 @@ public record DailyTaskBoardS2C(String json, boolean open) implements CustomPack
             ResourceLocation.fromNamespaceAndPath(HabiLotteryMod.MOD_ID, "daily_task_board"));
     public static final StreamCodec<RegistryFriendlyByteBuf, DailyTaskBoardS2C> CODEC = new StreamCodec<>() {
         public DailyTaskBoardS2C decode(RegistryFriendlyByteBuf buf) {
-            return new DailyTaskBoardS2C(buf.readUtf(32767), buf.readBoolean());
+            return new DailyTaskBoardS2C(buf.readUtf(262_144), buf.readBoolean());
         }
         public void encode(RegistryFriendlyByteBuf buf, DailyTaskBoardS2C value) {
-            buf.writeUtf(value.json(), 32767);
+            buf.writeUtf(value.json(), 262_144);
             buf.writeBoolean(value.open());
         }
     };

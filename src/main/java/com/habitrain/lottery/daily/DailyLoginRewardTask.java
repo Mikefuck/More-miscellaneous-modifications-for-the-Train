@@ -66,6 +66,11 @@ public final class DailyLoginRewardTask {
      * 幂等：进度已满或今日已领取时不写盘。
      */
     public static void onLogin(ServerPlayer player) {
+        // 可配置任务：所有「登录」类型的每日任务（默认配置里的 daily_login 即旧的 160 绿苹果）。
+        com.habitrain.lottery.daily.config.DailyTaskTracker.onLogin(player);
+        if (!registered) {
+            return;
+        }
         if (player == null || HabiDailyTaskApi.claimed(player, ID)
                 || HabiDailyTaskApi.progress(player, ID) >= TARGET) {
             return;

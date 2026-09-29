@@ -13,5 +13,7 @@ public final class HabiLotteryClient implements ClientModInitializer {
         LoginCalendarWorldRender.register();
         LotteryClientNetwork.ensureRegistered();
         CrateClientNetwork.register();
+        DailyTaskAdminClient.register();
+        DailyShopClient.register();
     }
 }

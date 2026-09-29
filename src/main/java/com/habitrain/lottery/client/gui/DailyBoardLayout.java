@@ -1,14 +1,14 @@
 package com.habitrain.lottery.client.gui;
 
-/** Task dispatch layout with adaptive navigation and four explicit status filters. */
+/** Task dispatch layout with adaptive navigation, four explicit status filters and the shop grid. */
 record DailyBoardLayout(boolean compact, int pad, int gap,
                         BoardRect panel, BoardRect rail, BoardRect content, BoardRect close,
                         BoardRect summary, BoardRect body, int pagePad,
                         BoardRect title, BoardRect subtitle, BoardRect clock,
-                        BoardRect toolbar, BoardRect list, BoardRect footer, BoardRect footerAction,
+                        BoardRect toolbar, BoardRect list,
                         BoardRect filterAll, BoardRect filterOpen, BoardRect filterDone,
-                        boolean showFooter, int rowH, int rowStride,
-                        int cardCols, int cardH, int cardGap, int sourceRowH, int chipH, int chipGap) {
+                        int rowH, int rowStride,
+                        int shopCols, int shopH, int shopGap) {
     static final int TABS = 3;
     static final int FILTERS = 4;
 
@@ -37,23 +37,19 @@ record DailyBoardLayout(boolean compact, int pad, int gap,
         BoardRect all = new BoardRect(toolbar.x(), toolbar.y(), fw, 24);
         BoardRect open = new BoardRect(all.right()+3, all.y(), fw, 24);
         BoardRect done = new BoardRect(open.right()+3, all.y(), fw, 24);
-        boolean footerVisible = ph >= 330;
-        BoardRect footer = new BoardRect(body.x(), body.bottom()-22, body.w(), 22);
-        BoardRect action = new BoardRect(footer.right()-70, footer.y(), 70, 22);
-        BoardRect list = new BoardRect(body.x(), toolbar.bottom()+8, body.w(),
-                (footerVisible ? footer.y()-8 : body.bottom())-toolbar.bottom()-8);
+        BoardRect list = new BoardRect(body.x(), toolbar.bottom()+8, body.w(), body.bottom()-toolbar.bottom()-8);
         int rh = compact ? 68 : 82;
         return new DailyBoardLayout(compact, pad, gap, panel, rail, content, close,
                 summary, body, 8, title, subtitle, clock,
-                toolbar, list, footer, action, all, open, done, footerVisible, rh, rh+6,
-                compact ? 2 : 3, compact ? 64 : 84, 8, compact ? 30 : 36, 22, 6);
+                toolbar, list, all, open, done, rh, rh+6,
+                content.w() >= 560 ? 3 : 2, compact ? 84 : 96, 8);
     }
 
     boolean sidebar() { return rail.h() == panel.h(); }
 
     BoardRect tab(int index) {
         if (sidebar()) return new BoardRect(rail.x()+8, rail.y()+62+index*38, rail.w()-16, 30);
-        int w = (rail.w()-12)/3;
+        int w = (rail.w()-12)/TABS;
         return new BoardRect(rail.x()+6+index*(w+3), rail.y()+4, w-3, 24);
     }
 
@@ -83,12 +79,12 @@ record DailyBoardLayout(boolean compact, int pad, int gap,
         return Math.max(1, (list.h() + (rowStride - rowH)) / rowStride);
     }
 
-    /** 资产页与来源页的内容区起点。 */
+    /** 商店页的内容区起点。 */
     int pageTop() {
         return content.y();
     }
 
-    /** 资产页与来源页的内容区高度。 */
+    /** 商店页的内容区高度。 */
     int pageHeight() {
         return Math.max(40, content.h());
     }

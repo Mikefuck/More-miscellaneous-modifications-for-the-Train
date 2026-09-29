@@ -51,6 +51,26 @@ public final class PlayerLotteryData {
     public Set<String> dailyTaskClaims = new HashSet<>();
     /** Persisted before an external reward callback; retryable after a crash. */
     public Set<String> dailyTaskPending = new HashSet<>();
+    /** Daily-shop item id -> purchases in the item's current limit window. */
+    public Map<String, ShopCounter> shopPurchases = new HashMap<>();
+
+    /**
+     * Purchases of one shop item inside one limit window. {@code days} and {@code period} identify
+     * the window, so changing an item's window length in the editor starts a fresh count.
+     */
+    public static final class ShopCounter {
+        public int days;
+        public long period;
+        public int count;
+
+        public ShopCounter() { }
+
+        public ShopCounter(int days, long period, int count) {
+            this.days = days;
+            this.period = period;
+            this.count = count;
+        }
+    }
 
     public PlayerLotteryData copy() {
         PlayerLotteryData c = new PlayerLotteryData();
@@ -81,6 +101,9 @@ public final class PlayerLotteryData {
         if (dailyTaskProgress != null) c.dailyTaskProgress.putAll(dailyTaskProgress);
         if (dailyTaskClaims != null) c.dailyTaskClaims.addAll(dailyTaskClaims);
         if (dailyTaskPending != null) c.dailyTaskPending.addAll(dailyTaskPending);
+        if (shopPurchases != null) shopPurchases.forEach((k, v) -> {
+            if (v != null) c.shopPurchases.put(k, new ShopCounter(v.days, v.period, v.count));
+        });
         return c;
     }
 

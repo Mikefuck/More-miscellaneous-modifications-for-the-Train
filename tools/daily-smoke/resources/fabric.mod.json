@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "habitrain_daily_smoke",
+  "version": "1.0.0",
+  "name": "Daily task smoke test",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.habitrain.lottery.test.DailySmoke",
+      "com.habitrain.lottery.test.DailyMatchSmoke",
+      "com.habitrain.lottery.test.DailyMailSmoke",
+      "com.habitrain.lottery.test.DailyShopSmoke"
+    ]
+  }
+}

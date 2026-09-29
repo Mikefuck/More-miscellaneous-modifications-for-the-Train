@@ -565,7 +565,47 @@ public final class MailService {
         }
     }
 
+    /**
+     * Credits rewards directly (no mailbox) with the same all-or-nothing guarantee a mail claim
+     * has: every store is snapshotted first and restored if any reward cannot be persisted.
+     * Used by daily-task claims; the caller decides whether cards are allowed right now.
+     */
+    public static boolean grantTransactional(ServerPlayer player, List<MailReward> rewards) {
+        return grantTransactional(player, rewards, "[每日任务]");
+    }
+
+    /** As {@link #grantTransactional(ServerPlayer, List)}, with {@code tag} prefixing the chat receipts. */
+    public static boolean grantTransactional(ServerPlayer player, List<MailReward> rewards, String tag) {
+        if (player == null || rewards == null || !WorldLotteryPaths.ready()) return false;
+        RewardSnapshot snap;
+        try {
+            snap = snapshotRewards(player);
+        } catch (RuntimeException failure) {
+            HabiLotteryMod.LOGGER.error("Cannot snapshot rewards for {}", player.getUUID(), failure);
+            return false;
+        }
+        try {
+            applyRewardsStrict(player, rewards, tag);
+            return true;
+        } catch (RuntimeException failure) {
+            HabiLotteryMod.LOGGER.error("Direct reward grant failed for {}; rolling back", player.getUUID(), failure);
+            if (!restoreRewards(player, snap)) {
+                HabiLotteryMod.LOGGER.error("Direct reward rollback failed for {}; manual review required", player.getUUID());
+            }
+            return false;
+        }
+    }
+
+    /** True when {@code rewards} contain cards that cannot be claimed while a match is running. */
+    public static boolean blockedDuringMatch(ServerPlayer player, List<MailReward> rewards) {
+        return refuseFactionCardInGame(rewards, isSreGameActive(player));
+    }
+
     private static void applyRewardsStrict(ServerPlayer player, List<MailReward> rewards) {
+        applyRewardsStrict(player, rewards, "[邮箱]");
+    }
+
+    private static void applyRewardsStrict(ServerPlayer player, List<MailReward> rewards, String tag) {
         if (player == null) {
             throw new IllegalArgumentException("player");
         }
@@ -593,12 +633,12 @@ public final class MailService {
                             .orElseThrow(() -> new IllegalArgumentException("Skin provider unavailable: " + reward.factionType()));
                     if (!PlayerLotteryStore.get().awardSkin(uuid, skin.type(), skin.id(), Math.max(1, r.amount())))
                         throw new IllegalStateException("Skin reward could not be persisted");
-                    messages.add(Component.literal("§a[邮箱] 已解锁皮肤 " + reward.factionType()));
+                    messages.add(Component.literal("§a" + tag + " 已解锁皮肤 " + reward.factionType()));
                 }
                 case GREEN_APPLES -> {
                     greenAppleDelta += r.amount();
                     messages.add(Component.literal(
-                            (r.amount() >= 0 ? "§a" : "§e") + "[邮箱] 绿苹果 "
+                            (r.amount() >= 0 ? "§a" : "§e") + tag + " 绿苹果 "
                                     + (r.amount() >= 0 ? "+" : "") + r.amount()));
                 }
                 case FACTION_CARD -> {
@@ -606,7 +646,7 @@ public final class MailService {
                     if (type != FactionCardType.NONE) {
                         cards.add(new CardDelta(type, r.amount()));
                         messages.add(Component.literal(
-                                "§a[邮箱] 获得阵营卡 " + type.questKey + " x" + r.amount()));
+                                "§a" + tag + " 获得阵营卡 " + type.questKey + " x" + r.amount()));
                     }
                 }
                 case SELF_SELECT_CARD -> {
@@ -615,7 +655,7 @@ public final class MailService {
                     if (!LocalBackpackStore.addSelfSelectCards(uuid, r.amount())) {
                         throw new IllegalStateException("Self-select reward could not be persisted");
                     }
-                    messages.add(Component.literal("§a[邮箱] 获得自选卡 x" + r.amount()));
+                    messages.add(Component.literal("§a" + tag + " 获得自选卡 x" + r.amount()));
                 }
                 case LIMIT_BREAK_CARD -> {
                     if (!LocalBackpackStore.addLimitBreakCards(uuid, r.amount())) {
@@ -631,7 +671,7 @@ public final class MailService {
                     String itemId = r.kind() == MailReward.Kind.CRATE
                             ? entry.crateItemId() : entry.keyItemId();
                     systemItemDeltas.merge(itemId, r.amount(), Integer::sum);
-                    messages.add(Component.literal("§a[邮箱] 获得 "
+                    messages.add(Component.literal("§a" + tag + " 获得 "
                             + (r.kind() == MailReward.Kind.CRATE ? "箱子 " : "钥匙 ")
                             + entry.id() + " x" + r.amount()));
                 }

@@ -10,6 +10,7 @@
         "BackpackManagerMixin",
         "FactionCardTypeRoleIdMixin",
         "ProgressionDataManagerMixin",
+        "DailyTaskProgressionMixin",
         "ProgressionCoinRewardStatMixin",
         "AccountCoinRewardMixin",
         "RoleRotationCardMixin",

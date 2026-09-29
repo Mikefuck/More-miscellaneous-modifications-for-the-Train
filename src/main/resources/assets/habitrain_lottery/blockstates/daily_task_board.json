@@ -1,1 +1,8 @@
-{"variants":{"":{"model":"habitrain_lottery:block/daily_task_board"}}}
+{
+  "variants": {
+    "facing=north": { "model": "habitrain_lottery:block/daily_task_terminal" },
+    "facing=east":  { "model": "habitrain_lottery:block/daily_task_terminal", "y": 90 },
+    "facing=south": { "model": "habitrain_lottery:block/daily_task_terminal", "y": 180 },
+    "facing=west":  { "model": "habitrain_lottery:block/daily_task_terminal", "y": 270 }
+  }
+}

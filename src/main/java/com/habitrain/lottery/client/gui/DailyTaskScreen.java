@@ -1,5 +1,6 @@
 package com.habitrain.lottery.client.gui;
 
+import com.habitrain.lottery.client.DailyShopClient;
 import com.habitrain.lottery.client.LotteryClientNetwork;
 import com.habitrain.lottery.daily.DailyTaskSnapshot;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -21,10 +22,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 
-/** Daily dispatch board: navigation, explicit status filters and fixed action columns. */
+/** Daily dispatch board: navigation, explicit status filters, fixed action columns, the shop and the mailbox. */
 public final class DailyTaskScreen extends Screen {
 
     // =====================================================================
@@ -34,8 +34,8 @@ public final class DailyTaskScreen extends Screen {
     private static final String KEY = "screen.habitrain_lottery.daily.";
 
     private static final int TAB_TASKS = 0;
-    private static final int TAB_CARDS = 1;
-    private static final int TAB_SOURCES = 2;
+    private static final int TAB_SHOP = 1;
+    private static final int TAB_MAIL = 2;
 
     private static final int FILTER_ALL = 0;
     private static final int FILTER_PROGRESS = 1;
@@ -47,28 +47,9 @@ public final class DailyTaskScreen extends Screen {
     /** 点击领取后，在收到服务端回执前最多锁这么久，避免网络异常把按钮永久锁死。 */
     private static final long CLAIM_TIMEOUT_MILLIS = 6_000L;
     private static final long ENTER_MILLIS = 220L;
+    /** 第一次点「购买」只进入确认态；这段时间内再点一次才真正下单。 */
+    private static final long CONFIRM_MILLIS = 3_000L;
 
-
-    /** 六张角色卡：与 {@code HabiCardApi.all} 的键一一对应。 */
-    private static final CardInfo[] CARDS = {
-            new CardInfo("civilian", WarehouseTheme.ACCENT_CIVILIAN, "\u25C6", KEY + "card.civilian"),
-            new CardInfo("neutral", WarehouseTheme.ACCENT_NEUTRAL, "\u25C6", KEY + "card.neutral"),
-            new CardInfo("neutral_for_killer", WarehouseTheme.ACCENT_NEUTRAL_FOR_KILLER, "\u2605",
-                    KEY + "card.neutral_for_killer"),
-            new CardInfo("killer", WarehouseTheme.ACCENT_KILLER, "\u2716", KEY + "card.killer"),
-            new CardInfo("self_select", WarehouseTheme.ACCENT_SELF_SELECT, "\u2726",
-                    KEY + "card.self_select"),
-            new CardInfo("limit_break", WarehouseTheme.ACCENT_LIMIT_BREAK, "\u25B2",
-                    KEY + "card.limit_break"),
-    };
-
-    /** 发放来源分类；键与 {@code DailyTaskBoardService.sources()} 的 category 一致。 */
-    private static final SourceCategory[] CATEGORIES = {
-            new SourceCategory("green_apples", KEY + "source.cat.green_apples", DailyBoardTheme.GREEN,
-                    DailyBoardTheme.GREEN_SOFT),
-            new SourceCategory("cards", KEY + "source.cat.cards", DailyBoardTheme.VIOLET,
-                    DailyBoardTheme.VIOLET_SOFT),
-    };
 
     private static final String[] FILTER_KEYS = {
             KEY + "filter.all", KEY + "filter.progress", KEY + "filter.claimable", KEY + "filter.done",
@@ -84,7 +65,6 @@ public final class DailyTaskScreen extends Screen {
 
     private int tab = TAB_TASKS;
     private int filter = FILTER_ALL;
-    private int sourceCat;
     private int hoverFilter = -1;
     private double scroll;
     private double pageScroll;
@@ -93,10 +73,16 @@ public final class DailyTaskScreen extends Screen {
     private final List<NavTab> navTabs = new ArrayList<>();
     private final List<StatusFilter> statusFilters = new ArrayList<>();
     private MiniButton closeButton;
-    private MiniButton footerAction;
+    private final DailyMailPage mailPage = new DailyMailPage(this::playClick, this::requestSnapshot);
 
     /** 已发出领取请求、尚未收到服务端回执的任务 ID。 */
     private final Set<String> pendingClaims = new HashSet<>();
+    /** 处于「再点一次确认」状态的商品，以及确认态的截止时间。 */
+    private String confirmShopId;
+    private long confirmUntil;
+    /** 已发出购买请求、尚未收到新快照的商品。 */
+    private String pendingBuy;
+    private long buyLockMillis;
 
     private long openedAt;
     private long nowMillis;
@@ -115,6 +101,19 @@ public final class DailyTaskScreen extends Screen {
         this.snapshot = snapshot;
     }
 
+    /** 邮箱方块 / {@code mailbox} 指令的入口：直接落在终端的「邮箱」页。 */
+    public static DailyTaskScreen mailbox(Screen parent) {
+        DailyTaskScreen screen = new DailyTaskScreen(parent, null);
+        screen.tab = TAB_MAIL;
+        return screen;
+    }
+
+    /** 终端已打开时再次收到「打开邮箱」：切到邮箱页并刷新。 */
+    public void openMailTab() {
+        selectTab(TAB_MAIL);
+        mailPage.poll();
+    }
+
     /** 服务端推送新快照时调用（刷新、领取回执、被外部打开都会走这里）。 */
     public void applySnapshot(DailyTaskSnapshot value) {
         if (value == null) {
@@ -123,6 +122,7 @@ public final class DailyTaskScreen extends Screen {
         this.snapshot = value;
         // 快照到达即视为权威状态，清掉本地等待标记
         pendingClaims.clear();
+        pendingBuy = null;
 
         String focusedId = getFocused() instanceof TaskRow row ? row.task.id() : null;
         boolean hadFocus = getFocused() != null;
@@ -158,7 +158,6 @@ public final class DailyTaskScreen extends Screen {
         lastRequestMillis = now;
         computeLayout();
 
-        footerAction = null;
         navTabs.clear();
         for (int i = 0; i < DailyBoardLayout.TABS; i++) {
             NavTab widget = new NavTab(i, Component.translatable(tabKey(i)));
@@ -173,20 +172,25 @@ public final class DailyTaskScreen extends Screen {
             addWidget(widget);
         }
 
-        closeButton = new MiniButton(true, Component.translatable(KEY + "close"), layout.close());
+        closeButton = new MiniButton(Component.translatable(KEY + "close"), layout.close());
         addRenderableWidget(closeButton);
-        if (layout.showFooter()) {
-            footerAction = new MiniButton(false, Component.translatable(KEY + "footer.action"),
-                    layout.footerAction());
-            addRenderableWidget(footerAction);
+
+        for (AbstractWidget widget : mailPage.widgets()) {
+            addRenderableWidget(widget);
         }
 
         placeWidgets();
         rebuildRows();
-        setFocused(rows.isEmpty() ? navTabs.get(0) : rows.get(0));
+        if (tab == TAB_MAIL) {
+            setFocused(mailPage.claimButton);
+        } else {
+            setFocused(rows.isEmpty() ? navTabs.get(tab) : rows.get(0));
+        }
         if (snapshot == null) {
             requestSnapshot();
         }
+        // 邮箱页的未领数量也显示在导航上，所以不论落在哪一页都同步一次
+        mailPage.poll();
     }
 
     @Override
@@ -199,11 +203,19 @@ public final class DailyTaskScreen extends Screen {
                 && now - claimLockMillis > CLAIM_TIMEOUT_MILLIS) {
             pendingClaims.clear();
         }
+        if (pendingBuy != null && now - buyLockMillis > CLAIM_TIMEOUT_MILLIS) {
+            pendingBuy = null;
+        }
+        mailPage.sync();
+        mailPage.tick(now);
         if (now - lastRequestMillis < REFRESH_MILLIS) {
             return;
         }
         lastRequestMillis = now;
         requestSnapshot();
+        if (tab == TAB_MAIL) {
+            mailPage.poll();
+        }
     }
 
     @Override
@@ -255,12 +267,8 @@ public final class DailyTaskScreen extends Screen {
             closeButton.setWidth(layout.close().w());
             closeButton.setHeight(layout.close().h());
         }
-        if (footerAction != null) {
-            footerAction.setX(layout.footerAction().x());
-            footerAction.setY(layout.footerAction().y());
-            footerAction.setWidth(layout.footerAction().w());
-            footerAction.setHeight(layout.footerAction().h());
-        }
+        mailPage.layout(layout);
+        mailPage.setVisible(tab == TAB_MAIL);
     }
 
     private void rebuildRows() {
@@ -285,14 +293,19 @@ public final class DailyTaskScreen extends Screen {
             return;
         }
         tab = target;
+        confirmShopId = null;
         for (StatusFilter widget : statusFilters) widget.visible = tab == TAB_TASKS;
         pageScroll = 0;
         for (TaskRow row : rows) {
             row.visible = tab == TAB_TASKS;
         }
+        mailPage.setVisible(tab == TAB_MAIL);
         List<AbstractWidget> focusable = new ArrayList<>();
         if (tab == TAB_TASKS && !rows.isEmpty()) {
             focusable.addAll(rows);
+        }
+        if (tab == TAB_MAIL) {
+            focusable.add(mailPage.claimButton);
         }
         focusable.addAll(navTabs);
         setFocused(focusable.get(0));
@@ -345,7 +358,7 @@ public final class DailyTaskScreen extends Screen {
                     layout.rail().x()+14, layout.rail().y()+20, DailyBoardTheme.NAV_TEXT);
             DailyBoardTheme.text(g, font, "HABITRAIN", layout.rail().x()+14,
                     layout.rail().y()+36, 0xFF91A7BB);
-            DailyBoardTheme.text(g, font, "Q / T / C", layout.rail().x()+14,
+            DailyBoardTheme.text(g, font, "Q / S / M", layout.rail().x()+14,
                     layout.rail().bottom()-22, 0xFF91A7BB);
         }
 
@@ -359,10 +372,11 @@ public final class DailyTaskScreen extends Screen {
             if (tab == TAB_TASKS) {
                 drawOverview(g);
                 drawTasksPage(g);
-            } else if (tab == TAB_CARDS) {
-                drawCardsPage(g);
+            } else if (tab == TAB_SHOP) {
+                drawShopPage(g);
             } else {
-                drawSourcesPage(g);
+                mailPage.sync();
+                mailPage.render(g, font, layout, mouseX, mouseY, nowMillis);
             }
         } finally {
             if (fade) {
@@ -372,10 +386,6 @@ public final class DailyTaskScreen extends Screen {
 
         suppressBackground = true;
         try {
-            // 脚注按钮只在「委托」页且版面真的留了脚注位置时存在
-            if (footerAction != null) {
-                footerAction.visible = tab == TAB_TASKS && layout.showFooter();
-            }
             super.render(g, mouseX, mouseY, partialTick);
         } finally {
             suppressBackground = false;
@@ -413,7 +423,6 @@ public final class DailyTaskScreen extends Screen {
 
         drawToolbar(g);
         drawTaskList(g);
-        drawFooterBar(g);
     }
 
     private void drawToolbar(GuiGraphics g) {
@@ -488,165 +497,227 @@ public final class DailyTaskScreen extends Screen {
                 DailyBoardTheme.MUTED);
     }
 
-    private void drawFooterBar(GuiGraphics g) {
-        if (!layout.showFooter()) {
+    // ---------------------------------------------------------------------
+    // 商店页
+    // ---------------------------------------------------------------------
+
+    /** 商店页内容区（页头下方是商品网格）。 */
+    private BoardRect shopArea() {
+        return new BoardRect(layout.content().x() + layout.pagePad(), layout.pageTop(),
+                layout.content().w() - layout.pagePad() * 2, layout.pageHeight());
+    }
+
+    /** 商品网格顶部：页头两行说明之下。 */
+    private int shopTop() {
+        return shopArea().y() + 30;
+    }
+
+    /** 第 {@code index} 个商品卡片（已应用滚动）。 */
+    private BoardRect shopTile(int index) {
+        BoardRect area = shopArea();
+        int cols = layout.shopCols();
+        int gap = layout.shopGap();
+        int w = (area.w() - (cols - 1) * gap) / cols;
+        return new BoardRect(area.x() + (index % cols) * (w + gap),
+                shopTop() + (index / cols) * (layout.shopH() + gap) - (int) pageScroll, w, layout.shopH());
+    }
+
+    private BoardRect shopBuyButton(BoardRect tile) {
+        int w = layout.compact() ? 64 : 76;
+        return new BoardRect(tile.right() - 8 - w, tile.bottom() - 8 - 20, w, 20);
+    }
+
+    private void drawShopPage(GuiGraphics g) {
+        DailyBoardTheme.rightPage(g, layout.content(), 8);
+        BoardRect area = shopArea();
+        DailyBoardTheme.textScaled(g, font, Component.translatable(KEY + "shop.title").getString(),
+                area.x(), area.y(), 1.15F, DailyBoardTheme.INK);
+        String balance = Component.translatable(KEY + "shop.balance",
+                snapshot == null ? "--" : snapshot.greenApples()).getString();
+        int bw = font.width(balance);
+        DailyBoardTheme.text(g, font, balance, area.right() - bw, area.y() + 2, DailyBoardTheme.GREEN);
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font,
+                        Component.translatable(KEY + "shop.hint").getString(), area.w()),
+                area.x(), area.y() + 16, DailyBoardTheme.MUTED);
+
+        int top = shopTop();
+        BoardRect grid = new BoardRect(area.x(), top, area.w(), area.bottom() - top);
+        List<DailyTaskSnapshot.ShopRow> items = shopItems();
+        if (snapshot == null || !snapshot.shopOpen() || items.isEmpty()) {
+            String key = snapshot == null ? "empty.syncing" : !snapshot.shopOpen() ? "shop.closed" : "shop.empty";
+            DailyBoardTheme.textCentered(g, font, Component.translatable(KEY + key), grid.cx(), grid.cy() - 4,
+                    DailyBoardTheme.MUTED);
             return;
         }
-        BoardRect f = layout.footer();
-        DailyBoardTheme.softCard(g, f, 6, DailyBoardTheme.PAPER_TOP, DailyBoardTheme.PAPER_TOP, DailyBoardTheme.CARD_LINE);
-        String title = Component.translatable(KEY + "footer.title").getString();
-        DailyBoardTheme.text(g, font, title, f.x() + 8, f.y() + (f.h() - 8) / 2, DailyBoardTheme.INK);
-        int hintX = f.x() + 8 + font.width(title) + 8;
-        int hintW = layout.footerAction().x() - 6 - hintX;
-        DailyBoardTheme.text(g, font,
-                DailyBoardTheme.fit(font, Component.translatable(KEY + "footer.hint").getString(), hintW),
-                hintX, f.y() + (f.h() - 8) / 2, DailyBoardTheme.MUTED);
-    }
+        pageScroll = Mth.clamp(pageScroll, 0, pageMaxScroll());
 
-    // ---------------------------------------------------------------------
-    // 资产页
-    // ---------------------------------------------------------------------
-
-    private void drawCardsPage(GuiGraphics g) {
-        DailyBoardTheme.rightPage(g, layout.content(), 8);
-        BoardRect area = new BoardRect(layout.content().x() + layout.pagePad(), layout.pageTop(),
-                layout.content().w() - layout.pagePad() * 2, layout.pageHeight());
-        String hint = Component.translatable(KEY + "cards.subtitle",
-                snapshot == null ? "--" : snapshot.cardTotal()).getString();
-        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, hint, area.w()), area.x(), area.y(), DailyBoardTheme.MUTED);
-
-        int top = area.y() + 13;
-        int cols = layout.cardCols();
-        int gap = layout.cardGap();
-        int cardW = (area.w() - (cols - 1) * gap) / cols;
-        int cardH = layout.cardH();
-        int rowCount = (CARDS.length + cols - 1) / cols;
-        int totalH = rowCount * cardH + (rowCount - 1) * gap;
-        int avail = area.bottom() - top;
-        pageScroll = Mth.clamp(pageScroll, 0, Math.max(0, totalH - avail));
-
-        Map<String, Integer> cards = snapshot == null || snapshot.cards() == null ? Map.of()
-                : snapshot.cards();
-
-        GuiFx.beginClip(g, area.x() - 2, top, area.right() + 2, area.bottom());
-        for (int i = 0; i < CARDS.length; i++) {
-            int x = area.x() + (i % cols) * (cardW + gap);
-            int y = top + (i / cols) * (cardH + gap) - (int) pageScroll;
-            if (y + cardH < top || y > area.bottom()) {
+        DailyTaskSnapshot.ShopRow hovered = null;
+        GuiFx.beginClip(g, grid.x() - 2, grid.y(), grid.right() + 2, grid.bottom());
+        for (int i = 0; i < items.size(); i++) {
+            BoardRect r = shopTile(i);
+            if (r.bottom() < grid.y() || r.y() > grid.bottom()) {
                 continue;
             }
-            drawCardTile(g, new BoardRect(x, y, cardW, cardH), CARDS[i],
-                    cards.getOrDefault(CARDS[i].id, 0));
-        }
-        GuiFx.endClip(g);
-        DailyBoardTheme.scrollbar(g, area.right() + 3, new BoardRect(area.x(), top, area.w(), avail),
-                pageScroll, Math.max(0, totalH - avail));
-    }
-
-    private void drawCardTile(GuiGraphics g, BoardRect r, CardInfo info, int count) {
-        boolean owned = count > 0;
-        DailyBoardTheme.card(g, r, 7);
-        GuiFx.roundedBar(g, r.x() + 1, r.y() + 6, r.x() + 4, r.bottom() - 6, 0,
-                GuiFx.fade(info.accent, owned ? 0.95F : 0.35F));
-        BoardRect mark = new BoardRect(r.x() + 10, r.y() + 9, 18, 18);
-        DailyBoardTheme.softCard(g, mark, 5, GuiFx.mix(DailyBoardTheme.CARD_TOP, info.accent, 0.16F),
-                GuiFx.mix(DailyBoardTheme.CARD_BOTTOM, info.accent, 0.10F),
-                GuiFx.mix(DailyBoardTheme.CARD_LINE, info.accent, 0.35F));
-        DailyBoardTheme.textCentered(g, font, Component.literal(info.glyph), mark.cx(), mark.cy() - 4,
-                info.accent);
-
-        String name = Component.translatable(info.nameKey).getString();
-        String value = String.valueOf(count);
-        int valueW = (int) (font.width(value) * 1.25F);
-        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, name, r.w() - 40 - valueW),
-                r.x() + 34, r.y() + 12, owned ? DailyBoardTheme.INK : DailyBoardTheme.MUTED);
-        DailyBoardTheme.textScaled(g, font, value, r.right() - 10 - valueW, r.y() + 11, 1.25F,
-                owned ? info.accent : DailyBoardTheme.FAINT);
-
-        String desc = Component.translatable(info.nameKey + ".desc").getString();
-        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, desc, r.w() - 20), r.x() + 10,
-                r.bottom() - 15, DailyBoardTheme.MUTED);
-    }
-
-    // ---------------------------------------------------------------------
-    // 发放来源页
-    // ---------------------------------------------------------------------
-
-    private void drawSourcesPage(GuiGraphics g) {
-        DailyBoardTheme.rightPage(g, layout.content(), 8);
-        BoardRect area = new BoardRect(layout.content().x() + layout.pagePad(), layout.pageTop(),
-                layout.content().w() - layout.pagePad() * 2, layout.pageHeight());
-        String hint = Component.translatable(KEY + "sources.hint").getString();
-        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, hint, area.w()), area.x(), area.y(), DailyBoardTheme.MUTED);
-
-        int chipTop = area.y() + 13;
-        int chipH = layout.chipH();
-        int chipGap = layout.chipGap();
-        int chipW = Math.max(46, (area.w() - chipGap * (CATEGORIES.length - 1)) / CATEGORIES.length);
-        for (int i = 0; i < CATEGORIES.length; i++) {
-            BoardRect r = new BoardRect(area.x() + i * (chipW + chipGap), chipTop, chipW, chipH);
-            boolean active = sourceCat == i;
-            boolean hover = r.contains(mouseX, mouseY);
-            int accent = CATEGORIES[i].accent;
-            DailyBoardTheme.chip(g, font, r,
-                    Component.translatable(CATEGORIES[i].labelKey).getString(),
-                    active ? GuiFx.mix(DailyBoardTheme.CARD_TOP, CATEGORIES[i].soft, 0.75F)
-                            : (hover ? DailyBoardTheme.TEAL_SOFT : DailyBoardTheme.PAPER_TOP),
-                    active ? GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.55F)
-                            : DailyBoardTheme.CARD_LINE,
-                    active ? accent : (hover ? DailyBoardTheme.INK_SOFT : DailyBoardTheme.MUTED));
-        }
-
-        int top = chipTop + chipH + layout.gap();
-        int rowH = layout.sourceRowH();
-        List<DailyTaskSnapshot.SourceRow> sources = filteredSources();
-        int totalH = sources.isEmpty() ? 0 : sources.size() * sourceStride() - 4;
-        int avail = area.bottom() - top;
-        pageScroll = Mth.clamp(pageScroll, 0, Math.max(0, totalH - avail));
-
-        DailyTaskSnapshot.SourceRow hovered = null;
-        GuiFx.beginClip(g, area.x() - 2, top, area.right() + 2, area.bottom());
-        if (sources.isEmpty()) {
-            DailyBoardTheme.textCentered(g, font, Component.translatable(KEY + "sources.empty"),
-                    area.cx(), top + 20, DailyBoardTheme.MUTED);
-        }
-        for (int i = 0; i < sources.size(); i++) {
-            DailyTaskSnapshot.SourceRow src = sources.get(i);
-            int y = top + i * sourceStride() - (int) pageScroll;
-            if (y + rowH < top || y > area.bottom()) {
-                continue;
-            }
-            BoardRect r = new BoardRect(area.x(), y, area.w(), rowH);
-            boolean hover = r.contains(mouseX, mouseY);
-            int accent = CATEGORIES[sourceCat].accent;
-            DailyBoardTheme.softCard(g, r, 6, DailyBoardTheme.CARD_TOP,
-                    hover ? DailyBoardTheme.CARD_BOTTOM : DailyBoardTheme.CARD_TOP,
-                    hover ? GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.4F)
-                            : DailyBoardTheme.CARD_LINE);
-            GuiFx.roundedBar(g, r.x() + 1, r.y() + 5, r.x() + 4, r.bottom() - 5, 0,
-                    GuiFx.fade(accent, 0.9F));
-            DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, src.title(), r.w() - 24),
-                    r.x() + 12, r.y() + 4, DailyBoardTheme.INK);
-            DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, src.detail(), r.w() - 24),
-                    r.x() + 12, r.y() + 15, DailyBoardTheme.MUTED);
-            if (hover) {
-                hovered = src;
+            drawShopTile(g, r, items.get(i));
+            if (grid.contains(mouseX, mouseY) && r.contains(mouseX, mouseY)
+                    && !shopBuyButton(r).contains(mouseX, mouseY)) {
+                hovered = items.get(i);
             }
         }
         GuiFx.endClip(g);
-        DailyBoardTheme.scrollbar(g, area.right() + 3, new BoardRect(area.x(), top, area.w(), avail),
-                pageScroll, Math.max(0, totalH - avail));
-        // 气泡必须等裁剪结束再画，否则会被列表的 scissor 切掉
+        DailyBoardTheme.scrollbar(g, area.right() + 3, grid, pageScroll, (int) pageMaxScroll());
+        // 气泡必须等裁剪结束再画，否则会被网格的 scissor 切掉
         if (hovered != null) {
-            List<FormattedCharSequence> lines = font.split(
-                    Component.literal(hovered.title() + "\n" + hovered.detail()), 190);
-            DailyBoardTheme.tooltip(g, font, lines, mouseX, mouseY, area);
+            List<FormattedCharSequence> lines = font.split(shopTooltip(hovered), 200);
+            DailyBoardTheme.tooltip(g, font, lines, mouseX, mouseY, layout.content());
         }
     }
 
-    /** 发放来源每行的步进（行高 + 行距）。 */
-    private int sourceStride() {
-        return layout.sourceRowH() + 4;
+    private void drawShopTile(GuiGraphics g, BoardRect r, DailyTaskSnapshot.ShopRow item) {
+        ShopState state = shopState(item);
+        int accent = kindAccent(item.kind());
+        boolean dim = state == ShopState.SOLD_OUT || state == ShopState.OWNED;
+        DailyBoardTheme.box(g, r, dim ? DailyBoardTheme.PAPER_TOP : DailyBoardTheme.CARD_TOP,
+                r.contains(mouseX, mouseY) ? GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.5F)
+                        : DailyBoardTheme.CARD_LINE);
+        g.fill(r.x(), r.y(), r.x() + 3, r.bottom(), dim ? DailyBoardTheme.FAINT : accent);
+
+        BoardRect mark = new BoardRect(r.x() + 10, r.y() + 8, 18, 18);
+        DailyBoardTheme.softCard(g, mark, 5, GuiFx.mix(DailyBoardTheme.CARD_TOP, accent, 0.16F),
+                GuiFx.mix(DailyBoardTheme.CARD_BOTTOM, accent, 0.10F),
+                GuiFx.mix(DailyBoardTheme.CARD_LINE, accent, 0.35F));
+        DailyBoardTheme.textCentered(g, font, Component.literal(kindGlyph(item.kind())), mark.cx(), mark.cy() - 4,
+                accent);
+
+        String price = item.price() == 0 ? Component.translatable(KEY + "shop.free").getString()
+                : Component.translatable(KEY + "shop.price", item.price()).getString();
+        int priceW = font.width(price);
+        boolean poor = snapshot != null && snapshot.greenApples() < item.price();
+        DailyBoardTheme.text(g, font, price, r.right() - 8 - priceW, r.y() + 13,
+                poor && !dim ? DailyBoardTheme.WARN : DailyBoardTheme.GREEN);
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(item.title()), r.w() - 46 - priceW),
+                r.x() + 34, r.y() + 13, dim ? DailyBoardTheme.MUTED : DailyBoardTheme.INK);
+
+        int textW = r.w() - 20;
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(item.reward()), textW),
+                r.x() + 10, r.y() + 32, dim ? DailyBoardTheme.MUTED : DailyBoardTheme.GOLD);
+        if (!layout.compact() && !nullToEmpty(item.description()).isEmpty()) {
+            DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, item.description(), textW),
+                    r.x() + 10, r.y() + 45, DailyBoardTheme.MUTED);
+        }
+
+        BoardRect button = shopBuyButton(r);
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, limitText(item), button.x() - r.x() - 18),
+                r.x() + 10, button.y() + 6, item.limited() ? DailyBoardTheme.INK_SOFT : DailyBoardTheme.MUTED);
+        Component label = Component.translatable(KEY + "shop.state." + state.key);
+        boolean hover = button.contains(mouseX, mouseY);
+        switch (state) {
+            case BUY -> DailyBoardTheme.button(g, font, button, label, DailyBoardTheme.GREEN, DailyBoardTheme.GREEN,
+                    0xFFFFFFFF, hover ? 1 : 0);
+            case CONFIRM -> DailyBoardTheme.button(g, font, button, label, DailyBoardTheme.AMBER_DEEP,
+                    DailyBoardTheme.AMBER_DEEP, 0xFFFFFFFF, hover ? 1 : 0);
+            default -> DailyBoardTheme.textCentered(g, font, label, button.cx(), button.cy() - 4,
+                    state == ShopState.POOR ? DailyBoardTheme.WARN : DailyBoardTheme.MUTED);
+        }
+    }
+
+    private Component shopTooltip(DailyTaskSnapshot.ShopRow item) {
+        var out = Component.empty().append(Component.literal(nullToEmpty(item.title())));
+        if (!nullToEmpty(item.description()).isEmpty()) {
+            out.append("\n").append(Component.literal(item.description()));
+        }
+        out.append("\n").append(Component.translatable(KEY + "shop.tip.reward", nullToEmpty(item.reward())));
+        out.append("\n").append(Component.literal(limitText(item)));
+        if (item.limited() && item.resetDay() >= 0) {
+            out.append("\n").append(Component.translatable(KEY + "shop.tip.reset",
+                    LocalDate.ofEpochDay(item.resetDay()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))));
+        }
+        return out;
+    }
+
+    private String limitText(DailyTaskSnapshot.ShopRow item) {
+        if (!item.limited()) {
+            return Component.translatable(KEY + "shop.unlimited").getString();
+        }
+        if (item.limitDays() <= 0) {
+            return Component.translatable(KEY + "shop.limit.forever", item.used(), item.limitCount()).getString();
+        }
+        if (item.limitDays() == 1) {
+            return Component.translatable(KEY + "shop.limit.daily", item.used(), item.limitCount()).getString();
+        }
+        return Component.translatable(KEY + "shop.limit.days", item.limitDays(), item.used(), item.limitCount())
+                .getString();
+    }
+
+    private ShopState shopState(DailyTaskSnapshot.ShopRow item) {
+        if (item.owned()) return ShopState.OWNED;
+        if (item.limited() && item.used() >= item.limitCount()) return ShopState.SOLD_OUT;
+        if (item.id().equals(pendingBuy)) return ShopState.WAIT;
+        if (snapshot == null || snapshot.greenApples() < item.price()) return ShopState.POOR;
+        if (item.id().equals(confirmShopId) && nowMillis < confirmUntil) return ShopState.CONFIRM;
+        return ShopState.BUY;
+    }
+
+    /** 点击商品卡片上的按钮：第一次进入确认态，确认态内再点才发出购买。 */
+    private boolean clickShop(double mx, double my) {
+        BoardRect area = shopArea();
+        if (my < shopTop() || my >= area.bottom()) {
+            return false;
+        }
+        List<DailyTaskSnapshot.ShopRow> items = shopItems();
+        for (int i = 0; i < items.size(); i++) {
+            BoardRect tile = shopTile(i);
+            if (!tile.contains(mx, my)) {
+                continue;
+            }
+            DailyTaskSnapshot.ShopRow item = items.get(i);
+            if (!shopBuyButton(tile).contains(mx, my)) {
+                confirmShopId = null;
+                return true;
+            }
+            ShopState state = shopState(item);
+            if (state == ShopState.BUY) {
+                playClick();
+                confirmShopId = item.id();
+                confirmUntil = System.currentTimeMillis() + CONFIRM_MILLIS;
+            } else if (state == ShopState.CONFIRM) {
+                playClick();
+                confirmShopId = null;
+                if (DailyShopClient.buy(item.id(), item.price())) {
+                    pendingBuy = item.id();
+                    buyLockMillis = System.currentTimeMillis();
+                }
+            }
+            return true;
+        }
+        confirmShopId = null;
+        return false;
+    }
+
+    private static int kindAccent(String kind) {
+        return switch (nullToEmpty(kind)) {
+            case "card" -> WarehouseTheme.ACCENT_CIVILIAN;
+            case "self_select" -> WarehouseTheme.ACCENT_SELF_SELECT;
+            case "limit_break" -> WarehouseTheme.ACCENT_LIMIT_BREAK;
+            case "skin" -> DailyBoardTheme.VIOLET;
+            case "crate" -> DailyBoardTheme.AMBER_DEEP;
+            case "key" -> DailyBoardTheme.GOLD;
+            case "title" -> DailyBoardTheme.BLUE;
+            default -> DailyBoardTheme.GREEN;
+        };
+    }
+
+    private static String kindGlyph(String kind) {
+        return switch (nullToEmpty(kind)) {
+            case "card" -> "◆";
+            case "self_select" -> "✦";
+            case "limit_break" -> "▲";
+            case "skin" -> "★";
+            case "crate" -> "▣";
+            case "key" -> "✚";
+            case "title" -> "✎";
+            default -> "●";
+        };
     }
 
     // ---------------------------------------------------------------------
@@ -661,21 +732,10 @@ public final class DailyTaskScreen extends Screen {
                 selectFilter(filterAt(mx, my));
                 return true;
             }
-            if (tab == TAB_SOURCES) {
-                int cat = sourceChipAt(mx, my);
-                if (cat >= 0) {
-                    if (cat != sourceCat) {
-                        playClick();
-                        sourceCat = cat;
-                        pageScroll = 0;
-                    }
-                    return true;
-                }
+            if (tab == TAB_SHOP && clickShop(mx, my)) {
+                return true;
             }
-            // 脚注整行都是「查看发放来源」的入口，不必瞄准右端的小按钮
-            if (tab == TAB_TASKS && layout.showFooter() && layout.footer().contains(mx, my)) {
-                playClick();
-                selectTab(TAB_SOURCES);
+            if (tab == TAB_MAIL && mailPage.mouseClicked(mx, my)) {
                 return true;
             }
         }
@@ -688,6 +748,10 @@ public final class DailyTaskScreen extends Screen {
             int max = layout.maxScroll(rows.size());
             if (max > 0) {
                 scroll = Mth.clamp(scroll - scrollY * (layout.rowStride() * 0.6D), 0, max);
+                return true;
+            }
+        } else if (tab == TAB_MAIL) {
+            if (mailPage.mouseScrolled(mx, my, scrollY)) {
                 return true;
             }
         } else {
@@ -724,11 +788,13 @@ public final class DailyTaskScreen extends Screen {
                 onClose();
                 return true;
             }
-            if (focused != null && focused == footerAction) {
-                playClick();
-                selectTab(TAB_SOURCES);
+            if (focused instanceof DailyMailPage.MailButton button && tab == TAB_MAIL) {
+                button.press();
                 return true;
             }
+        }
+        if (tab == TAB_MAIL && mailPage.keyPressed(keyCode)) {
+            return true;
         }
         switch (keyCode) {
             case 256 -> { // Esc
@@ -738,14 +804,19 @@ public final class DailyTaskScreen extends Screen {
             case 82 -> { // R 手动刷新
                 lastRequestMillis = System.currentTimeMillis();
                 requestSnapshot();
+                if (tab == TAB_MAIL) {
+                    mailPage.refresh();
+                } else {
+                    mailPage.poll();
+                }
                 return true;
             }
-            case 84 -> { // T 资产
-                selectTab(TAB_CARDS);
+            case 77 -> { // M 邮箱
+                selectTab(TAB_MAIL);
                 return true;
             }
-            case 67 -> { // C 发放来源
-                selectTab(TAB_SOURCES);
+            case 83 -> { // S 商店
+                selectTab(TAB_SHOP);
                 return true;
             }
             case 81 -> { // Q 今日任务
@@ -770,39 +841,24 @@ public final class DailyTaskScreen extends Screen {
         if (tab == TAB_TASKS) {
             scroll = Mth.clamp(scroll + direction * layout.list().h(), 0,
                     layout.maxScroll(rows.size()));
+        } else if (tab == TAB_MAIL) {
+            mailPage.scrollPage(direction);
         } else {
             pageScroll = Mth.clamp(pageScroll + direction * layout.pageHeight(), 0, pageMaxScroll());
         }
     }
 
     private double pageMaxScroll() {
-        if (tab == TAB_CARDS) {
-            int cols = layout.cardCols();
-            int rowsN = (CARDS.length + cols - 1) / cols;
-            int total = rowsN * layout.cardH() + (rowsN - 1) * layout.cardGap();
-            return Math.max(0, total - (layout.pageHeight() - 13));
-        }
-        if (tab == TAB_SOURCES) {
-            int total = filteredSources().size() * sourceStride() - 4;
-            return Math.max(0, total - (layout.pageHeight() - 13 - layout.chipH() - layout.gap()));
+        if (tab == TAB_SHOP) {
+            int count = shopItems().size();
+            if (count == 0) {
+                return 0;
+            }
+            int rowsN = (count + layout.shopCols() - 1) / layout.shopCols();
+            int total = rowsN * layout.shopH() + (rowsN - 1) * layout.shopGap();
+            return Math.max(0, total - (shopArea().bottom() - shopTop()));
         }
         return 0;
-    }
-
-    /** 发放来源页的分类胶囊命中测试；几何与 {@link #drawSourcesPage} 完全一致。 */
-    private int sourceChipAt(double mx, double my) {
-        BoardRect area = new BoardRect(layout.content().x() + layout.pagePad(), layout.pageTop(),
-                layout.content().w() - layout.pagePad() * 2, layout.pageHeight());
-        int chipTop = area.y() + 13;
-        int chipGap = layout.chipGap();
-        int chipW = Math.max(46, (area.w() - chipGap * (CATEGORIES.length - 1)) / CATEGORIES.length);
-        for (int i = 0; i < CATEGORIES.length; i++) {
-            if (new BoardRect(area.x() + i * (chipW + chipGap), chipTop, chipW, layout.chipH())
-                    .contains(mx, my)) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     private int filterAt(double mx, double my) {
@@ -880,12 +936,11 @@ public final class DailyTaskScreen extends Screen {
         return snapshot == null || snapshot.tasks() == null ? 0 : snapshot.tasks().size();
     }
 
-    private List<DailyTaskSnapshot.SourceRow> filteredSources() {
-        if (snapshot == null || snapshot.sources() == null) {
+    private List<DailyTaskSnapshot.ShopRow> shopItems() {
+        if (snapshot == null || !snapshot.shopOpen() || snapshot.shop() == null) {
             return List.of();
         }
-        String cat = CATEGORIES[sourceCat].id;
-        return snapshot.sources().stream().filter(s -> cat.equals(s.category())).toList();
+        return snapshot.shop();
     }
 
     private int claimedCount() {
@@ -924,8 +979,8 @@ public final class DailyTaskScreen extends Screen {
 
     private static String tabKey(int index) {
         return switch (index) {
-            case TAB_CARDS -> KEY + "tab.cards";
-            case TAB_SOURCES -> KEY + "tab.sources";
+            case TAB_SHOP -> KEY + "tab.shop";
+            case TAB_MAIL -> KEY + "tab.mail";
             default -> KEY + "tab.tasks";
         };
     }
@@ -938,10 +993,15 @@ public final class DailyTaskScreen extends Screen {
     // 内部记录
     // =====================================================================
 
-    private record CardInfo(String id, int accent, String glyph, String nameKey) {
-    }
+    /** 商品按钮的状态；{@code key} 对应 {@code shop.state.*} 文案。 */
+    private enum ShopState {
+        BUY("buy"), CONFIRM("confirm"), WAIT("wait"), POOR("poor"), SOLD_OUT("sold_out"), OWNED("owned");
 
-    private record SourceCategory(String id, String labelKey, int accent, int soft) {
+        private final String key;
+
+        ShopState(String key) {
+            this.key = key;
+        }
     }
 
     /** 领取按钮的视觉与文案状态。 */
@@ -1014,6 +1074,15 @@ public final class DailyTaskScreen extends Screen {
             if (active) g.fill(r.x(),r.y(),r.x()+3,r.bottom(),DailyBoardTheme.AMBER_DEEP);
             DailyBoardTheme.textCentered(g, font, getMessage(), r.cx(), r.y()+(r.h()-8)/2,
                     active ? DailyBoardTheme.INK : DailyBoardTheme.NAV_TEXT);
+            int unclaimed = index == TAB_MAIL ? mailPage.unclaimedCount() : 0;
+            if (unclaimed > 0) {
+                // 未领取邮件数：导航右上角的小方标
+                String n = unclaimed > 99 ? "99+" : String.valueOf(unclaimed);
+                int bw = Math.max(9, font.width(n) + 4);
+                int bx = r.right() - bw - 2;
+                g.fill(bx, r.y() + 2, bx + bw, r.y() + 12, DailyBoardTheme.AMBER_DEEP);
+                DailyBoardTheme.textCentered(g, font, Component.literal(n), bx + bw / 2, r.y() + 3, 0xFFFFFFFF);
+            }
         }
 
         @Override
@@ -1034,17 +1103,15 @@ public final class DailyTaskScreen extends Screen {
 
 
     // =====================================================================
-    // 控件：关闭 / 脚注按钮
+    // 控件：关闭按钮
     // =====================================================================
 
     private final class MiniButton extends AbstractWidget {
 
-        private final boolean close;
         private float hoverAnim;
 
-        private MiniButton(boolean close, Component label, BoardRect box) {
+        private MiniButton(Component label, BoardRect box) {
             super(box.x(), box.y(), box.w(), box.h(), label);
-            this.close = close;
             setTooltip(Tooltip.create(label));
         }
 
@@ -1052,29 +1119,18 @@ public final class DailyTaskScreen extends Screen {
         protected void renderWidget(GuiGraphics g, int mouseX, int mouseY, float delta) {
             BoardRect r = new BoardRect(getX(), getY(), getWidth(), getHeight());
             hoverAnim = GuiFx.approach(hoverAnim, (isHovered || isFocused()) ? 1.0F : 0.0F, frameDelta, 70.0F);
-            if (close) {
-                if (hoverAnim > 0.02F) {
-                    GuiFx.roundRect(g, r.x(), r.y(), r.right(), r.bottom(), 0,
-                            GuiFx.alpha(DailyBoardTheme.WARN, (int) (30 * hoverAnim)));
-                }
-                DailyBoardTheme.textCentered(g, font, Component.literal("\u2716"), r.cx(), r.cy() - 4,
-                        GuiFx.mix(layout.sidebar() ? DailyBoardTheme.MUTED : DailyBoardTheme.NAV_TEXT, DailyBoardTheme.WARN, hoverAnim));
-                return;
+            if (hoverAnim > 0.02F) {
+                GuiFx.roundRect(g, r.x(), r.y(), r.right(), r.bottom(), 0,
+                        GuiFx.alpha(DailyBoardTheme.WARN, (int) (30 * hoverAnim)));
             }
-            DailyBoardTheme.button(g, font, r, getMessage(), 0xFFF0F5F4,
-                    GuiFx.mix(DailyBoardTheme.CARD_LINE, DailyBoardTheme.GOLD,
-                            0.35F + 0.3F * hoverAnim),
-                    GuiFx.mix(DailyBoardTheme.INK_SOFT, DailyBoardTheme.GOLD, hoverAnim), hoverAnim);
+            DailyBoardTheme.textCentered(g, font, Component.literal("\u2716"), r.cx(), r.cy() - 4,
+                    GuiFx.mix(layout.sidebar() ? DailyBoardTheme.MUTED : DailyBoardTheme.NAV_TEXT, DailyBoardTheme.WARN, hoverAnim));
         }
 
         @Override
         public void onClick(double mx, double my) {
             playClick();
-            if (close) {
-                onClose();
-            } else {
-                selectTab(TAB_SOURCES);
-            }
+            onClose();
         }
 
         @Override
@@ -1107,6 +1163,7 @@ public final class DailyTaskScreen extends Screen {
             this.order = order;
             setTooltip(Tooltip.create(Component.empty()
                     .append(Component.literal(nullToEmpty(task.title())))
+                    .append(task.random() ? Component.translatable(KEY + "row.random_hint") : Component.empty())
                     .append("\n")
                     .append(Component.literal(nullToEmpty(task.description())))
                     .append("\n")
@@ -1172,7 +1229,19 @@ public final class DailyTaskScreen extends Screen {
             BoardRect button = claimButton();
             int textX = r.x()+12, textRight = button.x()-12;
             g.fill(button.x()-7,r.y()+8,button.x()-6,r.bottom()-8,DailyBoardTheme.CARD_LINE);
-            DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(task.title()), textRight-textX),
+            int titleRight = textRight;
+            if (task.random()) {
+                // 今日随机抽到的任务：标题右侧的小标签，与固定任务区分
+                String tag = Component.translatable(KEY + "row.random").getString();
+                int tw = font.width(tag) + 8;
+                String shown = DailyBoardTheme.fit(font, nullToEmpty(task.title()), textRight - textX - tw - 6);
+                int tx = textX + font.width(shown) + 6;
+                g.fill(tx, r.y()+6, tx + tw, r.y()+17, DailyBoardTheme.VIOLET_SOFT);
+                g.fill(tx, r.y()+6, tx + 1, r.y()+17, DailyBoardTheme.VIOLET);
+                DailyBoardTheme.text(g, font, tag, tx + 4, r.y()+8, DailyBoardTheme.VIOLET);
+                titleRight = tx - 6;
+            }
+            DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(task.title()), titleRight-textX),
                     textX, r.y()+8, DailyBoardTheme.INK);
             DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, nullToEmpty(task.description()), textRight-textX),
                     textX, r.y()+22, DailyBoardTheme.INK_SOFT);

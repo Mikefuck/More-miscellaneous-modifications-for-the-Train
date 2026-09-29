@@ -20,11 +20,20 @@ import java.util.Collections;
  * saved in the same world player file and reset at 00:00 UTC. A claim action must be durable and
  * idempotent for its player/task/day key; the board persists a retryable pending marker before
  * calling it.
+ *
+ * <p>API v2: OP-configured tasks from the world's {@code daily_tasks.json} are installed through
+ * {@link #setConfiguredTasks}; {@link #tasksFor} returns one player's board (configured random-pool
+ * tasks vary per player and day) and {@link #advanceAll} batches progress into one write.</p>
  */
 public final class HabiDailyTaskApi {
-    public static final int API_VERSION = 1;
+    public static final int API_VERSION = 2;
     public static final String PROVIDES = "habitrain_lottery_daily_api";
     private static final Map<ResourceLocation, Task> TASKS = new LinkedHashMap<>();
+    /** OP-configured tasks (world config); replaced wholesale on load/save. Shadow static ids. */
+    private static volatile Map<ResourceLocation, Task> configured = Map.of();
+    /** Which configured tasks a player sees today (random pool); never null. */
+    private static volatile java.util.function.BiPredicate<ServerPlayer, ResourceLocation> configuredActive = (p, id) -> true;
+    private static final java.util.List<ClaimListener> CLAIM_LISTENERS = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private HabiDailyTaskApi() { }
 
@@ -32,6 +41,12 @@ public final class HabiDailyTaskApi {
     public interface ClaimAction {
         /** Return true only after the reward has been durably issued. */
         boolean grant(ServerPlayer player, ResourceLocation taskId, long epochDayUtc);
+    }
+
+    /** Notified on the server thread after a claim has been durably recorded. */
+    @FunctionalInterface
+    public interface ClaimListener {
+        void claimed(ServerPlayer player, ResourceLocation taskId);
     }
 
     public record Task(ResourceLocation id, String title, String description,
@@ -53,8 +68,43 @@ public final class HabiDailyTaskApi {
         }
     }
 
+    /** Statically registered tasks plus every configured task (configured ids shadow static ones). */
     public static synchronized Map<ResourceLocation, Task> tasks() {
-        return Collections.unmodifiableMap(new LinkedHashMap<>(TASKS));
+        Map<ResourceLocation, Task> all = new LinkedHashMap<>(TASKS);
+        all.putAll(configured);
+        return Collections.unmodifiableMap(all);
+    }
+
+    /** The tasks shown on one player's board today: static tasks plus that player's active configured tasks. */
+    public static synchronized java.util.List<Task> tasksFor(ServerPlayer player) {
+        java.util.List<Task> out = new java.util.ArrayList<>();
+        for (Task task : TASKS.values()) if (!configured.containsKey(task.id())) out.add(task);
+        for (Task task : configured.values()) if (configuredActive.test(player, task.id())) out.add(task);
+        return out;
+    }
+
+    /**
+     * Installs the world's configured tasks. Called by the lottery config service only; the
+     * predicate decides per player and day which of them are on the board.
+     */
+    public static synchronized void setConfiguredTasks(java.util.Collection<Task> tasks,
+                                                       java.util.function.BiPredicate<ServerPlayer, ResourceLocation> active) {
+        Map<ResourceLocation, Task> next = new LinkedHashMap<>();
+        if (tasks != null) for (Task task : tasks) next.putIfAbsent(task.id(), task);
+        configured = Collections.unmodifiableMap(next);
+        configuredActive = active == null ? (p, id) -> true : active;
+    }
+
+    public static void addClaimListener(ClaimListener listener) {
+        if (listener != null) CLAIM_LISTENERS.add(listener);
+    }
+
+    /** The task a player may progress or claim, or {@code null} (unknown or not on today's board). */
+    private static synchronized Task lookup(ServerPlayer player, ResourceLocation id) {
+        if (id == null) return null;
+        Task task = configured.get(id);
+        if (task != null) return configuredActive.test(player, id) ? task : null;
+        return TASKS.get(id);
     }
 
     /** Opens the board for a player without requiring the block. */
@@ -64,17 +114,33 @@ public final class HabiDailyTaskApi {
 
     /** Advances one registered task. Values above the target are capped. */
     public static boolean advance(ServerPlayer player, ResourceLocation id, int amount) {
-        Task task = TASKS.get(id);
-        if (!ready(player) || PlayerLotteryStore.get().isFlushDeferred() || task == null || amount <= 0) return false;
+        return id != null && advanceAll(player, Map.of(id, amount));
+    }
+
+    /**
+     * Advances several tasks with a single durable write. Unknown / inactive ids and non-positive
+     * amounts are skipped; returns false when nothing could be persisted.
+     */
+    public static boolean advanceAll(ServerPlayer player, Map<ResourceLocation, Integer> amounts) {
+        if (!ready(player) || PlayerLotteryStore.get().isFlushDeferred() || amounts == null || amounts.isEmpty()) return false;
+        Map<ResourceLocation, Task> targets = new LinkedHashMap<>();
+        amounts.forEach((id, amount) -> {
+            Task task = lookup(player, id);
+            if (task != null && amount != null && amount > 0) targets.put(id, task);
+        });
+        if (targets.isEmpty()) return false;
         PlayerLotteryStore store = PlayerLotteryStore.get();
         PlayerLotteryData before = store.getOrLoad(player).copy();
         boolean dirty = store.isDirty(player.getUUID());
         long day = LoginRewardService.todayEpochDayUtc();
         store.update(player.getUUID(), data -> {
             resetDay(data, day);
-            String key = id.toString();
-            int old = progressOf(data, key);
-            data.dailyTaskProgress.put(key, Math.min(task.target(), old + Math.min(amount, task.target())));
+            targets.forEach((id, task) -> {
+                String key = id.toString();
+                int old = progressOf(data, key);
+                int amount = amounts.get(id);
+                data.dailyTaskProgress.put(key, Math.min(task.target(), old + Math.min(amount, task.target())));
+            });
         });
         if (!store.flush(player.getUUID())) {
             store.restoreSnapshot(player.getUUID(), before, dirty);
@@ -86,7 +152,7 @@ public final class HabiDailyTaskApi {
 
     /** Claims a completed task once per UTC day. Only the server may invoke this. */
     public static boolean claim(ServerPlayer player, ResourceLocation id) {
-        Task task = TASKS.get(id);
+        Task task = lookup(player, id);
         if (!ready(player) || PlayerLotteryStore.get().isFlushDeferred() || task == null) return false;
         PlayerLotteryStore store = PlayerLotteryStore.get();
         PlayerLotteryData data = store.getOrLoad(player);
@@ -115,6 +181,13 @@ public final class HabiDailyTaskApi {
                     value.dailyTaskClaims.add(key);
                 });
                 if (store.flush(player.getUUID())) {
+                    for (ClaimListener listener : CLAIM_LISTENERS) {
+                        try {
+                            listener.claimed(player, id);
+                        } catch (RuntimeException error) {
+                            com.habitrain.lottery.HabiLotteryMod.LOGGER.error("Daily claim listener failed: {}", id, error);
+                        }
+                    }
                     LotteryNetwork.sendDailyTaskSnapshot(player, false);
                     return true;
                 }

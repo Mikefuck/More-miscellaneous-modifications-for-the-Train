@@ -1,0 +1,531 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "#navy",
+    "steel": "habitrain_lottery:block/daily_task_terminal_steel",
+    "navy": "habitrain_lottery:block/daily_task_terminal_navy",
+    "body_front": "habitrain_lottery:block/daily_task_terminal_body_front",
+    "brass": "habitrain_lottery:block/daily_task_terminal_brass",
+    "wood": "habitrain_lottery:block/daily_task_terminal_wood",
+    "keypad": "habitrain_lottery:block/daily_task_terminal_keypad",
+    "bezel": "habitrain_lottery:block/daily_task_terminal_bezel",
+    "screen": "habitrain_lottery:block/daily_task_terminal_screen",
+    "lamp": "habitrain_lottery:block/daily_task_terminal_lamp"
+  },
+  "elements": [
+    {
+      "__comment": "plinth",
+      "from": [
+        1,
+        0,
+        1
+      ],
+      "to": [
+        15,
+        1,
+        15
+      ],
+      "faces": {
+        "north": {
+          "texture": "#steel"
+        },
+        "east": {
+          "texture": "#steel"
+        },
+        "south": {
+          "texture": "#steel"
+        },
+        "west": {
+          "texture": "#steel"
+        },
+        "up": {
+          "texture": "#steel"
+        },
+        "down": {
+          "texture": "#steel",
+          "cullface": "down"
+        }
+      }
+    },
+    {
+      "__comment": "brass skirting",
+      "from": [
+        2,
+        1,
+        3
+      ],
+      "to": [
+        14,
+        2,
+        14
+      ],
+      "faces": {
+        "north": {
+          "texture": "#brass"
+        },
+        "east": {
+          "texture": "#brass"
+        },
+        "south": {
+          "texture": "#brass"
+        },
+        "west": {
+          "texture": "#brass"
+        },
+        "up": {
+          "texture": "#brass"
+        }
+      }
+    },
+    {
+      "__comment": "pedestal",
+      "from": [
+        3,
+        2,
+        4
+      ],
+      "to": [
+        13,
+        9,
+        13
+      ],
+      "faces": {
+        "north": {
+          "texture": "#body_front",
+          "uv": [
+            3,
+            2,
+            13,
+            9
+          ]
+        },
+        "east": {
+          "texture": "#navy",
+          "uv": [
+            3.5,
+            5,
+            12.5,
+            12
+          ]
+        },
+        "south": {
+          "texture": "#navy",
+          "uv": [
+            3,
+            5,
+            13,
+            12
+          ]
+        },
+        "west": {
+          "texture": "#navy",
+          "uv": [
+            3.5,
+            5,
+            12.5,
+            12
+          ]
+        },
+        "up": {
+          "texture": "#navy"
+        }
+      }
+    },
+    {
+      "__comment": "grab pole east",
+      "from": [
+        13.25,
+        2,
+        6
+      ],
+      "to": [
+        14.25,
+        9,
+        7
+      ],
+      "faces": {
+        "north": {
+          "texture": "#brass"
+        },
+        "east": {
+          "texture": "#brass"
+        },
+        "south": {
+          "texture": "#brass"
+        },
+        "west": {
+          "texture": "#brass"
+        }
+      }
+    },
+    {
+      "__comment": "grab pole west",
+      "from": [
+        1.75,
+        2,
+        6
+      ],
+      "to": [
+        2.75,
+        9,
+        7
+      ],
+      "faces": {
+        "north": {
+          "texture": "#brass"
+        },
+        "east": {
+          "texture": "#brass"
+        },
+        "south": {
+          "texture": "#brass"
+        },
+        "west": {
+          "texture": "#brass"
+        }
+      }
+    },
+    {
+      "__comment": "desk",
+      "from": [
+        1.5,
+        9,
+        1.5
+      ],
+      "to": [
+        14.5,
+        10.5,
+        14.5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#wood"
+        },
+        "east": {
+          "texture": "#wood"
+        },
+        "south": {
+          "texture": "#wood"
+        },
+        "west": {
+          "texture": "#wood"
+        },
+        "up": {
+          "texture": "#wood"
+        },
+        "down": {
+          "texture": "#wood"
+        }
+      }
+    },
+    {
+      "__comment": "desk lip",
+      "from": [
+        1.5,
+        8.75,
+        1
+      ],
+      "to": [
+        14.5,
+        10.5,
+        1.5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#brass"
+        },
+        "east": {
+          "texture": "#brass"
+        },
+        "south": {
+          "texture": "#brass"
+        },
+        "west": {
+          "texture": "#brass"
+        },
+        "up": {
+          "texture": "#brass"
+        },
+        "down": {
+          "texture": "#brass"
+        }
+      }
+    },
+    {
+      "__comment": "keypad",
+      "from": [
+        3,
+        10.5,
+        2.5
+      ],
+      "to": [
+        8,
+        11,
+        6.5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#steel"
+        },
+        "east": {
+          "texture": "#steel"
+        },
+        "south": {
+          "texture": "#steel"
+        },
+        "west": {
+          "texture": "#steel"
+        },
+        "up": {
+          "texture": "#keypad",
+          "uv": [
+            0,
+            0,
+            16,
+            13
+          ]
+        }
+      }
+    },
+    {
+      "__comment": "card reader",
+      "from": [
+        9.5,
+        10.5,
+        2.5
+      ],
+      "to": [
+        13,
+        12,
+        5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#brass"
+        },
+        "east": {
+          "texture": "#brass"
+        },
+        "south": {
+          "texture": "#brass"
+        },
+        "west": {
+          "texture": "#brass"
+        },
+        "up": {
+          "texture": "#steel",
+          "uv": [
+            4,
+            4,
+            7.5,
+            6.5
+          ]
+        }
+      }
+    },
+    {
+      "__comment": "hinge",
+      "from": [
+        3,
+        10.5,
+        8
+      ],
+      "to": [
+        13,
+        11.5,
+        11
+      ],
+      "faces": {
+        "north": {
+          "texture": "#steel"
+        },
+        "east": {
+          "texture": "#steel"
+        },
+        "south": {
+          "texture": "#steel"
+        },
+        "west": {
+          "texture": "#steel"
+        },
+        "up": {
+          "texture": "#steel"
+        }
+      }
+    },
+    {
+      "__comment": "display housing",
+      "from": [
+        2,
+        10.5,
+        7.5
+      ],
+      "to": [
+        14,
+        16.5,
+        11.5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#bezel",
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
+        },
+        "east": {
+          "texture": "#navy"
+        },
+        "south": {
+          "texture": "#navy"
+        },
+        "west": {
+          "texture": "#navy"
+        },
+        "up": {
+          "texture": "#navy"
+        },
+        "down": {
+          "texture": "#navy"
+        }
+      },
+      "rotation": {
+        "angle": 22.5,
+        "axis": "x",
+        "origin": [
+          8,
+          10.5,
+          9.5
+        ]
+      }
+    },
+    {
+      "__comment": "display",
+      "from": [
+        3,
+        11,
+        7.25
+      ],
+      "to": [
+        13,
+        16,
+        7.5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#screen",
+          "uv": [
+            0,
+            0,
+            16,
+            8
+          ]
+        },
+        "east": {
+          "texture": "#bezel"
+        },
+        "west": {
+          "texture": "#bezel"
+        },
+        "up": {
+          "texture": "#bezel"
+        },
+        "down": {
+          "texture": "#bezel"
+        }
+      },
+      "rotation": {
+        "angle": 22.5,
+        "axis": "x",
+        "origin": [
+          8,
+          10.5,
+          9.5
+        ]
+      }
+    },
+    {
+      "__comment": "canopy",
+      "from": [
+        1.5,
+        16.5,
+        6.5
+      ],
+      "to": [
+        14.5,
+        17,
+        12
+      ],
+      "faces": {
+        "north": {
+          "texture": "#navy"
+        },
+        "east": {
+          "texture": "#navy"
+        },
+        "south": {
+          "texture": "#navy"
+        },
+        "west": {
+          "texture": "#navy"
+        },
+        "up": {
+          "texture": "#navy"
+        },
+        "down": {
+          "texture": "#navy"
+        }
+      },
+      "rotation": {
+        "angle": 22.5,
+        "axis": "x",
+        "origin": [
+          8,
+          10.5,
+          9.5
+        ]
+      }
+    },
+    {
+      "__comment": "signal lamp",
+      "from": [
+        7,
+        17,
+        8.5
+      ],
+      "to": [
+        9,
+        18,
+        10.5
+      ],
+      "faces": {
+        "north": {
+          "texture": "#lamp"
+        },
+        "east": {
+          "texture": "#lamp"
+        },
+        "south": {
+          "texture": "#lamp"
+        },
+        "west": {
+          "texture": "#lamp"
+        },
+        "up": {
+          "texture": "#lamp"
+        }
+      },
+      "rotation": {
+        "angle": 22.5,
+        "axis": "x",
+        "origin": [
+          8,
+          10.5,
+          9.5
+        ]
+      }
+    }
+  ]
+}

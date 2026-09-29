@@ -3,7 +3,6 @@ package com.habitrain.lottery.client;
 import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.client.gui.MailComposeScreen;
-import com.habitrain.lottery.client.gui.MailboxScreen;
 import com.habitrain.lottery.client.gui.DailyTaskScreen;
 import com.habitrain.lottery.daily.DailyTaskSnapshot;
 import com.habitrain.lottery.network.CardUseMenuS2C;
@@ -122,8 +121,13 @@ public final class LotteryClientNetwork {
         });
         ClientPlayNetworking.registerGlobalReceiver(OpenMailboxS2C.TYPE, (payload, context) -> {
             context.client().execute(() -> {
+                // 邮箱已并入每日任务终端：已打开终端就切页，否则直接落在「邮箱」页
                 Minecraft mc = Minecraft.getInstance();
-                mc.setScreen(new MailboxScreen(mc.screen));
+                if (mc.screen instanceof DailyTaskScreen screen) {
+                    screen.openMailTab();
+                } else {
+                    mc.setScreen(DailyTaskScreen.mailbox(mc.screen));
+                }
             });
         });
         ClientPlayNetworking.registerGlobalReceiver(MailboxListS2C.TYPE, (payload, context) -> {

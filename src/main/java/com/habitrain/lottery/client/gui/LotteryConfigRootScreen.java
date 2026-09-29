@@ -37,18 +37,19 @@ import java.util.Map;
  * OP-gated operations console for player assets, titles, skins and mail.
  */
 public class LotteryConfigRootScreen extends Screen {
-    private static final String[] TABS = {"玩家资产", "称号管理", "皮肤内容", "开箱管理", "撰写邮件"};
+    private static final String[] TABS = {"玩家资产", "称号管理", "皮肤内容", "开箱管理", "撰写邮件", "每日任务"};
     private static final ConfigSectionId[] SECTION_IDS = {
             ConfigSectionId.PLAYERS, ConfigSectionId.TITLES, ConfigSectionId.SKINS,
-            ConfigSectionId.CRATES, ConfigSectionId.MAIL
+            ConfigSectionId.CRATES, ConfigSectionId.MAIL, ConfigSectionId.DAILY
     };
-    private static final int[] NAV_ORDER = {0, 1, 2, 3, 4};
+    private static final int[] NAV_ORDER = {0, 1, 2, 3, 5, 4};
     private static final int ROW_H = 22;
     private static final int TAB_PLAYERS = 0;
     private static final int TAB_TITLES = 1;
     private static final int TAB_SKINS = 2;
     private static final int TAB_CRATES = 3;
     private static final int TAB_MAIL = 4;
+    private static final int TAB_DAILY = 5;
     private static final Gson GSON = new Gson();
 
     private final Screen parent;
@@ -325,6 +326,7 @@ public class LotteryConfigRootScreen extends Screen {
             case TAB_SKINS -> buildSkinsTab(contentY, contentH);
             case TAB_CRATES -> buildCratesTab(contentY, contentH);
             case TAB_MAIL -> buildMailTab(contentY, contentH);
+            case TAB_DAILY -> buildDailyTab(contentY, contentH);
             default -> {
             }
         }
@@ -334,7 +336,7 @@ public class LotteryConfigRootScreen extends Screen {
     }
 
     private void applyOpWidgetLocks() {
-        if (selectedTab == TAB_SKINS || selectedTab == TAB_CRATES) {
+        if (selectedTab == TAB_SKINS || selectedTab == TAB_CRATES || selectedTab == TAB_DAILY) {
             return;
         }
         boolean readOnly = !LotteryClientNetwork.canSendPlay() || !LotteryNetwork.ClientLotteryState.op;
@@ -780,6 +782,20 @@ public class LotteryConfigRootScreen extends Screen {
                 .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.config.action.crates_manage_hint")))
                 .build());
 
+    }
+
+    // ---------------- daily tasks ----------------
+    private void buildDailyTab(int y, int h) {
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.daily_admin.open"), b -> {
+            if (minecraft != null) minecraft.setScreen(new DailyTaskManageScreen(this));
+        }).bounds(pageLeft(), y, Math.min(240, pageWidth()), 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.daily_admin.open_hint")))
+                .build());
+        addTab(Button.builder(Component.translatable("screen.habitrain_lottery.daily_shop_admin.open"), b -> {
+            if (minecraft != null) minecraft.setScreen(new DailyShopManageScreen(this));
+        }).bounds(pageLeft(), y + 24, Math.min(240, pageWidth()), 20)
+                .tooltip(Tooltip.create(Component.translatable("screen.habitrain_lottery.daily_shop_admin.open_hint")))
+                .build());
     }
 
     // ---------------- mail ----------------
@@ -1594,6 +1610,17 @@ public class LotteryConfigRootScreen extends Screen {
             int yy = contentY + 30;
             for (Component line : lines) {
                 for (var wrapped : font.split(line, Math.max(30, pageWidth() - 8))) {
+                    if (yy + font.lineHeight > layout.content().bottom()) break;
+                    g.drawString(font, wrapped, pageLeft(), yy, 0xFFB7C1C6, false);
+                    yy += font.lineHeight + 3;
+                }
+                yy += 5;
+            }
+        } else if (selectedTab == TAB_DAILY) {
+            int yy = contentY + 54;
+            for (String key : new String[]{"overview_1", "overview_2", "overview_3", "overview_shop"}) {
+                for (var wrapped : font.split(Component.translatable("screen.habitrain_lottery.daily_admin." + key),
+                        Math.max(30, pageWidth() - 8))) {
                     if (yy + font.lineHeight > layout.content().bottom()) break;
                     g.drawString(font, wrapped, pageLeft(), yy, 0xFFB7C1C6, false);
                     yy += font.lineHeight + 3;

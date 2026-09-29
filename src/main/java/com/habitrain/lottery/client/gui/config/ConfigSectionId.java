@@ -6,6 +6,7 @@ public enum ConfigSectionId {
     TITLES(Group.PLAYERS_AND_CONTENT, "titles"),
     SKINS(Group.PLAYERS_AND_CONTENT, "skins"),
     CRATES(Group.OPERATIONS, "crates"),
+    DAILY(Group.OPERATIONS, "daily"),
     MAIL(Group.OPERATIONS, "mail");
 
     public enum Group {

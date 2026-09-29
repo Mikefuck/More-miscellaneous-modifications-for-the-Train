@@ -19,7 +19,7 @@ class DailyBoardLayoutTest {
             inside(l.content(), l.panel());
             inside(l.close(), l.panel());
             assertTrue(l.tabFits());
-            for (int i=0;i<3;i++) {
+            for (int i=0;i<DailyBoardLayout.TABS;i++) {
                 inside(l.tab(i),l.rail());
                 assertTrue(l.tab(i).right() <= l.close().x());
                 if (i>0) {
@@ -46,10 +46,8 @@ class DailyBoardLayoutTest {
             assertTrue(l.toolbar().bottom() < l.list().y());
             assertTrue(l.list().w() >= 280);
             assertTrue(l.list().h() >= l.rowH());
-            if(l.showFooter()) {
-                assertTrue(l.list().bottom() < l.footer().y());
-                inside(l.footerAction(),l.footer());
-            }
+            assertTrue(l.shopCols() >= 2);
+            assertTrue((l.content().w() - l.pagePad()*2 - (l.shopCols()-1)*l.shopGap()) / l.shopCols() >= 120);
             if(n>0) assertTrue(l.rowY(n-1,l.maxScroll(n))+l.rowH() <= l.list().bottom());
             else assertEquals(0,l.maxScroll(n));
             assertEquals(l.list().y()-10,l.rowY(0,10));
