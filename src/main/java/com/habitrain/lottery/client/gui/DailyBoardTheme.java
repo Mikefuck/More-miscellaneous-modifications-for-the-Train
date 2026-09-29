@@ -77,7 +77,6 @@ final class DailyBoardTheme {
     static void softCard(GuiGraphics g, BoardRect r, int radius, int top, int bottom, int border) {
         box(g, r, top, border);
     }
-    static void rightPage(GuiGraphics g, BoardRect r, int radius) { card(g, r); }
 
 static void hairline(GuiGraphics g, int x0, int x1, int y, int color) {
         if (x1 <= x0) {

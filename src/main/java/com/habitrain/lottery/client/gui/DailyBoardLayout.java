@@ -1,14 +1,13 @@
 package com.habitrain.lottery.client.gui;
 
-/** Task dispatch layout with adaptive navigation, four explicit status filters and the shop grid. */
+/** Task dispatch layout with adaptive navigation, four explicit status filters and one shared row list. */
 record DailyBoardLayout(boolean compact, int pad, int gap,
                         BoardRect panel, BoardRect rail, BoardRect content, BoardRect close,
-                        BoardRect summary, BoardRect body, int pagePad,
+                        BoardRect summary, BoardRect body,
                         BoardRect title, BoardRect subtitle, BoardRect clock,
                         BoardRect toolbar, BoardRect list,
                         BoardRect filterAll, BoardRect filterOpen, BoardRect filterDone,
-                        int rowH, int rowStride,
-                        int shopCols, int shopH, int shopGap) {
+                        int rowH, int rowStride) {
     static final int TABS = 3;
     static final int FILTERS = 4;
 
@@ -40,9 +39,8 @@ record DailyBoardLayout(boolean compact, int pad, int gap,
         BoardRect list = new BoardRect(body.x(), toolbar.bottom()+8, body.w(), body.bottom()-toolbar.bottom()-8);
         int rh = compact ? 68 : 82;
         return new DailyBoardLayout(compact, pad, gap, panel, rail, content, close,
-                summary, body, 8, title, subtitle, clock,
-                toolbar, list, all, open, done, rh, rh+6,
-                content.w() >= 560 ? 3 : 2, compact ? 84 : 96, 8);
+                summary, body, title, subtitle, clock,
+                toolbar, list, all, open, done, rh, rh+6);
     }
 
     boolean sidebar() { return rail.h() == panel.h(); }
@@ -77,16 +75,6 @@ record DailyBoardLayout(boolean compact, int pad, int gap,
 
     int visibleRows() {
         return Math.max(1, (list.h() + (rowStride - rowH)) / rowStride);
-    }
-
-    /** 商店页的内容区起点。 */
-    int pageTop() {
-        return content.y();
-    }
-
-    /** 商店页的内容区高度。 */
-    int pageHeight() {
-        return Math.max(40, content.h());
     }
 }
 
