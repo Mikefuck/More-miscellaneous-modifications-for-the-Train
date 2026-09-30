@@ -324,10 +324,15 @@ public final class LotteryNetwork {
 
     /** Public server-side opener for the board block and other mods. */
     public static void sendDailyTaskSnapshot(ServerPlayer player, boolean open) {
+        sendDailyTaskSnapshot(player, open, null);
+    }
+
+    /** As above; {@code shopReceipt} tells the client which pending purchase this board answers. */
+    public static void sendDailyTaskSnapshot(ServerPlayer player, boolean open, String shopReceipt) {
         if (player == null || !WorldLotteryPaths.ready()
                 || PlayerLotteryStore.get().isLoadFailed(player.getUUID())) return;
         try {
-            String json = GSON.toJson(com.habitrain.lottery.daily.DailyTaskBoardService.snapshot(player));
+            String json = GSON.toJson(com.habitrain.lottery.daily.DailyTaskBoardService.snapshot(player, shopReceipt));
             sendIfSupported(player, new DailyTaskBoardS2C(json, open));
         } catch (RuntimeException error) {
             HabiLotteryMod.LOGGER.warn("Daily task snapshot failed for {}", player.getUUID(), error);

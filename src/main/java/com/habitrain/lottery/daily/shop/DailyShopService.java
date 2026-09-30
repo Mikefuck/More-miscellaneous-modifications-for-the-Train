@@ -144,7 +144,7 @@ public final class DailyShopService {
                     item.limitEnabled, item.limitCount, item.limitDays,
                     item.limitEnabled ? DailyShopLimits.used(counter, item, day) : 0,
                     item.limitEnabled ? DailyShopLimits.nextResetDay(day, item.limitDays) : -1L,
-                    alreadyOwned(player, item)));
+                    alreadyOwned(player, item), matchLocked(player, item, day)));
         }
         return out;
     }
@@ -217,6 +217,21 @@ public final class DailyShopService {
         HabiLotteryMod.LOGGER.info("{} bought shop item {} for {} green apples",
                 player.getGameProfile().getName(), item.id, item.price);
         return "ok";
+    }
+
+    /**
+     * True when the item gives cards and a match is running, i.e. {@link #buy} would answer
+     * {@code in_match}. Only card kinds are converted, so a random crate is never drawn here.
+     */
+    static boolean matchLocked(ServerPlayer player, DailyShopItem item, long day) {
+        List<MailReward> cards = new ArrayList<>();
+        for (DailyRewardEntry reward : item.rewards) {
+            if (!DailyRewardEntry.CARD.equals(reward.kind) && !DailyRewardEntry.SELF_SELECT.equals(reward.kind)
+                    && !DailyRewardEntry.LIMIT_BREAK.equals(reward.kind)) continue;
+            MailReward converted = DailyRewardService.toMailReward(player, "shop_" + item.id, reward, day);
+            if (converted != null) cards.add(converted);
+        }
+        return !cards.isEmpty() && MailService.blockedDuringMatch(player, cards);
     }
 
     private static void setCounter(PlayerLotteryStore store, ServerPlayer player, String id,

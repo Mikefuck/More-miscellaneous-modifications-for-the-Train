@@ -1031,6 +1031,8 @@
   "screen.habitrain_lottery.daily.shop.state.poor": "Not enough",
   "screen.habitrain_lottery.daily.shop.state.sold_out": "Sold out",
   "screen.habitrain_lottery.daily.shop.state.owned": "Owned",
+  "screen.habitrain_lottery.daily.shop.state.in_match": "In match",
+  "screen.habitrain_lottery.daily.shop.tip.in_match": "Items with cards cannot be bought while a match is running",
   "screen.habitrain_lottery.daily.shop.overview": "%1$s on sale  ·  %2$s affordable",
   "screen.habitrain_lottery.daily.shop.subtitle.closed": "The shop is closed; goods will appear here once it opens.",
   "screen.habitrain_lottery.daily.shop.filter.available": "Buyable",

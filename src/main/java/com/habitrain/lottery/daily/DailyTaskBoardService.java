@@ -17,6 +17,11 @@ public final class DailyTaskBoardService {
     private DailyTaskBoardService() { }
 
     public static DailyTaskSnapshot snapshot(ServerPlayer player) {
+        return snapshot(player, null);
+    }
+
+    /** {@code shopReceipt}: the shop item whose purchase request this board answers. */
+    public static DailyTaskSnapshot snapshot(ServerPlayer player, String shopReceipt) {
         long day = LoginRewardService.todayEpochDayUtc();
         var store = PlayerLotteryStore.get();
         Map<String, Integer> cards = HabiCardApi.all(player.getUUID());
@@ -29,6 +34,6 @@ public final class DailyTaskBoardService {
                     DailyTaskConfigService.isRandomPick(task.id())));
         }
         return new DailyTaskSnapshot(day, store.getGreenApples(player.getUUID()),
-                cards, total, tasks, DailyShopService.open(), DailyShopService.rows(player));
+                cards, total, tasks, DailyShopService.open(), DailyShopService.rows(player), shopReceipt);
     }
 }

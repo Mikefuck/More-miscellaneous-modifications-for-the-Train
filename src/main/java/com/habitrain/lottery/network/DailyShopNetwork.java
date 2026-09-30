@@ -65,15 +65,20 @@ public final class DailyShopNetwork {
 
         ServerPlayNetworking.registerGlobalReceiver(BuyC2S.TYPE, (payload, ctx) -> ctx.server().execute(() -> {
             ServerPlayer player = ctx.player();
-            if (player == null || LotteryNetwork.rateLimited(player, "daily_shop_buy", 350)) return;
-            if (LotteryNetwork.gateBlocked(player)) {
-                player.sendSystemMessage(Component.literal("§c[商店] 当前不可购买"));
+            if (player == null) return;
+            // Buying is a player action: the Mod-menu gate only guards config writes, so it is not checked here.
+            if (LotteryNetwork.rateLimited(player, "daily_shop_buy", 350)) {
+                // Still answer so the button leaves "buying…"; a second slot keeps a flood from buying boards.
+                if (!LotteryNetwork.rateLimited(player, "daily_shop_buy_reply", 1000)) {
+                    player.sendSystemMessage(Component.literal("§c[商店] 操作过快，请稍后再试"));
+                    LotteryNetwork.sendDailyTaskSnapshot(player, false, payload.itemId());
+                }
                 return;
             }
             String result = DailyShopService.buy(player, payload.itemId(), payload.price());
             if (!"ok".equals(result)) player.sendSystemMessage(Component.literal("§c[商店] " + failText(result)));
-            // Always answer with a fresh board: it clears the client's pending state and shows the new balance.
-            LotteryNetwork.sendDailyTaskSnapshot(player, false);
+            // Always answer with a fresh board: its receipt clears the client's pending state and shows the new balance.
+            LotteryNetwork.sendDailyTaskSnapshot(player, false, payload.itemId());
         }));
 
         ServerPlayNetworking.registerGlobalReceiver(RequestC2S.TYPE, (payload, ctx) -> ctx.server().execute(() -> {

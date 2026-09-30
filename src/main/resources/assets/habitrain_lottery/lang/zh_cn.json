@@ -1031,6 +1031,8 @@
   "screen.habitrain_lottery.daily.shop.state.poor": "绿苹果不足",
   "screen.habitrain_lottery.daily.shop.state.sold_out": "已售罄",
   "screen.habitrain_lottery.daily.shop.state.owned": "已拥有",
+  "screen.habitrain_lottery.daily.shop.state.in_match": "对局中",
+  "screen.habitrain_lottery.daily.shop.tip.in_match": "对局进行中不能购买含角色卡的商品，请在对局结束后购买",
   "screen.habitrain_lottery.daily.shop.overview": "在售 %1$s 件  ·  %2$s 件可购买",
   "screen.habitrain_lottery.daily.shop.subtitle.closed": "商店暂未开放，开放后会在这里上架商品。",
   "screen.habitrain_lottery.daily.shop.filter.available": "可购买",

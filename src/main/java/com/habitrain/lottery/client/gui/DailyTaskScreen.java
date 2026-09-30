@@ -130,7 +130,10 @@ public final class DailyTaskScreen extends Screen {
         this.snapshot = value;
         // 快照到达即视为权威状态，清掉本地等待标记
         pendingClaims.clear();
-        pendingBuy = null;
+        // 购买等待态只由带回执的快照解除：下单前已发出的定时刷新晚到时不能把旧余额下的「购买」放出来
+        if (value.shopReceipt() != null) {
+            pendingBuy = null;
+        }
 
         String focusedId = getFocused() instanceof TaskRow row ? row.task.id() : null;
         String focusedShopId = getFocused() instanceof ShopItemRow row ? row.item.id() : null;
@@ -627,6 +630,9 @@ public final class DailyTaskScreen extends Screen {
             out.append("\n").append(Component.translatable(KEY + "shop.tip.reset",
                     LocalDate.ofEpochDay(item.resetDay()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))));
         }
+        if (item.matchLocked()) {
+            out.append("\n").append(Component.translatable(KEY + "shop.tip.in_match"));
+        }
         return out;
     }
 
@@ -648,6 +654,7 @@ public final class DailyTaskScreen extends Screen {
         if (item.owned()) return ShopState.OWNED;
         if (item.limited() && item.used() >= item.limitCount()) return ShopState.SOLD_OUT;
         if (item.id().equals(pendingBuy)) return ShopState.WAIT;
+        if (item.matchLocked()) return ShopState.IN_MATCH;
         if (snapshot == null || snapshot.greenApples() < item.price()) return ShopState.POOR;
         if (item.id().equals(confirmShopId) && nowMillis < confirmUntil) return ShopState.CONFIRM;
         return ShopState.BUY;
@@ -1001,7 +1008,8 @@ public final class DailyTaskScreen extends Screen {
 
     /** 商品按钮的状态；{@code key} 对应 {@code shop.state.*} 文案。 */
     private enum ShopState {
-        BUY("buy"), CONFIRM("confirm"), WAIT("wait"), POOR("poor"), SOLD_OUT("sold_out"), OWNED("owned");
+        BUY("buy"), CONFIRM("confirm"), WAIT("wait"), POOR("poor"), SOLD_OUT("sold_out"), OWNED("owned"),
+        IN_MATCH("in_match");
 
         private final String key;
 
@@ -1266,7 +1274,7 @@ public final class DailyTaskScreen extends Screen {
                 case CONFIRM -> DailyBoardTheme.button(g, font, button, label, DailyBoardTheme.AMBER_DEEP,
                         DailyBoardTheme.AMBER_DEEP, 0xFFFFFFFF, hover);
                 default -> DailyBoardTheme.textCentered(g, font, label, button.cx(), button.cy() - 4,
-                        state == ShopState.POOR ? DailyBoardTheme.WARN
+                        state == ShopState.POOR || state == ShopState.IN_MATCH ? DailyBoardTheme.WARN
                                 : state == ShopState.WAIT ? DailyBoardTheme.BLUE : DailyBoardTheme.MUTED);
             }
         }
