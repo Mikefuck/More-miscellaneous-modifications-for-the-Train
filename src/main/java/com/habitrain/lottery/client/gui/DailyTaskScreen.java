@@ -1020,28 +1020,20 @@ public final class DailyTaskScreen extends Screen {
 
     /** 领取按钮的视觉与文案状态。 */
     private enum ClaimState {
-        READY(DailyBoardTheme.TEAL, DailyBoardTheme.TEAL_SOFT, DailyBoardTheme.TEAL, 0xFFFFFFFF, "\u2726",
-                KEY + "row.claim"),
-        WAIT(DailyBoardTheme.BLUE, DailyBoardTheme.BLUE_SOFT, 0xFFDCE7F6, DailyBoardTheme.BLUE,
-                "\u25C6", KEY + "row.claiming"),
-        DONE(DailyBoardTheme.GREEN, DailyBoardTheme.GREEN_SOFT, 0xFFE4F0E7, DailyBoardTheme.GREEN,
-                "\u2714", KEY + "row.claimed"),
-        BUSY(0xFF778B89, 0xFFF0F5F4, 0xFFF0F5F4, DailyBoardTheme.MUTED, "\u25C7",
-                KEY + "row.in_progress");
+        READY(DailyBoardTheme.TEAL, DailyBoardTheme.TEAL, 0xFFFFFFFF, KEY + "row.claim"),
+        WAIT(DailyBoardTheme.BLUE, 0xFFDCE7F6, DailyBoardTheme.BLUE, KEY + "row.claiming"),
+        DONE(DailyBoardTheme.GREEN, 0xFFE4F0E7, DailyBoardTheme.GREEN, KEY + "row.claimed"),
+        BUSY(0xFF778B89, 0xFFF0F5F4, DailyBoardTheme.MUTED, KEY + "row.in_progress");
 
         private final int accent;
-        private final int soft;
         private final int fill;
         private final int text;
-        private final String glyph;
         private final String labelKey;
 
-        ClaimState(int accent, int soft, int fill, int text, String glyph, String labelKey) {
+        ClaimState(int accent, int fill, int text, String labelKey) {
             this.accent = accent;
-            this.soft = soft;
             this.fill = fill;
             this.text = text;
-            this.glyph = glyph;
             this.labelKey = labelKey;
         }
 

@@ -2,7 +2,6 @@ package com.habitrain.lottery.client.gui;
 
 import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.crate.CrateOutputQuota;
-import com.habitrain.lottery.crate.CrateService;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;

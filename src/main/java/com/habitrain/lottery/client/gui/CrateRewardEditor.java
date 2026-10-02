@@ -25,7 +25,6 @@ import java.util.function.Consumer;
 /** Visual reward strip and a focused editor; persistence remains owned by CrateManageScreen. */
 final class CrateRewardEditor {
     private static final String KEY = "screen.habitrain_lottery.reward_editor.";
-    private static final String MANAGE = "screen.habitrain_lottery.crate_manage.";
     private static final String[] EXTRAS = {"green_apples", "civilian", "neutral", "neutral_for_killer", "killer", "self_select", "limit_break"};
     private static final int PANEL = 0xFF243442, INK = 0xFFE6EDF2, MUTED = 0xFFB1C4D0, ACCENT = 0xFF72CFD7;
     private final CrateManageScreen host;

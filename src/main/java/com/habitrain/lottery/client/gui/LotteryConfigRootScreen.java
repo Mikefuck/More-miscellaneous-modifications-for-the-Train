@@ -13,7 +13,6 @@ import com.habitrain.lottery.client.gui.config.ConfigSectionId;
 import com.habitrain.lottery.client.gui.config.PlayerAssetFilter;
 import com.habitrain.lottery.client.gui.config.PlayerAssetsViewState;
 import com.habitrain.lottery.client.gui.config.PlayerCardScrollLayout;
-import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.network.PlayerAdminModels;
 import com.habitrain.lottery.skin.SkinContentBootstrap;
@@ -83,7 +82,6 @@ public class LotteryConfigRootScreen extends Screen {
     private int lastSeenTitleVersion = -1;
     private int lastSeenCrateConfigVersion = -1;
     private int lastSeenCrateCatalogVersion = -1;
-    private JsonObject crateConfig = new JsonObject();
 
     // titles (catalog + per-player owned)
     private TitleCatalog workingTitleCatalog = new TitleCatalog();
@@ -170,11 +168,6 @@ public class LotteryConfigRootScreen extends Screen {
                 || CrateClientNetwork.STATE.catalogVersion != lastSeenCrateCatalogVersion)) {
             lastSeenCrateConfigVersion = CrateClientNetwork.STATE.configVersion;
             lastSeenCrateCatalogVersion = CrateClientNetwork.STATE.catalogVersion;
-            try {
-                crateConfig = JsonParser.parseString(CrateClientNetwork.STATE.configJson).getAsJsonObject();
-            } catch (RuntimeException ignored) {
-                crateConfig = new JsonObject();
-            }
             rebuildTabContent();
         }
         // status comes from AdminActionResultS2C → lastAdminMessage
@@ -1910,10 +1903,6 @@ public class LotteryConfigRootScreen extends Screen {
     @Override
     public boolean isPauseScreen() {
         return false;
-    }
-
-    private static String nullToEmpty(String s) {
-        return s == null ? "" : s;
     }
 
     private static String shortName(String s, int max) {

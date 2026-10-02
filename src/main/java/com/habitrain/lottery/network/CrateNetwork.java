@@ -2,7 +2,6 @@ package com.habitrain.lottery.network;
 
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.crate.CrateService;
-import com.habitrain.lottery.api.skin.SkinQuality;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -12,7 +11,6 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.util.Map;
 
 /** Network boundary for crate opening and the OP quota editor. */
 public final class CrateNetwork {

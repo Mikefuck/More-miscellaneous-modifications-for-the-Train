@@ -43,7 +43,7 @@ public final class CrateArt {
     // =====================================================================
 
     /** 模型尺寸（MC 像素）：底座高 9、箱盖高 5，铰链在底座顶面后沿 (y=9, z=14)。 */
-    private static final float SIZE = 14, BASE_H = 9, LID_H = 5, HINGE_Y = 9, HINGE_Z = 14;
+    private static final float SIZE = 14, BASE_H = 9, HINGE_Y = 9, HINGE_Z = 14;
     private static final double YAW = Math.toRadians(22), PITCH = Math.toRadians(24);
     private static final float CY = (float) Math.cos(YAW), SY = (float) Math.sin(YAW),
             CP = (float) Math.cos(PITCH), SP = (float) Math.sin(PITCH);

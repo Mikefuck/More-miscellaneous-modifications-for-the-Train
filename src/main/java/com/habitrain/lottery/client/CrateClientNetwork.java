@@ -1,6 +1,7 @@
 package com.habitrain.lottery.client;
 
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.habitrain.lottery.network.CrateNetwork;
 import com.habitrain.lottery.crate.CrateService;
 import net.fabricmc.api.EnvType;
@@ -14,6 +15,7 @@ import java.util.Map;
 @Environment(EnvType.CLIENT)
 public final class CrateClientNetwork {
     private static final Gson GSON = new Gson();
+    private static final java.lang.reflect.Type INVENTORY_TYPE = new TypeToken<Map<String, Double>>() { }.getType();
     private static boolean registered;
     private static CrateNetwork.OpenRequestC2S pendingOpen;
     public static final CrateClientState STATE = new CrateClientState();
@@ -43,7 +45,7 @@ public final class CrateClientNetwork {
                 }));
         ClientPlayNetworking.registerGlobalReceiver(CrateNetwork.InventoryS2C.TYPE, (payload, context) ->
                 context.client().execute(() -> {
-                    try { STATE.inventory = GSON.fromJson(payload.json(), Map.class); }
+                    try { STATE.inventory = GSON.fromJson(payload.json(), INVENTORY_TYPE); }
                     catch (RuntimeException ignored) { STATE.inventory = Map.of(); }
                     STATE.inventoryVersion++;
                     if (Minecraft.getInstance().screen instanceof com.habitrain.lottery.client.gui.CrateOpenScreen screen) screen.refreshFromState();

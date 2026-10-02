@@ -277,11 +277,6 @@ public final class CrateManageScreen extends Screen {
         }, Component.translatable(KEY + "reload"), Component.translatable(KEY + "reload_confirm")));
     }
 
-    private int intValue(String key, int fallback) {
-        try { return Integer.parseInt(value(key, String.valueOf(fallback)).trim()); }
-        catch (RuntimeException error) { return fallback; }
-    }
-
     private static boolean isChoice(String key) {
         return switch (key) {
             case "tier", "enabled", "archived", "reward_mode", "same_skin",
