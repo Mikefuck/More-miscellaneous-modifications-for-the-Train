@@ -20,7 +20,52 @@ repositories {
 
 loom { }
 
+// 启动前服务器更新选择器：两个不依赖 Minecraft 类的嵌套 mod，通过 jar-in-jar 打进本模组。
+// Fabric 按 mod id 字典序构造语言适配器，AutoModpack 在自己的适配器里完成 preload：
+// - a_habitrain_prelaunch（src/prelaunch）排在 automodpack 之前，只关闭它本次启动的自动更新；
+// - habitrain_prelaunch_late（src/prelaunchLate）排在它之后，弹出选择窗口并调用 AutoModpack 完成下载。
+sourceSets {
+    prelaunch
+    prelaunchLate {
+        compileClasspath += prelaunch.output
+    }
+}
+
+[processPrelaunchResources, processPrelaunchLateResources].each { task ->
+    task.configure {
+        def version = project.version
+        inputs.property "version", version
+        filesMatching("fabric.mod.json") {
+            expand "version": version
+        }
+    }
+}
+
+def prelaunchJar = tasks.register("prelaunchJar", Jar) {
+    from(sourceSets.prelaunch.output)
+    archiveBaseName = "habitrain_prelaunch"
+    destinationDirectory = layout.buildDirectory.dir("prelaunch-libs")
+}
+
+def prelaunchLateJar = tasks.register("prelaunchLateJar", Jar) {
+    from(sourceSets.prelaunchLate.output)
+    archiveBaseName = "habitrain_prelaunch_late"
+    destinationDirectory = layout.buildDirectory.dir("prelaunch-libs")
+}
+
+// Loom 的 include 不接受文件依赖，直接交给 remapJar 嵌套（会写入 fabric.mod.json 的 jars）。
+remapJar {
+    nestedJars.from(prelaunchJar, prelaunchLateJar)
+}
+
 dependencies {
+    prelaunchCompileOnly "net.fabricmc:fabric-loader:${project.loader_version}"
+    prelaunchCompileOnly "com.google.code.gson:gson:2.10.1"
+    prelaunchLateCompileOnly "net.fabricmc:fabric-loader:${project.loader_version}"
+    prelaunchLateCompileOnly "com.google.code.gson:gson:2.10.1"
+    // 只用于编译：late 半部分直接调用 AutoModpack 4.0.x 的客户端类（运行时由玩家安装的 AutoModpack 提供）。
+    prelaunchLateCompileOnly files("libs/automodpack-mc1.21.1-fabric-4.0.6.jar")
+
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     mappings loom.officialMojangMappings()
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
@@ -44,6 +89,9 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
     testImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    // 运行时由 stageTestRuntime 单独放入 prelaunch/prelaunchLate 目录，避免目录内容被平铺进 libs。
+    testCompileOnly sourceSets.prelaunch.output
+    testCompileOnly sourceSets.prelaunchLate.output
 }
 
 afterEvaluate {
@@ -66,6 +114,12 @@ tasks.register("stageTestRuntime", Sync) {
     from(sourceSets.main.output) {
         into("main")
     }
+    from(sourceSets.prelaunch.output) {
+        into("prelaunch")
+    }
+    from(sourceSets.prelaunchLate.output) {
+        into("prelaunchLate")
+    }
     from(configurations.testRuntimeClasspath) {
         into("libs")
     }
@@ -81,7 +135,9 @@ tasks.named("test", Test).configure {
     testClassesDirs = files(new File(stagedTestRuntimeDir, "test"))
     classpath = files(
             new File(stagedTestRuntimeDir, "test"),
-            new File(stagedTestRuntimeDir, "main")
+            new File(stagedTestRuntimeDir, "main"),
+            new File(stagedTestRuntimeDir, "prelaunch"),
+            new File(stagedTestRuntimeDir, "prelaunchLate")
     ) + fileTree(new File(stagedTestRuntimeDir, "libs")) {
         include("*.jar")
     }

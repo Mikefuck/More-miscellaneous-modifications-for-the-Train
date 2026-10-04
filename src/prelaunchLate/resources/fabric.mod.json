@@ -1,0 +1,20 @@
+{
+    "schemaVersion": 1,
+    "id": "habitrain_prelaunch_late",
+    "version": "${version}",
+    "name": "哈比列车启动前更新（AutoModpack 之后）",
+    "description": "在 AutoModpack 初始化之后显示服务器选择窗口并驱动整合包下载。mod id 需按字典序排在 automodpack 之后。",
+    "authors": [
+        "HabiTrain"
+    ],
+    "license": "MIT",
+    "environment": "client",
+    "languageAdapters": {
+        "habitrain_prelaunch_late": "com.habitrain.lottery.prelaunch.late.LateLanguageAdapter"
+    },
+    "depends": {
+        "fabricloader": ">=0.18.1",
+        "java": ">=21",
+        "a_habitrain_prelaunch": "*"
+    }
+}

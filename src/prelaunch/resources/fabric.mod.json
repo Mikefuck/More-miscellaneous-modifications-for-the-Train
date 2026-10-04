@@ -1,0 +1,24 @@
+{
+    "schemaVersion": 1,
+    "id": "a_habitrain_prelaunch",
+    "version": "${version}",
+    "name": "哈比列车启动前更新",
+    "description": "游戏启动前从多人游戏列表选择服务器，交由 AutoModpack 同步整合包，或跳过更新。",
+    "authors": [
+        "HabiTrain"
+    ],
+    "license": "MIT",
+    "environment": "client",
+    "languageAdapters": {
+        "habitrain_prelaunch": "com.habitrain.lottery.prelaunch.PrelaunchLanguageAdapter"
+    },
+    "entrypoints": {
+        "preLaunch": [
+            "com.habitrain.lottery.prelaunch.PrelaunchRestore"
+        ]
+    },
+    "depends": {
+        "fabricloader": ">=0.18.1",
+        "java": ">=21"
+    }
+}
