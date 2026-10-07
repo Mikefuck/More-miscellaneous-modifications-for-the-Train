@@ -1124,5 +1124,9 @@
   "screen.habitrain_lottery.daily_shop_admin.error.bad_limit_count": "商品 %s 的限购次数无效（1–9999）",
   "screen.habitrain_lottery.daily_shop_admin.error.bad_limit_days": "商品 %s 的限购周期无效（0–365 天）",
   "screen.habitrain_lottery.daily_shop_admin.error.no_rewards": "商品 %s 没有任何出售内容",
-  "screen.habitrain_lottery.daily_shop_admin.error.too_many_rewards": "商品 %s 的出售内容超过 8 项"
+  "screen.habitrain_lottery.daily_shop_admin.error.too_many_rewards": "商品 %s 的出售内容超过 8 项",
+  "screen.habitrain_lottery.wardrobe.sound.on": "枪声：开",
+  "screen.habitrain_lottery.wardrobe.sound.off": "枪声：关",
+  "screen.habitrain_lottery.wardrobe.sound.hint": "开启此皮肤特有的武器音效。关闭后，所有人听你使用此皮肤开枪都将使用原版声音。按皮肤保存，重新登录后保留。",
+  "screen.habitrain_lottery.wardrobe.sound.save_failed": "枪声设置未能发送，请刷新后重试。"
 }

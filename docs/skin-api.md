@@ -45,6 +45,7 @@ HabiSkinApi.register(definition);
 `SkinItems.bindItem(type, item)` 绑定衣柜预览和世界持握的底物。装备后的物品写入 `habitrain_lottery:skin` 数据组件，内容是规范化的 `type/id`。服务器会在背包变化、登录和重生时校正组件；丢出的物品保留其外观，新的持有者会按解锁状态更新。
 
 扩展可以使用 `SkinEffects` 注册待机动画、投掷物继承和命中特效，详见 [skin-effects-api.md](skin-effects-api.md)。
+扩展还可使用 `SkinSounds` 声明可开关的自定义枪声，并读取射手同步偏好；独立预览上下文也已开放，详见 [skin-sounds-api.md](skin-sounds-api.md)。
 
 ## 玩家状态
 

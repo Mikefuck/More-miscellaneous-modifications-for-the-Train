@@ -562,6 +562,31 @@ public final class PlayerLotteryStore {
         return EquippedCommitResult.committed(canonical, wanted, previous);
     }
 
+    /** Shooter preference; new and pre-feature saves default to custom sounds enabled. */
+    public boolean isCustomSoundEnabled(UUID uuid, String type, String skin) {
+        String entry = SkinTypeKeys.canonical(type) + "/" + normalizeEquippedSkin(skin);
+        return !getOrLoad(uuid).disabledSkinSounds.contains(entry);
+    }
+
+    /** Durable preference change. A failed/deferred write leaves the full player state intact. */
+    public boolean commitCustomSound(UUID uuid, String type, String skin, boolean enabled) {
+        if (uuid == null || !WorldLotteryPaths.ready() || isFlushDeferred() || isLoadFailed(uuid)
+                || !com.habitrain.lottery.api.skin.SkinSounds.supports(type, skin)) return false;
+        PlayerLotteryData current = getOrLoad(uuid);
+        if (isLoadFailed(uuid)) return false;
+        PlayerLotteryData snapshot = current.copy();
+        boolean wasDirty = isDirty(uuid);
+        String entry = SkinTypeKeys.canonical(type) + "/" + normalizeEquippedSkin(skin);
+        update(uuid, data -> {
+            if (enabled) data.disabledSkinSounds.remove(entry); else data.disabledSkinSounds.add(entry);
+        });
+        if (!flush(uuid)) {
+            restoreSnapshot(uuid, snapshot, wasDirty);
+            return false;
+        }
+        return true;
+    }
+
     public static String normalizeEquippedSkin(String skin) {
         if (skin == null || skin.isBlank() || "default".equalsIgnoreCase(skin.trim())) {
             return "default";
@@ -885,6 +910,19 @@ public final class PlayerLotteryStore {
         if (data.equipped == null) {
             data.equipped = new HashMap<>();
         }
+        java.util.Set<String> disabledSounds = new java.util.HashSet<>();
+        if (data.disabledSkinSounds != null) for (String entry : data.disabledSkinSounds) {
+            if (entry == null) continue;
+            String[] parts = entry.split("/", -1);
+            if (parts.length != 2) continue;
+            try {
+                String type = SkinTypeKeys.canonical(parts[0].trim().toLowerCase(java.util.Locale.ROOT));
+                if (!com.habitrain.lottery.api.skin.SkinDefinition.SUPPORTED_TYPES.contains(type)) continue;
+                String id = com.habitrain.lottery.api.skin.SkinDefinition.normalizeSkinId(parts[1]);
+                if (id != null) disabledSounds.add(type + "/" + id);
+            } catch (IllegalArgumentException ignored) { }
+        }
+        data.disabledSkinSounds = disabledSounds;
         data.version = 2;
         data.greenApples = Math.max(0, data.greenApples);
         GrantKeys.normalize(data);

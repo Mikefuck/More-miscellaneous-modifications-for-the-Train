@@ -3,6 +3,7 @@ package com.habitrain.lottery.bridge;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinEffects;
 import com.habitrain.lottery.api.skin.SkinItems;
+import com.habitrain.lottery.api.skin.SkinSounds;
 import com.habitrain.lottery.skin.SkinComponents;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
@@ -29,6 +30,7 @@ public final class InventorySkinApplier {
             String type = SkinItems.typeOf(stack);
             if (type == null) {
                 if (stack.has(SkinComponents.SKIN)) { stack.remove(SkinComponents.SKIN); changed++; }
+                if (stack.has(SkinComponents.CUSTOM_SOUND)) { stack.remove(SkinComponents.CUSTOM_SOUND); changed++; }
                 continue;
             }
             if (onlyType != null && !onlyType.equals(type)) continue;
@@ -43,6 +45,13 @@ public final class InventorySkinApplier {
             String wanted = usable ? type + "/" + skin : null;
             if (!Objects.equals(stack.get(SkinComponents.SKIN), wanted)) {
                 if (wanted == null) stack.remove(SkinComponents.SKIN); else stack.set(SkinComponents.SKIN, wanted);
+                changed++;
+            }
+            Boolean sound = wanted != null && SkinSounds.supports(type, skin)
+                    && !store.isCustomSoundEnabled(player.getUUID(), type, skin) ? Boolean.FALSE : null;
+            if (!Objects.equals(stack.get(SkinComponents.CUSTOM_SOUND), sound)) {
+                if (sound == null) stack.remove(SkinComponents.CUSTOM_SOUND);
+                else stack.set(SkinComponents.CUSTOM_SOUND, sound);
                 changed++;
             }
         }

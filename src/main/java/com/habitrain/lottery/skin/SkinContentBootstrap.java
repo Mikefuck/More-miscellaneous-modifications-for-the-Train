@@ -76,6 +76,7 @@ public final class SkinContentBootstrap {
                 // The effects registries are attributed to the same provider, so a failing
                 // registrar must not leave half of its effects live either.
                 int effectsRolledBack = com.habitrain.lottery.api.skin.SkinEffects.removeProvider(provider);
+                com.habitrain.lottery.api.skin.SkinSounds.removeProvider(provider);
                 skippedProviders.add(provider);
                 HabiLotteryMod.LOGGER.error(
                         "Skin API registrar failed for mod {} — rolled back {} partial registration(s) "

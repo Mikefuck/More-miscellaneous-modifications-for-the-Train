@@ -1124,5 +1124,9 @@
   "screen.habitrain_lottery.daily_shop_admin.error.bad_limit_count": "Item %s has an invalid limit count (1–9999)",
   "screen.habitrain_lottery.daily_shop_admin.error.bad_limit_days": "Item %s has an invalid window (0–365 days)",
   "screen.habitrain_lottery.daily_shop_admin.error.no_rewards": "Item %s has no goods",
-  "screen.habitrain_lottery.daily_shop_admin.error.too_many_rewards": "Item %s has more than 8 lines of goods"
+  "screen.habitrain_lottery.daily_shop_admin.error.too_many_rewards": "Item %s has more than 8 lines of goods",
+  "screen.habitrain_lottery.wardrobe.sound.on": "SFX: ON",
+  "screen.habitrain_lottery.wardrobe.sound.off": "SFX: OFF",
+  "screen.habitrain_lottery.wardrobe.sound.hint": "Enable this skin's custom weapon sounds. When disabled, everyone hears your shots with this skin using the original sounds. Saved per skin and retained after reconnecting.",
+  "screen.habitrain_lottery.wardrobe.sound.save_failed": "Could not send sound preference. Refresh and try again."
 }

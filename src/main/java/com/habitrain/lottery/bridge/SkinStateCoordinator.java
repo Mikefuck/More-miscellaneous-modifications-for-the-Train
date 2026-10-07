@@ -59,6 +59,7 @@ public final class SkinStateCoordinator {
             hash = hash * 31 + Objects.hashCode(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()));
             hash = hash * 31 + stack.getCount();
             hash = hash * 31 + Objects.hashCode(stack.get(com.habitrain.lottery.skin.SkinComponents.SKIN));
+            hash = hash * 31 + Objects.hashCode(stack.get(com.habitrain.lottery.skin.SkinComponents.CUSTOM_SOUND));
         }
         return hash;
     }

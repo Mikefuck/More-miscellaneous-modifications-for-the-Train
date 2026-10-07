@@ -204,6 +204,40 @@ public final class HabiSkinPlayerApi {
         return equip(uuid, type, DEFAULT_SKIN);
     }
 
+    /** Reads this shooter's saved preference for a sound-capable skin. Server thread only. */
+    public static boolean isCustomSoundEnabled(UUID uuid, String type, String skin) {
+        return uuid != null && com.habitrain.lottery.api.skin.SkinSounds.supports(type, skin)
+                && PlayerLotteryStore.get().isCustomSoundEnabled(uuid, type, skin);
+    }
+
+    /**
+     * Saves a per-skin shooter preference, including for a skin the player is only browsing.
+     * Online inventory/equipment and the wardrobe are synchronized only after durable storage.
+     */
+    public static HabiAssetResult setCustomSoundEnabled(UUID uuid, String type, String skin, boolean enabled) {
+        if (uuid == null) return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
+        if (!WorldLotteryPaths.ready()) return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        var definition = HabiSkinApi.find(type, skin);
+        if (definition.isEmpty()) return HabiAssetResult.fail(HabiFailure.UNKNOWN_SKIN);
+        if (!com.habitrain.lottery.api.skin.SkinSounds.supports(type, skin))
+            return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
+        var store = PlayerLotteryStore.get();
+        if (store.isLoadFailed(uuid)) return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
+        String canonical = definition.get().type(), id = definition.get().id();
+        if (!store.commitCustomSound(uuid, canonical, id, enabled))
+            return HabiAssetResult.fail(store.isLoadFailed(uuid) ? HabiFailure.CORRUPT_STORAGE : HabiFailure.WRITE_FAILED);
+        ServerPlayer online = HabiLotteryApi.online(uuid);
+        if (online != null) {
+            com.habitrain.lottery.bridge.InventorySkinApplier.applyAllEquipped(online, null);
+            com.habitrain.lottery.skin.SkinNetwork.syncSounds(online);
+        }
+        return HabiAssetResult.success();
+    }
+
+    public static HabiAssetResult setCustomSoundEnabled(ServerPlayer player, String type, String skin, boolean enabled) {
+        return setCustomSoundEnabled(player == null ? null : player.getUUID(), type, skin, enabled);
+    }
+
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------

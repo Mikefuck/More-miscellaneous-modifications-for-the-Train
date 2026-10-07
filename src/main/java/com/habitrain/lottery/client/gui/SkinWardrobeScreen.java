@@ -3,6 +3,9 @@ package com.habitrain.lottery.client.gui;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinItems;
 import com.habitrain.lottery.api.skin.SkinQuality;
+import com.habitrain.lottery.api.skin.SkinSounds;
+import com.habitrain.lottery.api.skin.client.SkinPreviewContext;
+import com.habitrain.lottery.api.skin.client.SkinSoundPreferences;
 import com.habitrain.lottery.client.SkinClient;
 import com.habitrain.lottery.client.WardrobeExtras;
 import com.habitrain.lottery.skin.SkinNetwork;
@@ -34,18 +37,22 @@ public final class SkinWardrobeScreen extends Screen {
     /** Drag sensitivities per pixel; pitch is clamped so the model never flips over. */
     private static final float YAW_SENSITIVITY = 0.03F, PITCH_SENSITIVITY = 0.02F, PITCH_LIMIT = 1.4F;
     private final Screen parent;
+    private final SkinPreviewContext.Session previewSession = new SkinPreviewContext.Session();
     private final List<TileButton> cards = new ArrayList<>();
     private final List<ActionButton> tabs = new ArrayList<>();
     private List<Entry> catalog = List.of(), visible = List.of();
     private WardrobeLayout layout;
     private EditBox search;
-    private ActionButton equip, previous, next, filterButton, sortButton, hats, reload, view;
+    private ActionButton equip, previous, next, filterButton, sortButton, hats, reload, view, sound;
     private int typeIndex, page, filter;
     private boolean sortByName, received, initialized;
     /** The third-person model is the default preview; 2D keeps the flat skin icon. */
     private boolean view3d = true, dragging;
     private float previewYaw, previewPitch;
     private String query = "", selected = "default", pendingType, pendingId;
+    private String pendingSoundType, pendingSoundId;
+    private boolean pendingSoundEnabled;
+    private long pendingSoundAt;
     private String titleEquipped = "";
     private List<String> knownTitles = List.of();
     private long requestAt, pendingAt;
@@ -124,6 +131,18 @@ public final class SkinWardrobeScreen extends Screen {
         });
         equip = action(layout.detailX() + 8, layout.gridY() + layout.contentHeight() - 28,
                 layout.detailWidth() - 16, text("equip"), b -> equipSelected());
+        sound = action(layout.detailX() + 8, equip.getY(), layout.detailWidth() - 16,
+                text("sound.on"), b -> {
+                    Entry entry = selectedEntry();
+                    if (!sound.active || entry == null) return;
+                    boolean enabled = !SkinSoundPreferences.isEnabled(type(), entry.id());
+                    if (SkinSoundPreferences.requestEnabled(type(), entry.id(), enabled)) {
+                        pendingSoundType = type(); pendingSoundId = entry.id(); pendingSoundEnabled = enabled;
+                        pendingSoundAt = Util.getMillis(); notice = text("saving");
+                    } else notice = text("sound.save_failed");
+                    updateControls();
+                });
+        sound.setTooltip(Tooltip.create(text("sound.hint")));
         view = action(layout.detailX() + layout.detailWidth() - 52,
                 layout.gridY() + layout.contentHeight() - 48, 44, text("view.3d"), b -> {
                     view3d = !view3d; updateControls();
@@ -151,7 +170,7 @@ public final class SkinWardrobeScreen extends Screen {
         return addRenderableWidget(new ActionButton(x, y, w, 20, label, press));
     }
     private void requestCatalog() {
-        if (pendingId != null) return;
+        if (pendingId != null || pendingSoundId != null) return;
         received = false; attempts = 0; notice = text("loading"); sendRefresh();
         if (layout != null && equip != null) refreshCatalog();
     }
@@ -171,8 +190,17 @@ public final class SkinWardrobeScreen extends Screen {
                     : SkinClient.entries().stream().anyMatch(e -> e.type().equals(pendingType)
                             && e.id().equals(pendingId) && e.equipped());
             notice = text(applied ? "saved" : "unchanged"); pendingId = null;
-        } else if (pendingId == null) notice = text("hint");
+        } else if (pendingId == null && pendingSoundId == null) notice = text("hint");
         if (layout != null) refreshCatalog();
+    }
+
+    /** Sound controls change only after a server-confirmed preference snapshot. */
+    public void refreshSounds() {
+        if (pendingSoundId != null) {
+            boolean applied = SkinSoundPreferences.isEnabled(pendingSoundType, pendingSoundId) == pendingSoundEnabled;
+            notice = text(applied ? "saved" : "unchanged"); pendingSoundId = null;
+        }
+        if (layout != null) updateControls();
     }
 
     private void refreshCatalog() {
@@ -247,12 +275,24 @@ public final class SkinWardrobeScreen extends Screen {
     private void updateControls() {
         Entry entry = selectedEntry();
         boolean connected = titles() ? WardrobeExtras.canEquipTitle() : received && ClientPlayNetworking.canSend(SkinNetwork.Request.TYPE);
-        equip.active = pendingId == null && connected && entry != null && entry.owned() && entry.available() && !entry.equipped();
+        equip.active = pendingId == null && pendingSoundId == null && connected
+                && entry != null && entry.owned() && entry.available() && !entry.equipped();
         equip.setMessage(pendingId != null ? text("saving") : entry == null ? text("select")
                 : entry.equipped() ? text("equipped") : !entry.owned() ? text("locked")
                 : !entry.available() ? text("missing") : "default".equals(entry.id()) ? text("restore") : text("equip"));
+        sound.visible = entry != null && !titles() && SkinSounds.supports(type(), entry.id());
+        sound.active = sound.visible && pendingId == null && pendingSoundId == null
+                && SkinClient.soundPreferencesReady() && ClientPlayNetworking.canSend(SkinNetwork.SoundRequest.TYPE);
+        int actionWidth = layout.detailWidth() - 16;
+        equip.setWidth(sound.visible ? (actionWidth - 4) / 2 : actionWidth);
+        if (sound.visible) {
+            sound.setX(equip.getX() + equip.getWidth() + 4);
+            sound.setWidth(actionWidth - equip.getWidth() - 4);
+            sound.chosen = SkinSoundPreferences.isEnabled(type(), entry.id());
+            sound.setMessage(text(pendingSoundId != null ? "saving" : sound.chosen ? "sound.on" : "sound.off"));
+        }
         previous.active = page > 0; next.active = page < pages() - 1;
-        reload.active = pendingId == null && (received || Util.getMillis() - requestAt > 1200);
+        reload.active = pendingId == null && pendingSoundId == null && (received || Util.getMillis() - requestAt > 1200);
         filterButton.setMessage(text("filter." + filter));
         sortButton.setMessage(text(sortByName ? "sort.name" : "sort.owned"));
         hats.visible = "hat".equals(type()); hats.setMessage(text("hats." + WardrobeExtras.hatMode()));
@@ -288,6 +328,11 @@ public final class SkinWardrobeScreen extends Screen {
         if (pendingId != null && now - pendingAt > 5000) {
             pendingId = null; notice = text("save_timeout");
             // Fetch actual state, never repeat a mutation after an ambiguous timeout.
+            if (ClientPlayNetworking.canSend(SkinNetwork.Request.TYPE))
+                ClientPlayNetworking.send(new SkinNetwork.Request("", "refresh"));
+        }
+        if (pendingSoundId != null && now - pendingSoundAt > 5000) {
+            pendingSoundId = null; notice = text("save_timeout");
             if (ClientPlayNetworking.canSend(SkinNetwork.Request.TYPE))
                 ClientPlayNetworking.send(new SkinNetwork.Request("", "refresh"));
         }
@@ -388,8 +433,10 @@ public final class SkinWardrobeScreen extends Screen {
         g.fill(x + 12, artBottom + 1, x + w - 12, artBottom + 2, LINE);
         if (model3d()) {
             // Other players see the real stack in third person, so preview exactly that.
-            PlayerPreview.render(g, x + 4, artTop, x + w - 4, artBottom, previewYaw, previewPitch,
-                    handStack(entry), headStack(entry), "hat".equals(type()));
+            final int previewTop = artTop, previewBottom = artBottom;
+            previewSession.render(minecraft.player, type() + "/" + entry.id(), () ->
+                    PlayerPreview.render(g, x + 4, previewTop, x + w - 4, previewBottom, previewYaw, previewPitch,
+                            handStack(entry), headStack(entry), "hat".equals(type())));
         } else {
             int size = Math.max(16, Math.min(w - 32, artBottom - artTop - 4));
             g.enableScissor(x + 4, artTop, x + w - 4, artBottom);

@@ -24,6 +24,8 @@ public final class PlayerLotteryData {
     public java.util.Set<String> crateOpenHistory = new java.util.HashSet<>();
     public long inventoryRevision;
     public Map<String, String> equipped = new HashMap<>();
+    /** Canonical type/id entries for which this shooter uses the original weapon sounds. */
+    public Set<String> disabledSkinSounds = new HashSet<>();
     /** Durable grant keys (insertion-order LRU, cap {@link #RECENT_GRANTS_CAP}). */
     public Set<String> recentGrants = new RecentGrants();
 
@@ -84,6 +86,7 @@ public final class PlayerLotteryData {
         if (crateOpenHistory != null) c.crateOpenHistory.addAll(crateOpenHistory);
         c.inventoryRevision = inventoryRevision;
         c.equipped.putAll(equipped);
+        if (disabledSkinSounds != null) c.disabledSkinSounds.addAll(disabledSkinSounds);
         c.recentGrants = new RecentGrants(recentGrants);
         c.lastLoginEpochDay = lastLoginEpochDay;
         c.consecutiveLoginDays = consecutiveLoginDays;

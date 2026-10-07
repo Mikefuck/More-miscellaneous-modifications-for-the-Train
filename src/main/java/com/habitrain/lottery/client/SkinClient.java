@@ -24,8 +24,12 @@ import java.util.Set;
 public final class SkinClient {
     private static final Logger LOGGER = LoggerFactory.getLogger("habitrain_lottery_skins");
     private static List<SkinNetwork.Entry> entries = List.of();
+    private static java.util.Map<String, Boolean> soundPreferences = java.util.Map.of();
+    private static boolean soundPreferencesReady;
     private SkinClient() {}
     public static List<SkinNetwork.Entry> entries() { return entries; }
+    public static boolean customSoundEnabled(String entry) { return soundPreferences.getOrDefault(entry, true); }
+    public static boolean soundPreferencesReady() { return soundPreferencesReady; }
     public static void register() {
         ModelLoadingPlugin.register(ctx -> {
             // One registration per distinct id; the catalogue is de-duplicated here
@@ -46,7 +50,16 @@ public final class SkinClient {
             SkinAnimationModels.invalidate();
             warnAboutMissingModels();
         });
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> entries = List.of());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            entries = List.of(); soundPreferences = java.util.Map.of(); soundPreferencesReady = false;
+        });
+        ClientPlayNetworking.registerGlobalReceiver(SkinNetwork.SoundSnapshot.TYPE, (p, ctx) -> ctx.client().execute(() -> {
+            java.util.Map<String, Boolean> preferences = new java.util.HashMap<>();
+            for (var entry : p.entries()) preferences.put(entry.type() + "/" + entry.id(), entry.enabled());
+            soundPreferences = java.util.Map.copyOf(preferences);
+            soundPreferencesReady = true;
+            if (ctx.client().screen instanceof SkinWardrobeScreen screen) screen.refreshSounds();
+        }));
         ClientPlayNetworking.registerGlobalReceiver(SkinNetwork.Snapshot.TYPE, (p, ctx) -> ctx.client().execute(() -> {
             entries = p.entries();
             if (ctx.client().screen instanceof SkinWardrobeScreen screen) screen.refresh();

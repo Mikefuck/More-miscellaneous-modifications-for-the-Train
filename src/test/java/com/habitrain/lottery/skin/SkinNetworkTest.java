@@ -12,6 +12,31 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SkinNetworkTest {
+    @Test void soundPacketsPreservePerSkinChoices() {
+        var b = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+        try {
+            var request = new SkinNetwork.SoundRequest("revolver", "usp_s", false);
+            SkinNetwork.SoundRequest.CODEC.encode(b, request);
+            assertEquals(request, SkinNetwork.SoundRequest.CODEC.decode(b));
+            var snapshot = new SkinNetwork.SoundSnapshot(java.util.List.of(
+                    new SkinNetwork.SoundEntry("revolver", "usp_s", false),
+                    new SkinNetwork.SoundEntry("revolver", "printstream", true)));
+            SkinNetwork.SoundSnapshot.CODEC.encode(b, snapshot);
+            assertEquals(snapshot, SkinNetwork.SoundSnapshot.CODEC.decode(b));
+            assertFalse(b.isReadable());
+        } finally { b.release(); }
+    }
+
+    @Test void soundSnapshotRejectsInvalidEntryCounts() {
+        for (int count : new int[]{-1, SkinNetwork.MAX_ENTRIES + 1}) {
+            var b = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+            try {
+                b.writeVarInt(count);
+                assertThrows(DecoderException.class, () -> SkinNetwork.SoundSnapshot.CODEC.decode(b));
+            } finally { b.release(); }
+        }
+    }
+
     @Test void snapshotPreservesAllQualitiesAndOwnership() {
         var entries = Arrays.stream(SkinQuality.values())
                 .map(q -> new SkinNetwork.Entry("knife", q.id(), q != SkinQuality.BLUE, q == SkinQuality.RED, q)).toList();
