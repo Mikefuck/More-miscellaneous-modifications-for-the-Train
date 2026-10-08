@@ -17,7 +17,7 @@ import java.util.Map;
 public final class SkinItems {
     private static final java.util.List<String> TYPES = SkinDefinition.SUPPORTED_TYPES.stream().sorted().toList();
     /**
-     * The five {@code habitrain_lottery:skin_items/<type>} tags, created once. They were
+     * The {@code habitrain_lottery:skin_items/<type>} tags, created once. They were
      * rebuilt per inventory slot per tick by the server-side skin mirror, i.e. 5
      * {@link TagKey#create} calls per slot per player per tick.
      */
@@ -32,7 +32,8 @@ public final class SkinItems {
             "revolver", List.of("minecraft:crossbow"),
             "bat", List.of("minecraft:stick"),
             "grenade", List.of("minecraft:snowball"),
-            "hat", List.of("minecraft:leather_helmet"));
+            "hat", List.of("minecraft:leather_helmet"),
+            "back", List.of("minecraft:elytra"));
     private SkinItems() {}
 
     private static Map<String, TagKey<Item>> buildTypeTags() {

@@ -1,6 +1,7 @@
 package com.habitrain.lottery.client.gui;
 
 import com.habitrain.lottery.api.skin.HabiSkinApi;
+import com.habitrain.lottery.api.skin.SkinCardText;
 import com.habitrain.lottery.api.skin.SkinItems;
 import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.api.skin.SkinSounds;
@@ -16,6 +17,8 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.FormattedText;
+import net.minecraft.locale.Language;
 import net.minecraft.Util;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
@@ -26,10 +29,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /** Independent wardrobe. Browsing is local; equipped state only comes from the server. */
 public final class SkinWardrobeScreen extends Screen {
-    private static final String[] TYPES = {"knife", "revolver", "bat", "grenade", "hat", "title"};
+    private static final String[] TYPES = {"knife", "revolver", "bat", "grenade", "hat", "back", "title"};
     // Midnight carriage enamel, brass fittings, pale labels and mint status lights.
     private static final int BACK = 0xFF101D2A, PANEL = 0xFF1B2D3D, TILE = 0xFF223849;
     private static final int LINE = 0xFF415A6B, INK = 0xFFE8F1EE, MUTED = 0xFFA4B8C3;
@@ -110,11 +114,14 @@ public final class SkinWardrobeScreen extends Screen {
         layout = WardrobeLayout.of(width, height);
         cards.clear(); tabs.clear();
         int x = layout.x() + 10, w = layout.width() - 20;
-        int tabW = (w - 5 * 4) / 6;
+        int tabW = (w - (TYPES.length - 1) * 4) / TYPES.length;
         for (int i = 0; i < TYPES.length; i++) {
             final int index = i;
             tabs.add(action(x + i * (tabW + 4), layout.y() + 34, tabW, category(TYPES[i]), b -> {
                 typeIndex = index; page = 0; selected = "default"; refreshCatalog();
+                // Start at the rear when entering back cosmetics; dragging still rotates freely.
+                previewYaw = "back".equals(type()) ? 9.0F : 0.0F;
+                previewPitch = 0.0F;
             }));
         }
         // Keep this widget alive while typing: rebuilding the screen loses the cursor/focus.
@@ -243,14 +250,20 @@ public final class SkinWardrobeScreen extends Screen {
         buildCards(); updateControls();
     }
     private ItemStack defaultIcon() {
-        return titles() ? new ItemStack(Items.NAME_TAG) : SkinItems.defaultStack(type());
+        return switch (type()) {
+            case "title" -> new ItemStack(Items.NAME_TAG);
+            case "back" -> new ItemStack(Items.BARRIER);
+            default -> SkinItems.defaultStack(type());
+        };
     }
     /** Stack shown on the model: the type's real item, carrying the selected skin component. */
     private ItemStack previewStack(Entry entry) {
         if (entry == null || "default".equals(entry.id())) return SkinItems.defaultStack(type());
         return SkinItems.styled(type(), entry.id());
     }
-    private ItemStack handStack(Entry entry) { return "hat".equals(type()) ? ItemStack.EMPTY : previewStack(entry); }
+    private ItemStack handStack(Entry entry) {
+        return "hat".equals(type()) || "back".equals(type()) ? ItemStack.EMPTY : previewStack(entry);
+    }
     private ItemStack headStack(Entry entry) { return "hat".equals(type()) ? previewStack(entry) : ItemStack.EMPTY; }
     private boolean model3d() { return view3d && !titles() && PlayerPreview.available(); }
     private int pages() { return Math.max(1, (visible.size() + layout.pageSize() - 1) / layout.pageSize()); }
@@ -475,7 +488,10 @@ public final class SkinWardrobeScreen extends Screen {
         }
     }
     private final class TileButton extends ActionButton {
+        private static final float CARD_TEXT_SCALE = 0.75F;
         private final Entry entry;
+        private final Component baseTooltip, baseNarration;
+        private Component cardText;
         TileButton(int x, int y, Entry entry) {
             super(x, y, layout.cardWidth(), layout.cardHeight(), entry.name().copy().append(" · ").append(state(entry))
                             .append(entry.quality() == null ? Component.empty() : Component.literal(" · ").append(SkinQualityStyle.label(entry.quality()))),
@@ -487,10 +503,22 @@ public final class SkinWardrobeScreen extends Screen {
                 Component description = legacySkinDescription(type(), entry.id());
                 if (!description.getString().isEmpty()) tooltip = tooltip.copy().append("\n").append(description);
             }
-            setTooltip(Tooltip.create(tooltip
-                    .copy().append(entry.available() ? Component.empty() : text("missing_hint"))));
+            baseTooltip = tooltip.copy().append(entry.available() ? Component.empty() : text("missing_hint"));
+            baseNarration = getMessage().copy();
+            setTooltip(Tooltip.create(baseTooltip));
+            refreshCardText();
+        }
+        private void refreshCardText() {
+            Component latest = SkinCardText.find(type(), entry.id()).orElse(null);
+            if (Objects.equals(cardText, latest)) return;
+            cardText = latest;
+            setTooltip(Tooltip.create(latest == null ? baseTooltip
+                    : baseTooltip.copy().append("\n").append(latest)));
+            setMessage(latest == null ? baseNarration
+                    : baseNarration.copy().append(" · ").append(latest));
         }
         @Override protected void renderWidget(GuiGraphics g, int mouseX, int mouseY, float delta) {
+            refreshCardText();
             int x = getX(), y = getY(), w = getWidth(), h = getHeight();
             boolean picked = selected.equals(entry.id());
             if (entry.quality() == null) g.fill(x, y, x + w, y + h, picked ? 0xFF304957 : TILE);
@@ -502,7 +530,33 @@ public final class SkinWardrobeScreen extends Screen {
             g.enableScissor(x + 4, y + 2, x + w - 4, y + h - 29);
             drawIcon(g, entry, x + w / 2, y + (h - 28) / 2, size); g.disableScissor();
             clippedText(g, entry.name(), x + 7, y + h - 26, w - 14, entry.owned() ? INK : MUTED);
-            clippedText(g, state(entry), x + 7, y + h - 13, w - 14, entry.equipped() ? MINT : MUTED);
+            Component status = state(entry);
+            int statusWidth = w - 14;
+            if (cardText != null) {
+                // Preserve room for the ownership/equipment status even on the smallest cards.
+                statusWidth = Math.min(font.width(status), Math.max(1, (w - 18) / 2));
+                int textWidth = w - 18 - statusWidth;
+                renderCardText(g, x + w - 7, y + h - 13, textWidth);
+            }
+            clippedText(g, status, x + 7, y + h - 13, statusWidth, entry.equipped() ? MINT : MUTED);
+        }
+        private void renderCardText(GuiGraphics g, int right, int top, int maxWidth) {
+            if (maxWidth <= 0) return;
+            int unscaledWidth = (int) Math.floor(maxWidth / CARD_TEXT_SCALE);
+            FormattedText display = cardText;
+            if (font.width(display) > unscaledWidth) {
+                Component ellipsis = Component.literal("…").setStyle(cardText.getStyle());
+                if (font.width(ellipsis) > unscaledWidth) return;
+                display = FormattedText.composite(font.substrByWidth(cardText,
+                        Math.max(0, unscaledWidth - font.width(ellipsis))), ellipsis);
+            }
+            g.pose().pushPose();
+            try {
+                g.pose().translate(right - font.width(display) * CARD_TEXT_SCALE,
+                        top + font.lineHeight * (1 - CARD_TEXT_SCALE), 0);
+                g.pose().scale(CARD_TEXT_SCALE, CARD_TEXT_SCALE, 1);
+                g.drawString(font, Language.getInstance().getVisualOrder(display), 0, 0, INK, false);
+            } finally { g.pose().popPose(); }
         }
     }
     @Override public boolean isPauseScreen() { return false; }

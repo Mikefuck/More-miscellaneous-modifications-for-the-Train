@@ -1,0 +1,9 @@
+// Real wardrobe, back layer and server packets; isolated test world and test-only assets.
+apply from: new File(gradle.startParameter.currentDir, 'tools/warehouse-smoke.gradle')
+allprojects {
+    afterEvaluate {
+        sourceSets.smoke.java.setSrcDirs(['tools/back-smoke/java'])
+        sourceSets.smoke.resources.setSrcDirs(['tools/back-smoke/resources'])
+        loom.runs.client.runDir 'build/back-client-run'
+    }
+}

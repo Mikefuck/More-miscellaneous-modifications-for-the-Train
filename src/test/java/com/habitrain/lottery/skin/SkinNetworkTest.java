@@ -12,6 +12,23 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SkinNetworkTest {
+    @Test void backAppearancePacketsIdentifyOwnersAndClearTheCosmetic() {
+        var owner = java.util.UUID.randomUUID();
+        var b = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+        try {
+            for (String skin : new String[]{"travel_pack", ""}) {
+                var appearance = new BackSkinNetwork.Appearance(owner, skin);
+                BackSkinNetwork.Appearance.CODEC.encode(b, appearance);
+                assertEquals(appearance, BackSkinNetwork.Appearance.CODEC.decode(b));
+            }
+            var entry = new SkinNetwork.Entry("back", "travel_pack", true, true, SkinQuality.RED);
+            var catalog = new SkinNetwork.Snapshot(false, java.util.List.of(entry));
+            SkinNetwork.Snapshot.CODEC.encode(b, catalog);
+            assertEquals(catalog, SkinNetwork.Snapshot.CODEC.decode(b));
+            assertFalse(b.isReadable());
+        } finally { b.release(); }
+    }
+
     @Test void soundPacketsPreservePerSkinChoices() {
         var b = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
         try {

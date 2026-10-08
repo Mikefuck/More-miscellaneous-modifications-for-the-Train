@@ -1,0 +1,10 @@
+// Usage: .\gradlew.bat -I tools\card-text-smoke.gradle runClient --no-daemon --gradle-user-home ../.gradle-user-home
+// Fixture classes and assets only enter this isolated verification client.
+apply from: new File(gradle.startParameter.currentDir, 'tools/warehouse-smoke.gradle')
+allprojects {
+    afterEvaluate {
+        sourceSets.smoke.java.setSrcDirs(['tools/card-text-smoke/java'])
+        sourceSets.smoke.resources.setSrcDirs(['tools/card-text-smoke/resources'])
+        loom.runs.client.runDir 'build/card-text-client-run'
+    }
+}

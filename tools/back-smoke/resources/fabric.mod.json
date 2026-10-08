@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "habitrain_back_smoke",
+  "version": "1.0.0",
+  "name": "Back skin smoke test",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.habitrain.lottery.test.BackSmoke"],
+    "habitrain_lottery_skins": ["com.habitrain.lottery.test.BackSmoke"]
+  }
+}

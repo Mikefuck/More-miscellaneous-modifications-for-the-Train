@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "habitrain_card_text_smoke",
+  "version": "1.0.0",
+  "name": "Skin card text GUI verification",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.habitrain.lottery.test.CardTextSmoke"],
+    "habitrain_lottery_skins": ["com.habitrain.lottery.test.CardTextSmoke"]
+  },
+  "custom": {
+    "habitrain_lottery:skin_api": {"version": 3}
+  }
+}

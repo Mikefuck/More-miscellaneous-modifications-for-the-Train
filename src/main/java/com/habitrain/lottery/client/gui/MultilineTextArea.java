@@ -29,6 +29,8 @@ public class MultilineTextArea extends AbstractWidget {
     public MultilineTextArea(Font font, int x, int y, int w, int h) {
         super(x, y, w, h, Component.literal("textarea"));
         this.font = font;
+        // A fresh empty field still needs one line before its first click or key event.
+        reflow();
     }
 
     public void setMaxLength(int maxLength) {

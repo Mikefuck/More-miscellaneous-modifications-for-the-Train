@@ -46,6 +46,7 @@ public final class PlayerPreview {
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null || x2 - x1 <= 8 || y2 - y1 <= 8) return;
         float prevBody = player.yBodyRot, prevYaw = player.getYRot(), prevPitch = player.getXRot();
+        float prevBodyO = player.yBodyRotO, prevYawO = player.yRotO, prevPitchO = player.xRotO;
         float prevHeadO = player.yHeadRotO, prevHead = player.yHeadRot;
         ItemStack prevMain = player.getMainHandItem().copy();
         ItemStack prevHeadStack = player.getItemBySlot(EquipmentSlot.HEAD).copy();
@@ -65,8 +66,14 @@ public final class PlayerPreview {
             Quaternionf camera = new Quaternionf().rotateX(pitch * 20.0F * DEG);
             rotation.mul(camera);
             player.yBodyRot = 180.0F + yaw * 20.0F;
-            player.setYRot(180.0F + yaw * 40.0F);
+            // Head and torso must rotate together, including previous-tick values.
+            // Otherwise a rear preview leaves the head facing forward and body rotation
+            // depends on render interpolation rather than the selected angle.
+            player.yBodyRotO = player.yBodyRot;
+            player.setYRot(player.yBodyRot);
+            player.yRotO = player.getYRot();
             player.setXRot(-pitch * 20.0F);
+            player.xRotO = player.getXRot();
             player.yHeadRot = player.getYRot();
             player.yHeadRotO = player.getYRot();
             Vector3f translate = new Vector3f(0.0F,
@@ -80,8 +87,11 @@ public final class PlayerPreview {
             player.setItemSlot(EquipmentSlot.MAINHAND, prevMain);
             player.setItemSlot(EquipmentSlot.HEAD, prevHeadStack);
             player.yBodyRot = prevBody;
+            player.yBodyRotO = prevBodyO;
             player.setYRot(prevYaw);
+            player.yRotO = prevYawO;
             player.setXRot(prevPitch);
+            player.xRotO = prevPitchO;
             player.yHeadRotO = prevHeadO;
             player.yHeadRot = prevHead;
         }

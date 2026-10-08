@@ -50,6 +50,7 @@ public final class HabiLotteryMod implements ModInitializer {
         SkinContentBootstrap.registerAll();
         com.habitrain.lottery.skin.SkinComponents.register();
         com.habitrain.lottery.skin.SkinNetwork.register();
+        com.habitrain.lottery.skin.BackSkinNetwork.register();
         LotteryNetwork.registerServer();
         com.habitrain.lottery.network.CrateNetwork.register();
         com.habitrain.lottery.network.DailyTaskAdminNetwork.register();

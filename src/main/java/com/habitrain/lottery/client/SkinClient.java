@@ -112,7 +112,7 @@ public final class SkinClient {
     public static boolean hasModel(String type, String id) {
         return HabiSkinApi.find(type, id)
                 .map(definition -> bakedModel(definition.model()) != null
-                        || bakedModel(definition.model(true)) != null)
+                        || (!"back".equals(definition.type()) && bakedModel(definition.model(true)) != null))
                 .orElse(false);
     }
 

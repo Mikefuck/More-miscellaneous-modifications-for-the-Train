@@ -15,7 +15,7 @@ public record SkinDefinition(
         ResourceLocation model,
         SkinQuality quality) {
 
-    public static final Set<String> SUPPORTED_TYPES = Set.of("knife", "revolver", "bat", "grenade", "hat");
+    public static final Set<String> SUPPORTED_TYPES = Set.of("knife", "revolver", "bat", "grenade", "hat", "back");
     /** Namespace used when a definition does not pin an explicit model. */
     public static final String DEFAULT_MODEL_NAMESPACE = "habitrain_lottery";
     /** Namespace v1 of this API used for the same default model; kept for migration only. */

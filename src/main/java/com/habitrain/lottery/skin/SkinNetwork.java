@@ -166,6 +166,7 @@ public final class SkinNetwork {
         var store = PlayerLotteryStore.get();
         if (!store.isTakeoverActive() || store.isLoadFailed(player.getUUID())) return;
         syncSounds(player);
+        BackSkinNetwork.sync(player);
         List<Entry> entries = new ArrayList<>();
         for (var skin : HabiSkinApi.registrations()) {
             entries.add(new Entry(skin.type(), skin.id(), store.isSkinUnlocked(player.getUUID(), skin.type(), skin.id()),

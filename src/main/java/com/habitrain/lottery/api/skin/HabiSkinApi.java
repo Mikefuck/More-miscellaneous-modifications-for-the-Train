@@ -104,6 +104,7 @@ public final class HabiSkinApi {
             String key = key(normalizedType, normalizedId);
             PROVIDERS.remove(key);
             SkinSounds.removeEntry(key);
+            SkinCardText.removeEntry(key);
             return DEFINITIONS.remove(key) != null;
         } catch (IllegalArgumentException ignored) {
             return false;
@@ -125,7 +126,9 @@ public final class HabiSkinApi {
             PROVIDERS.remove(key);
             DEFINITIONS.remove(key);
             SkinSounds.removeEntry(key);
+            SkinCardText.removeEntry(key);
         }
+        SkinCardText.removeProvider(providerId);
         return owned.size();
     }
 
