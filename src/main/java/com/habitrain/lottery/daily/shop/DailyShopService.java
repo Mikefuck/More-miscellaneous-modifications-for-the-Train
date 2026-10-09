@@ -22,6 +22,8 @@ import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.random.RandomGenerator;
 
 /**
  * Server authority for {@code config/daily_shop.json} and for purchases made on the daily terminal.
@@ -179,7 +181,7 @@ public final class DailyShopService {
                 titles.add(reward.id);
                 continue;
             }
-            MailReward converted = DailyRewardService.toMailReward(player, "shop_" + item.id, reward, day);
+            MailReward converted = purchaseReward(player, item.id, reward, day, ThreadLocalRandom.current());
             if (converted == null) return "broken";
             goods.add(converted);
         }
@@ -217,6 +219,21 @@ public final class DailyShopService {
         HabiLotteryMod.LOGGER.info("{} bought shop item {} for {} green apples",
                 player.getGameProfile().getName(), item.id, item.price);
         return "ok";
+    }
+
+    /** Draw anew for each purchase, without changing the configured reward or daily-task draws. */
+    static MailReward purchaseReward(ServerPlayer player, String itemId, DailyRewardEntry reward,
+                                     long day, RandomGenerator random) {
+        if ((DailyRewardEntry.CRATE.equals(reward.kind) || DailyRewardEntry.KEY.equals(reward.kind))
+                && DailyRewardEntry.RANDOM.equals(reward.id)) {
+            List<CrateCatalog.Entry> published = CrateCatalog.publishedEntries();
+            List<CrateCatalog.Entry> candidates = published.stream().filter(CrateCatalog.Entry::enabled).toList();
+            if (candidates.isEmpty()) candidates = published;
+            if (candidates.isEmpty()) return null;
+            String crateId = candidates.get(random.nextInt(candidates.size())).id();
+            reward = new DailyRewardEntry(reward.kind, crateId, reward.amount);
+        }
+        return DailyRewardService.toMailReward(player, "shop_" + itemId, reward, day);
     }
 
     /**
