@@ -25,7 +25,7 @@ Fabric 1.21.1 账户功能模组。当前版本提供独立皮肤目录与皮肤
 
 ```text
 mods/
-  habitrain_lottery-1.1.54.jar
+  habitrain_lottery-1.1.55.jar
   star_rail_express-4.3.0.jar
   habitrain_core-2.0.19.jar
 ```
