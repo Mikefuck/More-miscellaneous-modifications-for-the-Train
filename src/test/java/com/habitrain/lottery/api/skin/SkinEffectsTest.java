@@ -18,6 +18,56 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SkinEffectsTest {
 
+    @Test
+    void failedProviderRestoresOtherProvidersHandlersAndItsOwnLastGoodReplay() {
+        String id = "effects_transaction";
+        registerSkin(id);
+        SkinImpactHandler original = context -> { };
+        var animation = SkinAnimation.builder().bob(1, 80).build();
+        SkinRegistrationTransaction.run("provider_a", () -> {
+            SkinEffects.registerImpact(TYPE, id, original);
+            SkinEffects.registerAnimation(TYPE, id, animation);
+        });
+        assertThrows(IllegalStateException.class, () -> SkinRegistrationTransaction.run("provider_b", () -> {
+            SkinEffects.registerTrail(TYPE, id, (level, projectile, position, partial) -> { });
+            SkinEffects.registerImpact(TYPE, id, context -> { });
+            SkinEffects.restrictToItems(TYPE, id, PLAIN_GRENADE);
+            throw new IllegalStateException("failed provider");
+        }));
+        assertEquals(original, SkinEffects.impactByEntry(TYPE + "/" + id));
+        assertEquals(Optional.of(animation), SkinEffects.animation(TYPE, id));
+        assertNull(SkinEffects.trailByEntry(TYPE + "/" + id));
+        assertTrue(SkinEffects.itemFilter(TYPE + "/" + id).isEmpty());
+        assertThrows(IllegalStateException.class, () -> SkinRegistrationTransaction.run("provider_a", () -> {
+            SkinEffects.registerImpact(TYPE, id, context -> { });
+            throw new IllegalStateException("failed replay");
+        }));
+        assertEquals(original, SkinEffects.impactByEntry(TYPE + "/" + id));
+        assertEquals(2, SkinEffects.removeProvider("provider_a"));
+    }
+
+    @Test
+    void removingOneProviderPreservesOtherKindsOnTheSameSkin() {
+        String id = "effects_shared";
+        registerSkin(id);
+        SkinRegistrationTransaction.run("impact_provider", () -> SkinEffects.registerImpact(TYPE, id, context -> { }));
+        SkinRegistrationTransaction.run("trail_provider", () -> SkinEffects.registerTrail(TYPE, id, (a, b, c, d) -> { }));
+        assertEquals(1, SkinEffects.removeProvider("trail_provider"));
+        assertTrue(SkinEffects.hasImpact(TYPE + "/" + id));
+        assertEquals(1, SkinEffects.removeProvider("impact_provider"));
+    }
+
+    @Test
+    void failedBindingIsRolledBackBeforeNextProviderRegisters() {
+        ResourceLocation item = ResourceLocation.parse("transaction_test:bound_item");
+        assertThrows(IllegalStateException.class, () -> SkinRegistrationTransaction.run("bad_binding", () -> {
+            SkinItems.bindItem(item, "knife");
+            throw new IllegalStateException("failed after binding");
+        }));
+        SkinRegistrationTransaction.run("good_binding", () -> SkinItems.bindItem(item, "revolver"));
+        assertThrows(IllegalStateException.class, () -> SkinItems.bindItem(item, "knife"));
+    }
+
     private static final String TYPE = "grenade";
     private static final ResourceLocation PLAIN_GRENADE =
             ResourceLocation.parse("trainmurdermystery:grenade");

@@ -39,7 +39,8 @@ import java.util.Objects;
  *
  * <p>Read path: parse primary; on failure quarantine to {@code .corrupt-<ts>} and try
  * {@code .bak}. Missing primary still tries {@code .bak}. Both unreadable → {@code CORRUPT}
- * (never a silent empty object). Neither exists → {@code MISSING}.
+ * (never a silent empty object). A quarantine also keeps a missing primary corrupt until
+ * a valid primary or backup is restored. Only a genuinely new path is {@code MISSING}.
  */
 public final class AtomicJsonFiles {
     private static final Logger LOGGER = LoggerFactory.getLogger("habitrain_lottery|AtomicJsonFiles");
@@ -144,11 +145,24 @@ public final class AtomicJsonFiles {
             LOGGER.warn("Primary {} missing; restored from .bak", target);
             return JsonLoad.fromBackup(fromBak, null);
         }
-        if (backupExists) {
+        if (backupExists || Files.exists(target) || hasQuarantine(target)) {
             LOGGER.error("Primary {} missing and .bak is unreadable; refusing a fresh replacement", target);
             return JsonLoad.corrupt(null);
         }
         return JsonLoad.missing();
+    }
+
+    /** Quarantine files are durable evidence that this path is not a new account. */
+    private static boolean hasQuarantine(Path target) {
+        Path parent = target.toAbsolutePath().getParent();
+        if (parent == null || !Files.exists(parent)) return false;
+        String prefix = target.getFileName() + ".corrupt-";
+        try (var files = Files.list(parent)) {
+            return files.anyMatch(path -> path.getFileName().toString().startsWith(prefix));
+        } catch (IOException | SecurityException failure) {
+            LOGGER.error("Cannot check quarantines for {}; refusing a fresh replacement", target, failure);
+            return true;
+        }
     }
 
     /**

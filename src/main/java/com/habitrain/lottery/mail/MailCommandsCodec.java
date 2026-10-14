@@ -45,6 +45,14 @@ public final class MailCommandsCodec {
     }
 
     public static List<MailReward> decode(List<String> commands) {
+        return decode(commands, false);
+    }
+
+    public static List<MailReward> decodeStrict(List<String> commands) {
+        return decode(commands, true);
+    }
+
+    private static List<MailReward> decode(List<String> commands, boolean strict) {
         List<MailReward> out = new ArrayList<>();
         if (commands == null) {
             return out;
@@ -56,6 +64,7 @@ public final class MailCommandsCodec {
             String body = cmd.substring(PREFIX.length());
             String[] parts = body.split(":");
             if (parts.length < 2) {
+                if (strict) throw new IllegalArgumentException("Incomplete attachment");
                 continue;
             }
             try {
@@ -63,22 +72,24 @@ public final class MailCommandsCodec {
                     case "SKIN" -> out.add(MailReward.skinEntry(parts[1]));
                     case "GREEN_APPLES" -> out.add(MailReward.greenApples(Integer.parseInt(parts[1])));
                     case "FACTION_CARD" -> {
-                        if (parts.length >= 3) {
-                            out.add(MailReward.factionCard(parts[1], Integer.parseInt(parts[2])));
-                        }
+                        if (parts.length < 3) throw new IllegalArgumentException("Incomplete card");
+                        out.add(MailReward.factionCard(parts[1], Integer.parseInt(parts[2])));
                     }
                     case "SELF_SELECT_CARD" -> out.add(MailReward.selfSelectCard(Integer.parseInt(parts[1])));
                     case "LIMIT_BREAK_CARD" -> out.add(MailReward.limitBreakCard(Integer.parseInt(parts[1])));
                     case "CRATE" -> {
-                        if (parts.length >= 3) out.add(MailReward.crateEntry(parts[1], Integer.parseInt(parts[2])));
+                        if (parts.length < 3) throw new IllegalArgumentException("Incomplete crate");
+                        out.add(new MailReward(MailReward.Kind.CRATE, Integer.parseInt(parts[2]), parts[1]));
                     }
                     case "KEY" -> {
-                        if (parts.length >= 3) out.add(MailReward.keyEntry(parts[1], Integer.parseInt(parts[2])));
+                        if (parts.length < 3) throw new IllegalArgumentException("Incomplete key");
+                        out.add(new MailReward(MailReward.Kind.KEY, Integer.parseInt(parts[2]), parts[1]));
                     }
-                    default -> {
-                    }
+                    case "LOOT_CHANCE", "COIN", "COIN_NUM" -> { /* Retired currencies. */ }
+                    default -> { if (strict) throw new IllegalArgumentException("Unknown attachment"); }
                 }
-            } catch (IllegalArgumentException ignored) {
+            } catch (IllegalArgumentException invalid) {
+                if (strict) throw invalid;
             }
         }
         return out;

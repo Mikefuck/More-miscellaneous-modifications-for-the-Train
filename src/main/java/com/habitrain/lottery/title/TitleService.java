@@ -87,18 +87,28 @@ public final class TitleService {
     }
 
     public static void persistFromComponent(ServerPlayer player) {
-        if (player == null || !WorldLotteryPaths.ready()) {
-            return;
+        if (player == null || !WorldLotteryPaths.ready()) return;
+        if (!LocalTitleStore.get().savePlayer(player.getUUID(), snapshot(NameTagInventoryComponent.KEY.get(player)))) {
+            HabiLotteryMod.LOGGER.error("Title persist failed for {}; restoring committed component", player.getUUID());
+            syncCommitted(player);
         }
+    }
+
+    /** Apply only the committed store to the component, suppressing persistence callbacks. */
+    public static void syncCommitted(ServerPlayer player) {
+        var load = LocalTitleStore.get().loadPlayerDetailed(player.getUUID());
+        if (!load.ok() || load.data() == null) return;
+        boolean previous = isApplyingLocal();
+        APPLYING_LOCAL.set(true);
         try {
-            NameTagInventoryComponent c = NameTagInventoryComponent.KEY.get(player);
-            if (!LocalTitleStore.get().savePlayer(player.getUUID(), snapshot(c))) {
-                HabiLotteryMod.LOGGER.error("title persist failed to write for {}", player.getUUID());
-            }
-        } catch (Exception e) {
-            HabiLotteryMod.LOGGER.error("title persist failed for {}",
-                    player.getGameProfile().getName(), e);
+            var c = NameTagInventoryComponent.KEY.get(player);
+            c.clear();
+            for (String title : load.data().owned) if (title != null && !title.isBlank()) c.addNameTag(title);
+            c.setCurrentNameTag(load.data().current);
+        } finally {
+            APPLYING_LOCAL.set(previous);
         }
+        forceResync(player);
     }
 
     /**
@@ -131,22 +141,10 @@ public final class TitleService {
     }
 
     public static boolean grantOnline(ServerPlayer player, String display) {
-        if (player == null || display == null || display.isBlank() || !WorldLotteryPaths.ready()) {
-            return false;
-        }
-        try {
-            NameTagInventoryComponent c = NameTagInventoryComponent.KEY.get(player);
-            if (c.nameTags != null && c.nameTags.contains(display)) {
-                return false;
-            }
-            c.addNameTag(display);
-            forceResync(player);
-            return true;
-        } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("title grant online failed for {}: {}",
-                    player.getGameProfile().getName(), t.toString());
-            return false;
-        }
+        if (player == null || !WorldLotteryPaths.ready()) return false;
+        if (!LocalTitleStore.get().grant(player.getUUID(), display)) return false;
+        syncCommitted(player);
+        return true;
     }
 
     public static boolean grantOffline(UUID uuid, String display) {
@@ -157,22 +155,10 @@ public final class TitleService {
     }
 
     public static boolean revokeOnline(ServerPlayer player, String display) {
-        if (player == null || display == null || !WorldLotteryPaths.ready()) {
-            return false;
-        }
-        try {
-            NameTagInventoryComponent c = NameTagInventoryComponent.KEY.get(player);
-            if (c.nameTags == null || !c.nameTags.contains(display)) {
-                return false;
-            }
-            c.removeNameTag(display);
-            forceResync(player);
-            return true;
-        } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("title revoke online failed for {}: {}",
-                    player.getGameProfile().getName(), t.toString());
-            return false;
-        }
+        if (player == null || !WorldLotteryPaths.ready()) return false;
+        if (!LocalTitleStore.get().revoke(player.getUUID(), display)) return false;
+        syncCommitted(player);
+        return true;
     }
 
     public static boolean revokeOffline(UUID uuid, String display) {
@@ -183,30 +169,10 @@ public final class TitleService {
     }
 
     public static boolean setCurrentOnline(ServerPlayer player, String display) {
-        if (player == null || !WorldLotteryPaths.ready()) {
-            return false;
-        }
-        try {
-            NameTagInventoryComponent c = NameTagInventoryComponent.KEY.get(player);
-            if (display == null || display.isBlank()) {
-                if (c.CurrentNameTag != null && !c.CurrentNameTag.isEmpty()) {
-                    c.CurrentNameTag = "";
-                    persistFromComponent(player);
-                }
-                forceResync(player);
-                return true;
-            }
-            if (c.nameTags == null || !c.nameTags.contains(display)) {
-                return false;
-            }
-            c.setCurrentNameTag(display);
-            forceResync(player);
-            return true;
-        } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("title setCurrent online failed for {}: {}",
-                    player.getGameProfile().getName(), t.toString());
-            return false;
-        }
+        if (player == null || !WorldLotteryPaths.ready()) return false;
+        if (!LocalTitleStore.get().setCurrent(player.getUUID(), display)) return false;
+        syncCommitted(player);
+        return true;
     }
 
     public static boolean setCurrentOffline(UUID uuid, String display) {
@@ -217,16 +183,14 @@ public final class TitleService {
     }
 
     public static void clearOnline(ServerPlayer player) {
-        if (player == null || !WorldLotteryPaths.ready()) {
-            return;
-        }
-        try {
-            NameTagInventoryComponent.KEY.get(player).clear();
-            forceResync(player);
-        } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("title clear online failed for {}: {}",
-                    player.getGameProfile().getName(), t.toString());
-        }
+        clearOnlineChecked(player);
+    }
+
+    public static boolean clearOnlineChecked(ServerPlayer player) {
+        if (player == null || !WorldLotteryPaths.ready()) return false;
+        if (!LocalTitleStore.get().clearChecked(player.getUUID())) return false;
+        syncCommitted(player);
+        return true;
     }
 
     public static void clearOffline(UUID uuid) {

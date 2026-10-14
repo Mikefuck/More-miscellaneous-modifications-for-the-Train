@@ -209,6 +209,8 @@ public final class CrateOpenScreen extends Screen {
         }
         long now = now();
         if (!stage.active()) stage = CrateStage.opened(now - 1L);
+        failure = false;
+        message = "";
         result = payload;
         rewardPage = 0;
         if (parent instanceof WarehouseScreen warehouse) warehouse.expectInventoryRevision(payload.inventoryRevision());

@@ -45,7 +45,9 @@ public final class SkinCardText {
             throw new IllegalStateException("Conflicting skin card text for " + key);
         }
         if (TEXTS.size() >= 4096) throw new IllegalStateException("Skin card text limit is 4096");
-        TEXTS.put(key, new Declaration(copyText(text), HabiSkinApi.currentProvider()));
+        Declaration next = new Declaration(copyText(text), HabiSkinApi.currentProvider());
+        TEXTS.put(key, next);
+        SkinRegistrationTransaction.changed(TEXTS, key, null, next);
         return true;
     }
 
@@ -62,7 +64,7 @@ public final class SkinCardText {
     /** Removes this skin's label. The open wardrobe observes the change on its next render. */
     public static synchronized boolean unregister(String type, String id) {
         try {
-            return TEXTS.remove(key(type, id)) != null;
+            return SkinRegistrationTransaction.remove(TEXTS, key(type, id)) != null;
         } catch (IllegalArgumentException ignored) {
             return false;
         }
@@ -71,12 +73,10 @@ public final class SkinCardText {
     /** Rolls back declarations made by a failed skin registrar, including labels for other mods' skins. */
     public static synchronized int removeProvider(String providerId) {
         if (providerId == null) return 0;
-        int before = TEXTS.size();
-        TEXTS.values().removeIf(declaration -> providerId.equals(declaration.provider()));
-        return before - TEXTS.size();
+        return SkinRegistrationTransaction.removeIf(TEXTS, declaration -> providerId.equals(declaration.provider()));
     }
 
-    static synchronized void removeEntry(String entry) { TEXTS.remove(entry); }
+    static synchronized void removeEntry(String entry) { SkinRegistrationTransaction.remove(TEXTS, entry); }
 
     // MutableComponent.copy() shares its children and translation arguments.
     private static MutableComponent copyText(Component text) {

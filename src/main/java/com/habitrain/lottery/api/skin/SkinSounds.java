@@ -18,7 +18,9 @@ public final class SkinSounds {
                 new IllegalArgumentException("Custom sounds require a registered skin: " + type + "/" + id));
         String key = skin.type() + "/" + skin.id();
         String provider = HabiSkinApi.currentProvider();
-        PROVIDERS.putIfAbsent(key, provider == null ? "" : provider);
+        String value = provider == null ? "" : provider;
+        String previous = PROVIDERS.putIfAbsent(key, value);
+        if (previous == null) SkinRegistrationTransaction.changed(PROVIDERS, key, null, value);
     }
 
     public static boolean supports(String type, String id) {
@@ -44,10 +46,8 @@ public final class SkinSounds {
     /** Rolls back sound declarations from a failed registrar alongside its skin definitions. */
     public static int removeProvider(String provider) {
         if (provider == null) return 0;
-        int before = PROVIDERS.size();
-        PROVIDERS.values().removeIf(provider::equals);
-        return before - PROVIDERS.size();
+        return SkinRegistrationTransaction.removeIf(PROVIDERS, provider::equals);
     }
 
-    static void removeEntry(String entry) { PROVIDERS.remove(entry); }
+    static void removeEntry(String entry) { SkinRegistrationTransaction.remove(PROVIDERS, entry); }
 }

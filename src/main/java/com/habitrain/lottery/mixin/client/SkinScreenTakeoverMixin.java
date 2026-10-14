@@ -13,7 +13,10 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
 public abstract class SkinScreenTakeoverMixin {
     @ModifyVariable(method = "setScreen", at = @At("HEAD"), argsOnly = true)
     private Screen habi$replaceSkinScreen(Screen screen) {
-        if (screen instanceof SkinManagementScreen upstream) {
+        if (screen instanceof SkinManagementScreen upstream
+                && ((Minecraft) (Object) this).getConnection() != null
+                && net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(
+                        com.habitrain.lottery.skin.SkinNetwork.Request.TYPE)) {
             Screen parent = upstream.parentScreen;
             while (parent instanceof SkinManagementScreen nested) parent = nested.parentScreen;
             return new SkinWardrobeScreen(parent);

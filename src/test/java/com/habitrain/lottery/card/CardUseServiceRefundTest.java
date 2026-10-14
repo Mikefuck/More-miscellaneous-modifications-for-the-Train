@@ -100,4 +100,31 @@ class CardUseServiceRefundTest {
         assertEquals(1, LocalBackpackStore.load(id).get("civilian"));
         assertEquals(1, LocalBackpackStore.load(id).get("killer"));
     }
+
+    @Test
+    void failedQuotaCommitKeepsRetryAndDoesNotRefundTheCardTwice() throws Exception {
+        UUID id = UUID.randomUUID();
+        long today = LoginRewardService.todayEpochDayUtc();
+        assertTrue(PlayerLotteryStore.get().applyToPlayerWithRollback(id, d -> {
+            d.lastFactionCardUseEpochDay = today;
+            d.factionCardUsesToday = 2;
+        }));
+        var blocker = com.habitrain.lottery.storage.AtomicJsonFiles.bakPath(WorldLotteryPaths.playerFile(id));
+        java.nio.file.Files.createDirectory(blocker);
+        java.nio.file.Files.writeString(blocker.resolve("blocked"), "no replacement");
+        ActiveCardForces.record(id, FactionCardType.CIVILIAN);
+        assertFalse(CardUseService.refundForcedCard(id));
+        assertTrue(ActiveCardForces.refundPending(id));
+        assertEquals(1, LocalBackpackStore.load(id).get("civilian"));
+        assertEquals(2, PlayerLotteryStore.get().getOrLoad(id).factionCardUsesToday);
+        assertTrue(LocalBackpackStore.addCards(id, FactionCardType.CIVILIAN, -1));
+        java.nio.file.Files.delete(blocker.resolve("blocked"));
+        java.nio.file.Files.delete(blocker);
+        assertTrue(CardUseService.refundForcedCard(id));
+        assertNull(ActiveCardForces.get(id));
+        assertEquals(0, LocalBackpackStore.load(id).get("civilian"));
+        assertEquals(1, PlayerLotteryStore.get().getOrLoad(id).factionCardUsesToday);
+        PlayerLotteryStore.get().reset();
+        assertEquals(1, PlayerLotteryStore.get().getOrLoad(id).factionCardUsesToday);
+    }
 }

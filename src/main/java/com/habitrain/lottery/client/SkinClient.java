@@ -86,6 +86,15 @@ public final class SkinClient {
         var skin = HabiSkinApi.fromEntry(stack.get(SkinComponents.SKIN));
         if (skin.isEmpty()) return fallback;
         SkinDefinition definition = skin.get();
+        BakedModel model = resolveModel(definition, inHand);
+        if (model == null) return fallback;
+        // Last step: hand the model to the skin-effects half, which wraps it when the
+        // extension registered a SkinAnimation for this skin. A skin without one — every
+        // v2-era skin — comes back untouched, so this cannot change existing looks.
+        return SkinAnimationModels.animate(definition, model);
+    }
+
+    private static BakedModel resolveModel(SkinDefinition definition, boolean inHand) {
         BakedModel model = bakedModel(definition.model(inHand));
         // The in-hand model is optional: fall back to the base model, then the
         // original item, exactly as docs/skin-api.md promises.
@@ -95,11 +104,7 @@ public final class SkinClient {
             // extensions that have not been recompiled keep working (audit F-04).
             model = legacyLookup(definition, inHand);
         }
-        if (model == null) return fallback;
-        // Last step: hand the model to the skin-effects half, which wraps it when the
-        // extension registered a SkinAnimation for this skin. A skin without one — every
-        // v2-era skin — comes back untouched, so this cannot change existing looks.
-        return SkinAnimationModels.animate(definition, model);
+        return model;
     }
 
     /** The v1 {@code starrailexpress} model, preferring the requested variant over the base one. */
@@ -111,8 +116,8 @@ public final class SkinClient {
     /** True when the base or the optional in-hand model exists for {@code type/id}. */
     public static boolean hasModel(String type, String id) {
         return HabiSkinApi.find(type, id)
-                .map(definition -> bakedModel(definition.model()) != null
-                        || (!"back".equals(definition.type()) && bakedModel(definition.model(true)) != null))
+                .map(definition -> resolveModel(definition, false) != null
+                        || (!"back".equals(definition.type()) && resolveModel(definition, true) != null))
                 .orElse(false);
     }
 
@@ -160,7 +165,7 @@ public final class SkinClient {
      */
     private static void warnAboutMissingModels() {
         for (SkinDefinition definition : HabiSkinApi.registrations()) {
-            if (bakedModel(definition.model()) != null) {
+            if (hasModel(definition.type(), definition.id())) {
                 continue;
             }
             LOGGER.warn(

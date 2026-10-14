@@ -16,7 +16,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * so {@link com.habitrain.lottery.grant.CardForceGuaranteeHook} can guarantee exactly those.
  */
 public final class ActiveCardForces {
-    private static final Map<UUID, Integer> FORCES = new ConcurrentHashMap<>();
+    private record Activation(int roleType, UUID refundId) { }
+
+    private static final Map<UUID, Activation> FORCES = new ConcurrentHashMap<>();
     private static final java.util.Set<UUID> REFUND_PENDING = ConcurrentHashMap.newKeySet();
 
     private ActiveCardForces() {
@@ -27,12 +29,19 @@ public final class ActiveCardForces {
         if (player == null || type == null || type == FactionCardType.NONE) {
             return;
         }
-        FORCES.put(player, FactionCardRoleTypes.roleTypeId(type));
+        FORCES.put(player, new Activation(FactionCardRoleTypes.roleTypeId(type), UUID.randomUUID()));
         REFUND_PENDING.remove(player);
     }
 
     public static Integer get(UUID player) {
-        return FORCES.get(player);
+        Activation activation = FORCES.get(player);
+        return activation == null ? null : activation.roleType();
+    }
+
+    /** Stable across retries of this use, distinct even when the next use has the same card type. */
+    public static UUID refundId(UUID player) {
+        Activation activation = FORCES.get(player);
+        return activation == null ? null : activation.refundId();
     }
 
     public static void remove(UUID player) {
@@ -59,6 +68,8 @@ public final class ActiveCardForces {
 
     /** Snapshot for safe iteration while entries may be removed. */
     public static Map<UUID, Integer> snapshot() {
-        return new HashMap<>(FORCES);
+        Map<UUID, Integer> snapshot = new HashMap<>();
+        FORCES.forEach((player, activation) -> snapshot.put(player, activation.roleType()));
+        return snapshot;
     }
 }

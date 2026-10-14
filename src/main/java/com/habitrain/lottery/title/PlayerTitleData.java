@@ -13,6 +13,17 @@ public final class PlayerTitleData {
     public List<String> owned = new ArrayList<>();
     public String current = "";
     public long updatedAt;
+    public Set<String> rewardReceipts = new HashSet<>();
+
+    public PlayerTitleData copy() {
+        PlayerTitleData copy = new PlayerTitleData();
+        copy.version = version;
+        copy.owned = owned == null ? new ArrayList<>() : new ArrayList<>(owned);
+        copy.current = current == null ? "" : current;
+        copy.updatedAt = updatedAt;
+        if (rewardReceipts != null) copy.rewardReceipts.addAll(rewardReceipts);
+        return copy;
+    }
 
     /** Owned set + current title, ignoring {@code updatedAt} and blank owned entries. */
     public boolean contentEquals(PlayerTitleData other) {

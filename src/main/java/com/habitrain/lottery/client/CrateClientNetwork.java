@@ -25,6 +25,7 @@ public final class CrateClientNetwork {
         if (registered) return;
         registered = true;
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> {
+            pendingOpen = null;
             com.habitrain.lottery.crate.CrateCatalog.reset();
             STATE.inventory = Map.of();
             STATE.inventoryVersion++;

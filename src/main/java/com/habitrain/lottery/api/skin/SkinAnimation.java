@@ -15,10 +15,9 @@ import java.util.Set;
  * item frames/ground and the projectile renderer of a thrown skinned item.</p>
  *
  * <p><b>Every quantity is a continuous, periodic function of one monotonic
- * clock</b> (wall-clock ticks, 50 per second), which is what makes the animation
- * seam-free by construction: there are no keyframes to interpolate between and no
- * state to reset, so pausing, opening a screen, a resource reload, a dimension
- * change or a respawn cannot make it stutter or jump.</p>
+ * clock</b> (20 ticks per second). Transforms use double-precision phases without a
+ * shared clock reset. Frame stalls can still skip visible motion; changing dimensions
+ * or reloading resources does not reset the phase.</p>
  *
  * <ul>
  *   <li>{@link #spinDegreesPerTick()} — constant angular speed about
@@ -37,7 +36,7 @@ import java.util.Set;
  * oscillations pass through their neutral value at {@code t = 0}.</p>
  *
  * <p>Instances are immutable value objects; the client caches one wrapped model per
- * (skin, baked model), so building a new instance is only a registration-time cost.</p>
+ * (skin, baked model, animation value); a changed declaration gets a new wrapper.</p>
  */
 public record SkinAnimation(
         SpinAxis spinAxis,
@@ -73,7 +72,7 @@ public record SkinAnimation(
         HEAD
     }
 
-    /** Refused above this: 180 deg/tick is a full turn per tick, i.e. already strobing. */
+    /** Refused above this: 180 deg/tick is a half turn per tick, i.e. already strobing. */
     public static final float MAX_SPIN_DEGREES_PER_TICK = 180.0F;
     public static final float MAX_THROWN_SPIN_MULTIPLIER = 16.0F;
     public static final float MAX_WOBBLE_DEGREES = 45.0F;

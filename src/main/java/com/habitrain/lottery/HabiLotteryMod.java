@@ -52,6 +52,7 @@ public final class HabiLotteryMod implements ModInitializer {
         com.habitrain.lottery.skin.SkinNetwork.register();
         com.habitrain.lottery.skin.BackSkinNetwork.register();
         LotteryNetwork.registerServer();
+        com.habitrain.lottery.network.MailboxPages.register();
         com.habitrain.lottery.network.CrateNetwork.register();
         com.habitrain.lottery.network.DailyTaskAdminNetwork.register();
         com.habitrain.lottery.network.DailyShopNetwork.register();
@@ -76,6 +77,9 @@ public final class HabiLotteryMod implements ModInitializer {
                     return;
                 }
                 PlayerLotteryStore.get().onServerStarted(s);
+                com.habitrain.lottery.card.FactionCardRefunds.recover();
+                if (!LocalMatchRecordStore.repairIndex(WorldLotteryPaths.root()))
+                    LOGGER.error("Match record index recovery failed; original files retained");
                 CrateService.onServerStarted();
                 com.habitrain.lottery.daily.config.DailyTaskConfigService.onServerStarted();
                 com.habitrain.lottery.daily.shop.DailyShopService.onServerStarted();
@@ -142,6 +146,8 @@ public final class HabiLotteryMod implements ModInitializer {
                 ServerPlayer p = s.getPlayerList().getPlayer(id);
                 if (p != null) {
                     BackpackJoinService.apply(p);
+                    com.habitrain.lottery.card.FactionCardRefunds.recoverPending(p);
+                    com.habitrain.lottery.mail.RewardDelivery.recoverPending(p);
                 }
             });
         });
@@ -159,11 +165,8 @@ public final class HabiLotteryMod implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(LoginRewardService::onEndServerTick);
-        // 审核 B-03 / B-04 / B-19 / B-20 的收尾保证：这些路径在 flush 失败时会，
-        // <b>正确地</b>回滚内存并告知玩家失败——但内存里的旧值此时仍未落盘
-        // （磁盘上可能还是更早的、甚至"领先"的状态）。定期重试 flushAll 让
-        // 「已经决定保留的改动」最终一定被写下去，而不是等下一次触发才偶然写成功。
-        // flushAll 只在真的有 dirty 条目时才写盘，因此这里的开销是 O(dirty)。
+        // 运行期间定期尝试保存保留的脏缓存；持续 I/O 故障仍可能阻止写入。
+        // 检查成本 O(cache)，仅对 dirty 项写盘。跨文件奖励另由持久化回执恢复。
         ServerTickEvents.END_SERVER_TICK.register(HabiLotteryMod::retryPendingFlush);
 
         CommandRegistrationCallback.EVENT.register(LotteryCommands::register);
@@ -188,7 +191,7 @@ public final class HabiLotteryMod implements ModInitializer {
         }
         flushRetryCountdown = FLUSH_RETRY_INTERVAL_TICKS;
         try {
-            // flushAll 只写 dirty 条目；全部干净时它是一次空遍历。
+            // 遍历缓存并只写 dirty 条目。
             if (!PlayerLotteryStore.get().flushAll()) {
                 if (!flushRetryFailureLogged) {
                     flushRetryFailureLogged = true;

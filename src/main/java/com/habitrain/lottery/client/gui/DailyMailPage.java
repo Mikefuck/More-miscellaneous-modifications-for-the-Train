@@ -64,6 +64,9 @@ final class DailyMailPage {
     final MailButton refreshButton;
     final MailButton claimAllButton;
     final MailButton claimButton;
+    final MailButton previousButton;
+    final MailButton nextButton;
+    private final java.util.Deque<Integer> pageHistory = new java.util.ArrayDeque<>();
 
     DailyMailPage(Runnable clickSound, Runnable afterClaim) {
         this.clickSound = clickSound;
@@ -74,11 +77,13 @@ final class DailyMailPage {
         refreshButton = new MailButton(Component.translatable(KEY + "refresh"), false, this::refresh);
         claimAllButton = new MailButton(Component.translatable(KEY + "claim_all"), false, this::claimAll);
         claimButton = new MailButton(Component.translatable(KEY + "claim"), true, this::claimSelected);
+        previousButton = new MailButton(Component.literal("←"), false, () -> changePage(false));
+        nextButton = new MailButton(Component.literal("→"), false, () -> changePage(true));
         refreshButtons();
     }
 
     List<AbstractWidget> widgets() {
-        return List.of(refreshButton, claimAllButton, claimButton);
+        return List.of(refreshButton, claimAllButton, claimButton, previousButton, nextButton);
     }
 
     void setVisible(boolean visible) {
@@ -101,10 +106,10 @@ final class DailyMailPage {
         BoardRect footer = new BoardRect(body.x(), body.bottom() - FOOTER_H, body.w(), FOOTER_H);
         int mainBottom = footer.y() - 8;
         int listW = Mth.clamp((int) (body.w() * 0.42F), Math.min(120, body.w() / 2), 300);
-        BoardRect list = new BoardRect(body.x(), body.y(), listW, Math.max(20, mainBottom - body.y()));
+        BoardRect list = new BoardRect(body.x(), body.y(), listW, Math.max(20, mainBottom - body.y() - 24));
         int detailX = list.right() + 10;
         BoardRect detail = new BoardRect(detailX, body.y(), Math.max(40, body.right() - detailX),
-                list.h());
+                list.h() + 24);
         int claimW = l.compact() ? 62 : 76;
         int allW = l.compact() ? 56 : 68;
         int refreshW = l.compact() ? 40 : 50;
@@ -116,6 +121,8 @@ final class DailyMailPage {
         place(refreshButton, refresh);
         place(claimAllButton, all);
         place(claimButton, claim);
+        place(previousButton, new BoardRect(list.x(), list.bottom() + 3, 24, 20));
+        place(nextButton, new BoardRect(list.right() - 24, list.bottom() + 3, 24, 20));
         clampScroll();
     }
 
@@ -230,7 +237,8 @@ final class DailyMailPage {
     }
 
     int unclaimedCount() {
-        return (int) mails.stream().filter(m -> !m.claimed).count();
+        return LotteryNetwork.ClientLotteryState.mailboxUnclaimed >= 0
+                ? LotteryNetwork.ClientLotteryState.mailboxUnclaimed : (int) mails.stream().filter(m -> !m.claimed).count();
     }
 
     void tick(long now) {
@@ -244,6 +252,17 @@ final class DailyMailPage {
     // =====================================================================
     // 操作
     // =====================================================================
+
+    private void changePage(boolean next) {
+        int offset = next ? LotteryNetwork.ClientLotteryState.mailboxNext
+                : pageHistory.isEmpty() ? 0 : pageHistory.peekLast();
+        if (offset < 0 || !LotteryClientNetwork.clientRequestMailboxPage(offset)) return;
+        if (next) pageHistory.addLast(LotteryNetwork.ClientLotteryState.mailboxOffset);
+        else if (!pageHistory.isEmpty()) pageHistory.removeLast();
+        listScroll = detailScroll = 0;
+        refreshing = true;
+        refreshButtons();
+    }
 
     void refresh() {
         if (LotteryClientNetwork.clientRequestMailbox()) {
@@ -297,6 +316,8 @@ final class DailyMailPage {
     }
 
     private void refreshButtons() {
+        previousButton.active = !refreshing && LotteryNetwork.ClientLotteryState.mailboxOffset > 0;
+        nextButton.active = !refreshing && LotteryNetwork.ClientLotteryState.mailboxNext >= 0;
         MailJson mail = selected();
         boolean busy = pendingAll || (mail != null && pending.contains(mail.id));
         String key;
@@ -418,6 +439,11 @@ final class DailyMailPage {
         }
         drawHeader(g, font, l);
         drawList(g, font, mouseX, mouseY, now);
+        int start = mails.isEmpty() ? 0 : LotteryNetwork.ClientLotteryState.mailboxOffset + 1;
+        String range = start + "–" + (LotteryNetwork.ClientLotteryState.mailboxOffset + mails.size())
+                + " / " + Math.max(mails.size(), LotteryNetwork.ClientLotteryState.mailboxTotal);
+        DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, range, geo.list.w() - 56),
+                geo.list.x() + 28, geo.list.bottom() + 9, DailyBoardTheme.INK_SOFT);
         drawDetail(g, font, now);
         drawFooter(g, font);
     }

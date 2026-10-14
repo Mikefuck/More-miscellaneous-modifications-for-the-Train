@@ -47,8 +47,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>Built-in triggers.</b> 哈比列车抽奖补齐 wires the hooks for the grenade
  * family: a thrown grenade inherits the thrower's equipped {@code grenade} skin, the
- * three grenade projectiles dispatch {@link #dispatchImpact}, the client dispatches
- * {@link #dispatchTrail}, and any registered impact handler replaces the vanilla
+ * plain grenade dispatches {@link #dispatchImpact}, the client dispatches
+ * {@link #dispatchTrail} for supported skinned projectiles, and an impact handler replaces the vanilla
  * explosion burst for the plain grenade. Damage, kills, rewards and cooldowns are
  * never touched by this API. See {@code docs/skin-effects-api.md}.</p>
  *
@@ -98,7 +98,8 @@ public final class SkinEffects {
         Objects.requireNonNull(handler, "handler");
         String key = key(type, id);
         SkinImpactHandler previous = IMPACTS.put(key, handler);
-        attribute(key);
+        SkinRegistrationTransaction.changed(IMPACTS, key, previous, handler);
+        attribute("impact:" + key);
         if (previous != null && previous != handler) {
             LOGGER.info("Skin impact handler for {} replaced ({})", key, providerName());
         }
@@ -115,7 +116,8 @@ public final class SkinEffects {
         Objects.requireNonNull(handler, "handler");
         String key = key(type, id);
         SkinTrailHandler previous = TRAILS.put(key, handler);
-        attribute(key);
+        SkinRegistrationTransaction.changed(TRAILS, key, previous, handler);
+        attribute("trail:" + key);
         if (previous != null && previous != handler) {
             LOGGER.info("Skin trail handler for {} replaced ({})", key, providerName());
         }
@@ -131,7 +133,8 @@ public final class SkinEffects {
         Objects.requireNonNull(animation, "animation");
         String key = key(type, id);
         SkinAnimation previous = ANIMATIONS.put(key, animation);
-        attribute(key);
+        SkinRegistrationTransaction.changed(ANIMATIONS, key, previous, animation);
+        attribute("animation:" + key);
         if (previous != null && !previous.equals(animation)) {
             LOGGER.info("Skin animation for {} replaced ({})", key, providerName());
         }
@@ -157,18 +160,19 @@ public final class SkinEffects {
     public static void restrictToItems(String type, String id, ResourceLocation... items) {
         String key = key(type, id);
         if (items == null || items.length == 0) {
-            ITEM_FILTERS.remove(key);
-            if (!IMPACTS.containsKey(key) && !TRAILS.containsKey(key) && !ANIMATIONS.containsKey(key)) {
-                PROVIDERS.remove(key);
-            }
+            var previous = ITEM_FILTERS.remove(key);
+            SkinRegistrationTransaction.changed(ITEM_FILTERS, key, previous, null);
+            attribute("filter:" + key);
             return;
         }
         Set<ResourceLocation> allowed = new LinkedHashSet<>(Arrays.asList(items));
         if (allowed.contains(null)) {
             throw new IllegalArgumentException("Item restriction must not contain null");
         }
-        ITEM_FILTERS.put(key, Collections.unmodifiableSet(allowed));
-        attribute(key);
+        Set<ResourceLocation> next = Collections.unmodifiableSet(allowed);
+        var previous = ITEM_FILTERS.put(key, next);
+        SkinRegistrationTransaction.changed(ITEM_FILTERS, key, previous, next);
+        attribute("filter:" + key);
         LOGGER.debug("Skin {} restricted to {} item(s)", key, allowed.size());
     }
 
@@ -180,28 +184,22 @@ public final class SkinEffects {
      * @return the number of removed entries
      */
     public static synchronized int removeProvider(String providerId) {
-        if (providerId == null) {
-            return 0;
-        }
+        if (providerId == null) return 0;
         int removed = 0;
-        for (Map.Entry<String, String> entry : new LinkedHashMap<>(PROVIDERS).entrySet()) {
-            if (!providerId.equals(entry.getValue())) {
-                continue;
-            }
+        for (var entry : new LinkedHashMap<>(PROVIDERS).entrySet()) {
+            if (!providerId.equals(entry.getValue())) continue;
             String key = entry.getKey();
-            if (IMPACTS.remove(key) != null) {
-                removed++;
-            }
-            if (TRAILS.remove(key) != null) {
-                removed++;
-            }
-            if (ANIMATIONS.remove(key) != null) {
-                removed++;
-            }
-            if (ITEM_FILTERS.remove(key) != null) {
-                removed++;
-            }
-            PROVIDERS.remove(key);
+            int colon = key.indexOf(':');
+            String id = key.substring(colon + 1);
+            Object old = switch (key.substring(0, colon)) {
+                case "impact" -> SkinRegistrationTransaction.remove(IMPACTS, id);
+                case "trail" -> SkinRegistrationTransaction.remove(TRAILS, id);
+                case "animation" -> SkinRegistrationTransaction.remove(ANIMATIONS, id);
+                case "filter" -> SkinRegistrationTransaction.remove(ITEM_FILTERS, id);
+                default -> null;
+            };
+            if (old != null) removed++;
+            SkinRegistrationTransaction.remove(PROVIDERS, key);
         }
         return removed;
     }
@@ -368,7 +366,8 @@ public final class SkinEffects {
     private static void attribute(String key) {
         String provider = HabiSkinApi.currentProvider();
         if (provider != null) {
-            PROVIDERS.put(key, provider);
+            String previous = PROVIDERS.put(key, provider);
+            SkinRegistrationTransaction.changed(PROVIDERS, key, previous, provider);
         }
     }
 

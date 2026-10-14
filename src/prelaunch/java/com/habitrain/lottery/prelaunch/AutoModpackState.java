@@ -38,19 +38,29 @@ public final class AutoModpackState {
 
     /** Disables AutoModpack's own launch update for this launch, remembering the original value. */
     static void suppressLaunchUpdate() throws IOException {
-        JsonObject config = readObject(CLIENT_CONFIG);
+        suppressLaunchUpdate(CLIENT_CONFIG, RESTORE_MARKER);
+    }
+
+    static void suppressLaunchUpdate(Path configFile, Path markerFile) throws IOException {
+        JsonObject config = readObject(configFile);
         if (config == null) {
             // AutoModpack creates the file with defaults (update on launch = true) during its preload.
             config = new JsonObject();
         }
         JsonElement value = config.get(UPDATE_ON_LAUNCH);
         boolean original = value == null || !value.isJsonPrimitive() || value.getAsBoolean();
+        JsonObject previous = readObject(markerFile);
+        if (Files.exists(markerFile)) {
+            if (previous == null || !previous.has(UPDATE_ON_LAUNCH))
+                throw new IOException("Unreadable AutoModpack restore marker; refusing to replace it");
+            original = previous.get(UPDATE_ON_LAUNCH).getAsBoolean();
+        }
         JsonObject marker = new JsonObject();
         marker.addProperty(UPDATE_ON_LAUNCH, original);
-        writeObject(RESTORE_MARKER, marker);
+        writeObject(markerFile, marker);
         if (config.size() > 0) {
             config.addProperty(UPDATE_ON_LAUNCH, false);
-            writeObject(CLIENT_CONFIG, config);
+            writeObject(configFile, config);
         }
     }
 
@@ -60,18 +70,24 @@ public final class AutoModpackState {
      * @return the restored value, or {@code null} when there was nothing to restore
      */
     public static Boolean restoreFlagFile() {
-        JsonObject marker = readObject(RESTORE_MARKER);
+        return restoreFlagFile(CLIENT_CONFIG, RESTORE_MARKER);
+    }
+
+    static Boolean restoreFlagFile(Path configFile, Path markerFile) {
+        JsonObject marker = readObject(markerFile);
         if (marker == null) {
             return null;
         }
         boolean original = !marker.has(UPDATE_ON_LAUNCH) || marker.get(UPDATE_ON_LAUNCH).getAsBoolean();
         try {
-            JsonObject config = readObject(CLIENT_CONFIG);
-            if (config != null) {
-                config.addProperty(UPDATE_ON_LAUNCH, original);
-                writeObject(CLIENT_CONFIG, config);
+            JsonObject config = readObject(configFile);
+            if (config == null) {
+                PrelaunchLog.warn("AutoModpack client config unavailable; keeping restore marker for retry");
+                return original;
             }
-            Files.deleteIfExists(RESTORE_MARKER);
+            config.addProperty(UPDATE_ON_LAUNCH, original);
+            writeObject(configFile, config);
+            Files.deleteIfExists(markerFile);
         } catch (IOException e) {
             PrelaunchLog.error("Failed to restore AutoModpack client config", e);
         }

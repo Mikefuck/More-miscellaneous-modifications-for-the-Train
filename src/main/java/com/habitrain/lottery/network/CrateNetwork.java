@@ -148,8 +148,7 @@ public final class CrateNetwork {
             ServerPlayer player = ctx.player();
             if (player == null || LotteryNetwork.rateLimited(player, "crate_open", 800)) return;
             CrateService.OpenResult result = CrateService.open(player, payload.crateId(), payload.keyId(), payload.openId());
-            if (result.success()) com.habitrain.lottery.daily.config.DailyTaskTracker.onCrateOpened(
-                    player, result.crateId(), payload.openId());
+
             sendIfSupported(player, new OpenResultS2C(payload.openId(), result.success(), result.crateId(), result.keyId(), result.type(),
                     result.skin(), result.quality().id(), result.message(), result.weeklyRemaining(), result.monthlyRemaining(),
                     new com.google.gson.Gson().toJson(result.rewards()), result.inventoryRevision()));
@@ -185,7 +184,7 @@ public final class CrateNetwork {
         }));
         ServerPlayNetworking.registerGlobalReceiver(LegacyConfigSaveC2S.TYPE, (payload, ctx) ->
                 ctx.server().execute(() -> sendIfSupported(ctx.player(),
-                        new ConfigS2C(CrateService.configJson(), "crates.client_outdated"))));
+                        new ConfigS2C("{}", "crates.client_outdated"))));
         ServerPlayNetworking.registerGlobalReceiver(LegacyV3ConfigSaveC2S.TYPE, (payload, ctx) ->
                 ctx.server().execute(() -> sendIfSupported(ctx.player(),
                         new ConfigS2C("{}", "crates.client_outdated"))));

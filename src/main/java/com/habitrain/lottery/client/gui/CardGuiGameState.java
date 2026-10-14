@@ -14,15 +14,15 @@ import net.minecraft.client.Minecraft;
  * <h2>审核 B-24：不要每渲染帧查询核心</h2>
  * <p>本方法在 GUI 的 {@code render} 路径上被调用。旧实现每次都直接穿透到核心的
  * {@code MatchStateApi}（内部再走一遍 SPI 桥接 + 异常包装），即<b>每渲染帧一次</b>
- * 跨模组调用。现在把结果缓存约 5 tick（100ms）：对「离开大厅后自动关窗」这个用途
- * 完全够快（人的反应时间远大于 100ms），却把每帧调用降到每 5 tick 一次。
+ * 跨模组调用。现在把结果缓存约 2 tick（100ms）：对「离开大厅后自动关窗」这个用途
+ * 完全够快（人的反应时间远大于 100ms），却把每帧调用降到每 100ms 一次。
  *
  * <p>缓存只在客户端主线程读写（GUI 渲染与 tick 都在主线程），因此不需要加锁。
  * 维度变化（{@code level} 实例不同）会立即失效缓存，避免把上一局的判定带进新维度。
  */
 public final class CardGuiGameState {
 
-    /** 审核 B-24：约 5 tick（100ms）的结果缓存窗口。 */
+    /** 审核 B-24：约 2 tick（100ms）的结果缓存窗口。 */
     private static final long CACHE_TTL_NANOS = 100_000_000L;
 
     private static long cachedAtNanos = 0L;

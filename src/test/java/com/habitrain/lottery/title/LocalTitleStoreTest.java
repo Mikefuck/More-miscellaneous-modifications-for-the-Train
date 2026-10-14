@@ -23,6 +23,45 @@ class LocalTitleStoreTest {
     }
 
     @Test
+    void failedGrantAndRepeatedRetryDoNotPoisonCommittedCache() throws Exception {
+        WorldLotteryPaths.initForTests(temp);
+        UUID id = UUID.randomUUID();
+        var store = LocalTitleStore.get();
+        assertTrue(store.grant(id, "original"));
+        Path blocker = com.habitrain.lottery.storage.AtomicJsonFiles.bakPath(TitlePaths.playerFile(id));
+        Files.createDirectory(blocker);
+        Files.writeString(blocker.resolve("blocked"), "no replacement");
+        assertFalse(store.grant(id, "new"));
+        assertFalse(store.grant(id, "new"));
+        assertEquals(List.of("original"), store.loadPlayer(id).owned);
+        assertFalse(store.clearChecked(id));
+        assertEquals(List.of("original"), store.loadPlayer(id).owned);
+        store.reset();
+        assertEquals(List.of("original"), store.loadPlayer(id).owned);
+        Files.delete(blocker.resolve("blocked"));
+        Files.delete(blocker);
+        assertTrue(store.grant(id, "new"));
+        store.reset();
+        assertEquals(List.of("original", "new"), store.loadPlayer(id).owned);
+    }
+
+    @Test
+    void callerCatalogEditsAndFailedSaveDoNotChangeCommittedTemplate() throws Exception {
+        WorldLotteryPaths.initForTests(temp);
+        var store = LocalTitleStore.get();
+        assertTrue(store.saveCatalogChecked(new TitleCatalog()));
+        var edit = store.loadCatalog();
+        edit.version = 99;
+        Path blocker = com.habitrain.lottery.storage.AtomicJsonFiles.bakPath(TitlePaths.catalogFile());
+        Files.createDirectory(blocker);
+        Files.writeString(blocker.resolve("blocked"), "no replacement");
+        assertFalse(store.saveCatalogChecked(edit));
+        assertNotEquals(99, store.loadCatalog().version);
+        store.reset();
+        assertNotEquals(99, store.loadCatalog().version);
+    }
+
+    @Test
     void catalogRoundTripAndPlayerGrantDedupe() throws Exception {
         // Test store against temp root via package-visible test hook OR
         // pure static helpers: serialize catalog JSON with Gson and PlayerTitleData grant logic.

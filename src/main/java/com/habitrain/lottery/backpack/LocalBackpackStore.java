@@ -21,11 +21,30 @@ import java.util.UUID;
 public final class LocalBackpackStore {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
+    private static final ThreadLocal<Boolean> APPLYING_COMMITTED = ThreadLocal.withInitial(() -> false);
+
+    public static boolean isApplyingCommitted() { return APPLYING_COMMITTED.get(); }
+
+    /** Seed pre-migration faction balances once, preserving any already saved rewards. */
+    public static boolean prepareOnline(net.minecraft.server.level.ServerPlayer player) {
+        LoadResult load = loadResult(player.getUUID());
+        if (load.corrupt()) return false;
+        if (!load.isMissing() && !load.factionCardsPendingJoin()) return true;
+        var cards = new java.util.EnumMap<FactionCardType, Integer>(FactionCardType.class);
+        cards.putAll(io.wifi.starrailexpress.backpack.BackpackManager.getCards(player));
+        if (load.ok()) for (FactionCardType type : FactionCardType.values()) {
+            if (type != FactionCardType.NONE) cards.merge(type,
+                    load.cards().getOrDefault(type.questKey.toLowerCase(Locale.ROOT), 0), Math::max);
+        }
+        return saveFromEnumMap(player.getUUID(), cards);
+    }
+
     private LocalBackpackStore() {
     }
 
     public static final class FileRoot {
         public int version = 1;
+        public java.util.Set<String> rewardReceipts = new java.util.HashSet<>();
         public Map<String, Integer> cards = new HashMap<>();
         public int selfSelectCards = 0;
         public int limitBreakCards = 0;
@@ -46,6 +65,8 @@ public final class LocalBackpackStore {
             CORRUPT
         }
 
+        private java.util.Set<String> rewardReceipts = java.util.Set.of();
+        public java.util.Set<String> rewardReceipts() { return rewardReceipts; }
         private final Status status;
         private final Map<String, Integer> cards;
         private final int selfSelectCards;
@@ -151,8 +172,10 @@ public final class LocalBackpackStore {
         if (root == null || root.cards == null) {
             return LoadResult.corrupt(null);
         }
-        return new LoadResult(LoadResult.Status.OK, normalize(root), root.selfSelectCards,
+        LoadResult result = new LoadResult(LoadResult.Status.OK, normalize(root), root.selfSelectCards,
                 root.limitBreakCards, root.factionCardsPendingJoin, null);
+        result.rewardReceipts = root.rewardReceipts == null ? java.util.Set.of() : java.util.Set.copyOf(root.rewardReceipts);
+        return result;
     }
 
     public static LoadResult loadFrom(Path path) {
@@ -169,9 +192,11 @@ public final class LocalBackpackStore {
         }
         if (load.value() == null || load.value().cards == null) return LoadResult.corrupt(null);
         Map<String, Integer> cards = normalize(load.value());
-        return new LoadResult(load.usedBackup() ? LoadResult.Status.FROM_BACKUP : LoadResult.Status.OK, cards,
+        LoadResult result = new LoadResult(load.usedBackup() ? LoadResult.Status.FROM_BACKUP : LoadResult.Status.OK, cards,
                 Math.max(0, load.value().selfSelectCards), Math.max(0, load.value().limitBreakCards),
                 load.value().factionCardsPendingJoin, null);
+        result.rewardReceipts = load.value().rewardReceipts == null ? java.util.Set.of() : java.util.Set.copyOf(load.value().rewardReceipts);
+        return result;
     }
 
     /**
@@ -214,12 +239,51 @@ public final class LocalBackpackStore {
         if (existing.corrupt()) return false;
         root.selfSelectCards = existing.ok() ? existing.selfSelectCards() : 0;
         root.limitBreakCards = existing.ok() ? existing.limitBreakCards() : 0;
+        root.rewardReceipts.addAll(existing.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(existing, fromSreMemory);
         // Audit B-13: the backup flag must be passed explicitly (as
         // PlayerLotteryStore.saveTo does). Relying on it — or disabling it — is what
         // made the .bak fallback unable to engage: without a .bak a corrupt card file
         // can only be quarantined, so every faction-card balance is lost for good.
         return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), root, GSON, false, true);
+    }
+
+
+    /** Commit a whole reward group and its receipt in the same backpack file. */
+    public static boolean applyOnce(UUID uuid, String receipt, java.util.function.Consumer<FileRoot> mutation) {
+        if (!WorldLotteryPaths.ready() || uuid == null || receipt == null) return false;
+        LoadResult load = loadResult(uuid);
+        if (load.corrupt()) return false;
+        if (load.rewardReceipts().contains(receipt)) return true;
+        FileRoot next = new FileRoot();
+        next.cards = load.ok() ? new HashMap<>(load.cards()) : defaultCards();
+        next.selfSelectCards = load.selfSelectCards();
+        next.limitBreakCards = load.limitBreakCards();
+        next.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
+        next.rewardReceipts.addAll(load.rewardReceipts());
+        mutation.accept(next);
+        next.rewardReceipts.add(receipt);
+        return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), next, GSON, true, !load.usedBackup());
+    }
+
+    /** Mirror an already committed file without allowing intermediate component states to overwrite it. */
+    public static void syncCommitted(net.minecraft.server.level.ServerPlayer player) {
+        LoadResult load = loadResult(player.getUUID());
+        if (!load.ok()) return;
+        boolean previous = APPLYING_COMMITTED.get();
+        APPLYING_COMMITTED.set(true);
+        try {
+            var current = io.wifi.starrailexpress.backpack.BackpackManager.getCards(player);
+            for (FactionCardType type : FactionCardType.values()) {
+                if (type == FactionCardType.NONE) continue;
+                int delta = load.cards().getOrDefault(type.questKey.toLowerCase(Locale.ROOT), 0)
+                        - current.getOrDefault(type, 0);
+                if (delta != 0) io.wifi.starrailexpress.backpack.BackpackManager.addCard(player, type, delta);
+            }
+            io.wifi.starrailexpress.backpack.BackpackManager.resend(player);
+        } finally {
+            APPLYING_COMMITTED.set(previous);
+        }
     }
 
     public static int selfSelectCards(UUID uuid) {
@@ -253,6 +317,7 @@ public final class LocalBackpackStore {
         root.cards = load.ok() ? new HashMap<>(load.cards()) : defaultCards();
         root.selfSelectCards = load.selfSelectCards();
         root.limitBreakCards = (int) target;
+        root.rewardReceipts.addAll(load.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
         // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
         return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
@@ -279,6 +344,7 @@ public final class LocalBackpackStore {
         if (target < 0 || target > Integer.MAX_VALUE) return false;
         root.selfSelectCards = (int) target;
         root.limitBreakCards = load.limitBreakCards();
+        root.rewardReceipts.addAll(load.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
         // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
         return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
@@ -294,6 +360,7 @@ public final class LocalBackpackStore {
         if (existing.corrupt()) return false;
         root.selfSelectCards = existing.selfSelectCards();
         root.limitBreakCards = existing.limitBreakCards();
+        root.rewardReceipts.addAll(existing.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(existing, false);
         // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
         return AtomicJsonFiles.writeJson(path, root, GSON, false, true);

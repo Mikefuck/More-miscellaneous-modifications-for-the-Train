@@ -113,6 +113,8 @@ public final class CrateService {
 
     /** A durable intent, saved before mutating any player or card balance. */
     public static final class PendingOpen {
+        /** 0 = legacy balance inference; 1 = backpack rewards and receipt committed together. */
+        public int rewardProtocol;
         public String openId, playerId, crateId, keyId;
         public String weekKey, monthKey, primaryQualityId;
         public List<Reward> rewards = new ArrayList<>();
@@ -123,6 +125,8 @@ public final class CrateService {
         public Map<String, Long> outputDelta = new LinkedHashMap<>();
         public int apples;
         public long inventoryRevision;
+        public long taskEpochDay = -1;
+        public Map<String, Integer> dailyTaskTargets = new LinkedHashMap<>();
     }
 
     public static final class State {
@@ -270,6 +274,10 @@ public final class CrateService {
         for (CrateCatalog.Entry entry : CrateCatalog.builtins()) {
             state.crates.computeIfAbsent(entry.id(), ignored -> defaultPool(entry));
         }
+        if (state.crates.size() > 256) throw new IllegalArgumentException("too many crates");
+        for (var entry : state.crates.entrySet())
+            if (entry.getKey() == null || !entry.getKey().matches("[a-z0-9_.-]{1,48}") || entry.getValue() == null)
+                throw new IllegalArgumentException("invalid crate id");
         refreshDefinitions();
         for (Definition definition : DEFINITIONS.values()) {
             CratePool pool = state.crates.get(definition.id());
@@ -280,6 +288,7 @@ public final class CrateService {
             if (pool.extraRewards == null) pool.extraRewards = new ArrayList<>();
             normalizePool(definition, pool);
             if (migrateRewards) migrateRewardPool(pool);
+            validateMetadata(definition.id(), pool);
             if (pool.customPool) {
                 try {
                     validatePool(definition, pool);
@@ -380,7 +389,9 @@ public final class CrateService {
 
     public static synchronized String configJson() {
         normalizeState();
-        return GSON.toJson(state);
+        State editable = copyState(state);
+        editable.pendingOpens.clear();
+        return GSON.toJson(editable);
     }
 
     public static synchronized String catalogJson() {
@@ -481,12 +492,6 @@ public final class CrateService {
                 "industrial", "hazard").contains(pool.appearancePreset)
                 || !Set.of("star", "diamond", "bolt", "none").contains(pool.badge))
             throw new IllegalArgumentException("invalid appearance preset");
-        ResourceLocation crateIcon = ResourceLocation.parse(pool.icon);
-        ResourceLocation keyIcon = ResourceLocation.parse(pool.keyIcon);
-        if (!pool.icon.contains(":") || !pool.keyIcon.contains(":")
-                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(crateIcon)
-                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(keyIcon))
-            throw new IllegalArgumentException("invalid icon id");
         if (pool.skinDrawCount < 0 || pool.skinDrawCount > 10 || pool.rollCount < 1 || pool.rollCount > 10
                 || pool.minimumSkinCount < 0 || pool.minimumSkinCount > pool.rollCount)
             throw new IllegalArgumentException("invalid draw count");
@@ -506,9 +511,17 @@ public final class CrateService {
                 throw new IllegalArgumentException("invalid reward type");
             if ("card".equals(reward.type) && com.habitrain.lottery.api.player.HabiCardKind.parse(reward.cardKind) == null)
                 throw new IllegalArgumentException("invalid card kind");
+            if ("card".equals(reward.type))
+                reward.cardKind = com.habitrain.lottery.api.player.HabiCardKind.parse(reward.cardKind).id();
             String kind = "card".equals(reward.type) ? "card/" + reward.cardKind : reward.type;
             if (!seenRewards.add(kind)) throw new IllegalArgumentException("duplicate extra reward");
         }
+        ResourceLocation crateIcon = ResourceLocation.parse(pool.icon);
+        ResourceLocation keyIcon = ResourceLocation.parse(pool.keyIcon);
+        if (!pool.icon.contains(":") || !pool.keyIcon.contains(":")
+                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(crateIcon)
+                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(keyIcon))
+            throw new IllegalArgumentException("invalid icon id");
     }
 
     private static void validatePool(Definition definition, CratePool pool) {
@@ -644,6 +657,8 @@ public final class CrateService {
         normalizeState();
         CratePool pool = state.crates.get(canonicalCrate);
         if (pool == null || !pool.enabled) return fail(canonicalCrate, canonicalKey, "crates.disabled");
+        if (pool.rollCount < 1 || pool.rollCount > 10 || pool.skinDrawCount < 0 || pool.skinDrawCount > 10)
+            return fail(canonicalCrate, canonicalKey, "crates.disabled");
         int crateCount = current.systemItems.getOrDefault(crateItemId(canonicalCrate), 0);
         int keyCount = current.systemItems.getOrDefault(canonicalKey, 0);
         if (crateCount <= 0 || keyCount <= 0) return fail(canonicalCrate, canonicalKey, "crates.missing_items");
@@ -732,7 +747,10 @@ public final class CrateService {
         for (String id : cardAmounts.keySet()) cardsBefore.put(id, com.habitrain.lottery.api.player.HabiCardApi.get(
                 player.getUUID(), com.habitrain.lottery.api.player.HabiCardKind.parse(id)));
         if (state.pendingOpens.size() >= 1024) return fail(canonicalCrate, canonicalKey, "crates.pending");
+        if (!cardAmounts.isEmpty() && !LocalBackpackStore.prepareOnline(player))
+            return fail(canonicalCrate, canonicalKey, "crates.card_unavailable");
         PendingOpen pending = new PendingOpen();
+        pending.rewardProtocol = 1;
         pending.openId = openId;
         pending.playerId = player.getUUID().toString();
         pending.crateId = canonicalCrate; pending.keyId = canonicalKey;
@@ -747,6 +765,7 @@ public final class CrateService {
         pending.monthlyDelta = stagedMonthly;
         pending.outputDelta = stagedOutput;
         pending.apples = apples;
+        com.habitrain.lottery.daily.config.DailyTaskTracker.prepareCrateProgress(player, pending);
         state.pendingOpens.put(openId, pending);
         if (!saveState()) {
             state.pendingOpens.remove(openId);
@@ -769,19 +788,19 @@ public final class CrateService {
         try {
             for (Reward reward : pending.rewards) if ("card".equals(reward.kind()))
                 amounts.merge(reward.id(), reward.amount(), Math::addExact);
-            for (Map.Entry<String, Integer> entry : amounts.entrySet()) {
-                var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(entry.getKey());
-                Integer before = pending.cardBefore.get(entry.getKey());
-                if (kind == null || before == null) return fail(pending.crateId, pending.keyId, "crates.pending");
-                int target = Math.addExact(before, entry.getValue());
-                int live = com.habitrain.lottery.api.player.HabiCardApi.get(uuid, kind);
-                if (live == target) continue;
-                if (live != before || !com.habitrain.lottery.api.player.HabiCardApi.set(uuid, kind, target).ok()) {
-                    rollbackCards(uuid, pending.cardBefore, amounts);
+            if (!current.crateOpenHistory.contains(pending.openId) && !amounts.isEmpty()) {
+                // Old in-flight operations have no durable card receipt. Current balances cannot
+                // distinguish an undelivered card from a delivered card the player already used.
+                if (pending.rewardProtocol != 1) {
+                    HabiLotteryMod.LOGGER.error("Legacy crate open {} for {} needs manual card reconciliation",
+                            pending.openId, uuid);
                     return fail(pending.crateId, pending.keyId, "crates.pending");
                 }
+                if (!grantCardsOnce(uuid, pending.openId, amounts))
+                    return fail(pending.crateId, pending.keyId, "crates.pending");
+                if (online != null) LocalBackpackStore.syncCommitted(online);
             }
-            if (!current.crateReceipts.containsKey(pending.openId)) {
+            if (!current.crateOpenHistory.contains(pending.openId)) {
                 boolean saved = store.applyToPlayerWithRollback(uuid, data -> {
                     if (!SystemItemBalances.change(data.systemItems, crateItemId(pending.crateId), -1)
                             || !SystemItemBalances.change(data.systemItems, pending.keyId, -1))
@@ -793,6 +812,7 @@ public final class CrateService {
                     }
                     data.inventoryRevision = Math.addExact(data.inventoryRevision, 1);
                     pending.inventoryRevision = data.inventoryRevision;
+                    com.habitrain.lottery.daily.config.DailyTaskTracker.commitCrateProgress(data, pending);
                     data.crateOpenHistory.add(pending.openId);
                     data.crateReceipts.put(pending.openId, GSON.toJson(pending));
                     if (data.crateReceipts.size() > 512) {
@@ -801,12 +821,11 @@ public final class CrateService {
                     }
                 });
                 if (!saved) {
-                    rollbackCards(uuid, pending.cardBefore, amounts);
                     return fail(pending.crateId, pending.keyId, "crates.pending");
                 }
             } else {
                 PendingOpen receipt = GSON.fromJson(current.crateReceipts.get(pending.openId), PendingOpen.class);
-                if (receipt != null) pending.inventoryRevision = receipt.inventoryRevision;
+                pending.inventoryRevision = receipt == null ? current.inventoryRevision : receipt.inventoryRevision;
             }
             if (state.pendingOpens.containsKey(pending.openId)) {
                 State snapshot = copyState(state);
@@ -875,13 +894,25 @@ public final class CrateService {
         stagedMonthly.merge(skin.quality().id(), 1, Integer::sum);
     }
 
-    private static void rollbackCards(UUID uuid, Map<String, Integer> before, Map<String, Integer> amounts) {
-        before.forEach((id, count) -> {
-            var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(id);
-            if (kind == null || com.habitrain.lottery.api.player.HabiCardApi.get(uuid, kind) != (long) count + amounts.getOrDefault(id, 0))
-                return;
-            if (!com.habitrain.lottery.api.player.HabiCardApi.set(uuid, kind, count).ok())
-                HabiLotteryMod.LOGGER.error("Failed to restore card {} for {} after crate failure", id, uuid);
+    private static boolean grantCardsOnce(UUID uuid, String openId, Map<String, Integer> amounts) {
+        return LocalBackpackStore.applyOnce(uuid, "crate:" + openId, next -> {
+            amounts.forEach((id, amount) -> {
+                var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(id);
+                if (kind == null || amount <= 0) throw new IllegalArgumentException("Invalid crate card");
+                int before = switch (kind) {
+                    case SELF_SELECT -> next.selfSelectCards;
+                    case LIMIT_BREAK -> next.limitBreakCards;
+                    default -> next.cards.getOrDefault(kind.id(), 0);
+                };
+                int target = Math.addExact(before, amount);
+                if (target > com.habitrain.lottery.api.player.HabiCardApi.MAX_COUNT)
+                    throw new IllegalArgumentException("Crate card balance overflow");
+                switch (kind) {
+                    case SELF_SELECT -> next.selfSelectCards = target;
+                    case LIMIT_BREAK -> next.limitBreakCards = target;
+                    default -> next.cards.put(kind.id(), target);
+                }
+            });
         });
     }
 

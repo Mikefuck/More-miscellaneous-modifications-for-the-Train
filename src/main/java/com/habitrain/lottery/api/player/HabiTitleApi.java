@@ -162,12 +162,9 @@ public final class HabiTitleApi {
             return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
         }
         ServerPlayer online = HabiLotteryApi.online(uuid);
-        if (online != null) {
-            TitleService.clearOnline(online);
-        } else {
-            TitleService.clearOffline(uuid);
-        }
-        return HabiAssetResult.success();
+        boolean saved = online != null ? TitleService.clearOnlineChecked(online)
+                : LocalTitleStore.get().clearChecked(uuid);
+        return saved ? HabiAssetResult.success() : HabiAssetResult.fail(HabiFailure.WRITE_FAILED);
     }
 
     public static HabiAssetResult clear(ServerPlayer player) {

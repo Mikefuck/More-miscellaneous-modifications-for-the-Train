@@ -14,6 +14,8 @@ public final class PlayerLotteryData {
     public long updatedAt;
     /** New currency. Legacy coin and draw balances are discarded, never converted. */
     public int greenApples;
+    /** Long-lived reward transaction receipts; independent of the bounded public grant-key window. */
+    public Set<String> rewardReceipts = new HashSet<>();
     /** Virtual system rewards, separate from the physical player inventory. */
     public Map<String, Integer> systemItems = new HashMap<>();
     public Map<String, Map<String, Boolean>> unlocked = new HashMap<>();
@@ -26,7 +28,7 @@ public final class PlayerLotteryData {
     public Map<String, String> equipped = new HashMap<>();
     /** Canonical type/id entries for which this shooter uses the original weapon sounds. */
     public Set<String> disabledSkinSounds = new HashSet<>();
-    /** Durable grant keys (insertion-order LRU, cap {@link #RECENT_GRANTS_CAP}). */
+    /** Most recent distinct grant keys in insertion order, cap {@link #RECENT_GRANTS_CAP}. */
     public Set<String> recentGrants = new RecentGrants();
 
     /** UTC epoch day of last login settlement; -1 = never. */
@@ -35,7 +37,7 @@ public final class PlayerLotteryData {
     /** "yyyy-MM" for loginDaysThisMonth, UTC. */
     public String loginDaysMonthKey = "";
     public Set<Integer> loginDaysThisMonth = new HashSet<>();
-    /** UTC day and successful faction-card uses for the two-uses-per-day rule. */
+    /** UTC day and successful faction-card uses; base limit is DailyFactionCardService.MAX_DAILY_USES. */
     public long lastFactionCardUseEpochDay = -1L;
     public int factionCardUsesToday;
     /** Extra faction-card uses redeemed from limit break cards on the current UTC day. */
@@ -79,6 +81,7 @@ public final class PlayerLotteryData {
         c.version = version;
         c.updatedAt = updatedAt;
         c.greenApples = greenApples;
+        if (rewardReceipts != null) c.rewardReceipts.addAll(rewardReceipts);
         if (systemItems != null) c.systemItems.putAll(systemItems);
         unlocked.forEach((k, v) -> c.unlocked.put(k, new HashMap<>(v)));
         if (ownedSkinCounts != null) c.ownedSkinCounts.putAll(ownedSkinCounts);
@@ -110,7 +113,7 @@ public final class PlayerLotteryData {
         return c;
     }
 
-    /** Wrap {@code src} as a capped LRU set; copies if {@code src} is not already one. */
+    /** Wrap {@code src} as a capped insertion-order set; copies if necessary. */
     public static Set<String> asRecentGrants(Set<String> src) {
         if (src instanceof RecentGrants) {
             return src;

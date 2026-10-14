@@ -49,6 +49,7 @@ public final class SkinItems {
         String canonical = SkinDefinition.normalizeType(type);
         String previous = BINDINGS.putIfAbsent(java.util.Objects.requireNonNull(item), canonical);
         if (previous != null && !previous.equals(canonical)) throw new IllegalStateException("Conflicting skin item: " + item);
+        if (previous == null) SkinRegistrationTransaction.changed(BINDINGS, item, null, canonical);
     }
     public static String typeOf(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return null;

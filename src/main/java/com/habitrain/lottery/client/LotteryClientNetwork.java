@@ -53,6 +53,19 @@ public final class LotteryClientNetwork {
     }
 
     private static void registerCommonReceivers() {
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT.register(
+                (handler, client) -> LotteryNetwork.resetClientState());
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.JOIN.register(
+                (handler, sender, client) -> LotteryNetwork.resetClientState());
+        ClientPlayNetworking.registerGlobalReceiver(com.habitrain.lottery.network.MailboxPages.Snapshot.TYPE,
+                (payload, context) -> context.client().execute(() -> {
+                    LotteryNetwork.ClientLotteryState.mailboxJson = payload.json();
+                    LotteryNetwork.ClientLotteryState.mailboxOffset = payload.offset();
+                    LotteryNetwork.ClientLotteryState.mailboxNext = payload.next();
+                    LotteryNetwork.ClientLotteryState.mailboxTotal = payload.total();
+                    LotteryNetwork.ClientLotteryState.mailboxUnclaimed = payload.unclaimed();
+                    LotteryNetwork.ClientLotteryState.mailboxVersion++;
+                }));
         ClientPlayNetworking.registerGlobalReceiver(DailyTaskBoardS2C.TYPE, (payload, context) ->
                 context.client().execute(() -> {
                     try {
@@ -290,7 +303,14 @@ public final class LotteryClientNetwork {
         }
     }
 
+    public static boolean clientRequestMailboxPage(int offset) {
+        if (!ClientPlayNetworking.canSend(com.habitrain.lottery.network.MailboxPages.Request.TYPE)) return false;
+        ClientPlayNetworking.send(new com.habitrain.lottery.network.MailboxPages.Request(Math.max(0, offset)));
+        return true;
+    }
+
     public static boolean clientRequestMailbox() {
+        if (clientRequestMailboxPage(LotteryNetwork.ClientLotteryState.mailboxOffset)) return true;
         if (!canSendPlay()) {
             return false;
         }

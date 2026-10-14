@@ -334,25 +334,8 @@ public final class CardUseService {
         if (type == FactionCardType.NONE) return false;
         ActiveCardForces.markRefundPending(uuid);
         ServerPlayer online = findOnline(uuid);
-        if (online != null) {
-            // Bypass ProgressionDataManager: its refund hook delegates here.
-            BackpackManager.addCard(online, type, 1);
-            ActiveCardForces.remove(uuid);
-            try {
-                if (!LocalBackpackStore.saveFromEnumMap(uuid, BackpackManager.getCards(online))) {
-                    HabiLotteryMod.LOGGER.error("Forced-card refund persist failed for {}", uuid);
-                }
-            } catch (Throwable t) {
-                HabiLotteryMod.LOGGER.error("Forced-card refund persist threw for {}", uuid, t);
-            }
-        } else {
-            if (!LocalBackpackStore.addCards(uuid, type, 1)) {
-                HabiLotteryMod.LOGGER.error("Offline forced-card refund failed to persist backpack for {}", uuid);
-                return false;
-            }
-            ActiveCardForces.remove(uuid);
-        }
-        DailyFactionCardService.refundSuccessfulUse(uuid);
+        if (!FactionCardRefunds.refund(uuid, type, online)) return false;
+        ActiveCardForces.remove(uuid);
         if (online != null) {
             online.sendSystemMessage(Component.literal("§e[职业卡] 阵营卡未兑现，已退还 1 张")
                     .append(Component.translatable(type.displayName))

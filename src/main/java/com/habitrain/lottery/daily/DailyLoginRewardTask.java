@@ -9,16 +9,15 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
 /**
- * 内置「每日登录」任务：玩家登录后，每日任务终端上出现一条当日可领取的奖励。
+ * 旧版「每日登录」任务兼容入口；正常初始化使用 DailyTaskConfigService 的可配置任务。
  *
  * <p>历史行为（1.1.28 及以前）：登录时自动白送 4 张阵营卡（杀手 / 平民 / 中立 /
  * 杀手方中立各 1 张），另有一套自动到账的连续签到绿苹果。1.1.29 起两者一并取消，
  * 并入本任务：登录把进度推进到 1/1，玩家在每日任务终端手动领取
  * {@link #REWARD_GREEN_APPLES} 绿苹果。<b>奖励不再是角色卡。</b>
  *
- * <p>发放走 {@link HabiLotteryApi#grantGreenApples} 的去重键（UTC 日唯一），
- * 因此「领取成功但标记未落盘」的崩溃重试不会重复发放；每日任务面板自身也按 UTC
- * 日记录已领取状态，两者互为兜底。
+ * <p>显式调用本兼容入口的扩展使用 {@link HabiLotteryApi#grantGreenApples} 的最近 64 个
+ * 不同键去重窗口。当前默认任务由 DailyRewardService 使用持久化意图和长期回执恢复。
  */
 public final class DailyLoginRewardTask {
     /** 任务 ID：{@code habitrain_lottery:daily_login}。 */
@@ -40,7 +39,7 @@ public final class DailyLoginRewardTask {
     }
 
     /**
-     * 在模组初始化时注册内置任务。重复调用是空操作（任务表本身拒绝重复 ID）。
+     * 显式启用旧任务的兼容入口，主模组不调用。重复调用是空操作。
      */
     public static synchronized void register() {
         if (registered) {

@@ -1,27 +1,21 @@
 package com.habitrain.lottery.daily.config;
 
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.api.player.HabiAssetResult;
-import com.habitrain.lottery.api.player.HabiTitleApi;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.MailDraft;
 import com.habitrain.lottery.mail.MailReward;
 import com.habitrain.lottery.mail.MailService;
 import com.habitrain.lottery.storage.GrantKeys;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Pays out a configured daily task. Rewards go through the mailbox reward pipeline, so every
- * asset type (apples, cards, skins, crates, keys) is credited all-or-nothing, and crates/keys
- * resolve against the live crate catalogue at claim time.
- *
- * <p>A durable grant key ({@code daily:<task>:<day>}) is recorded after a successful payout, so
- * the retry of a claim that crashed after paying out never pays a second time.</p>
+ * Configured daily rewards use a stable player/task/day delivery intent and per-store receipts.
+ * Mail delivery uses a stable letter ID. Titles remain immediate rewards in either delivery mode.
+ * A failed stage retains the intent and does not consume the daily claim.
  */
 public final class DailyRewardService {
     private DailyRewardService() { }
@@ -35,49 +29,24 @@ public final class DailyRewardService {
         if (player == null || task == null) return false;
         PlayerLotteryStore store = PlayerLotteryStore.get();
         String key = grantKey(task.id, epochDay);
-        if (GrantKeys.contains(store.getOrLoad(player), key)) return true;
-
-        List<MailReward> mailRewards = new ArrayList<>();
-        List<String> titles = new ArrayList<>();
-        for (DailyRewardEntry reward : task.rewards) {
-            MailReward converted = toMailReward(player, task, reward, epochDay);
-            if (converted != null) mailRewards.add(converted);
-            else if (DailyRewardEntry.TITLE.equals(reward.kind)) titles.add(reward.id);
-            else {
-                player.sendSystemMessage(Component.literal("§c[每日任务] 奖励「" + reward.kind + ":" + reward.id
-                        + "」已失效（箱子被归档或皮肤已移除），请联系管理员"));
-                return false;
+        if (store.isFlushDeferred() || store.isLoadFailed(player.getUUID())) return false;
+        if (GrantKeys.contains(store.getOrLoad(player), key)) return !store.isLoadFailed(player.getUUID());
+        boolean delivered = com.habitrain.lottery.mail.RewardDelivery.grant(player, key, () -> {
+            List<MailReward> rewards = new ArrayList<>();
+            List<String> titles = new ArrayList<>();
+            for (DailyRewardEntry reward : task.rewards) {
+                if (DailyRewardEntry.TITLE.equals(reward.kind)) { titles.add(reward.id); continue; }
+                MailReward converted = toMailReward(player, task, reward, epochDay);
+                if (converted == null) return null;
+                rewards.add(converted);
             }
-        }
-
-        boolean mail = "mail".equals(task.delivery);
-        if (!mail && MailService.blockedDuringMatch(player, mailRewards)) {
-            // Cards cannot be credited mid-match; a letter keeps the claim instead of refusing it.
-            mail = true;
-            player.sendSystemMessage(Component.literal("§e[每日任务] 对局中不能直接领取角色卡，奖励已改为邮件发送"));
-        }
-        boolean delivered;
-        if (mailRewards.isEmpty()) {
-            delivered = true;
-        } else if (mail) {
-            delivered = MailService.send(player, new MailDraft("每日任务", "每日任务奖励：" + task.title,
-                    "恭喜完成每日任务「" + task.title + "」，请查收附件奖励。", 0L, mailRewards));
-        } else {
-            delivered = MailService.grantTransactional(player, mailRewards);
-        }
+            boolean mail = "mail".equals(task.delivery) || MailService.blockedDuringMatch(player, rewards);
+            MailDraft letter = mail && !rewards.isEmpty() ? new MailDraft("每日任务", "每日任务奖励：" + task.title,
+                    "恭喜完成每日任务「" + task.title + "」，请查收附件奖励。", 0L, rewards) : null;
+            return new com.habitrain.lottery.mail.RewardDelivery.Plan(rewards, titles, letter);
+        });
         if (!delivered) return false;
-        for (String title : titles) {
-            HabiAssetResult result = HabiTitleApi.grant(player, title);
-            if (result.ok()) player.sendSystemMessage(Component.literal("§a[每日任务] 获得称号「" + title + "」"));
-            else HabiLotteryMod.LOGGER.warn("Daily task {} title reward '{}' failed: {}", task.id, title, result.failure());
-        }
-        store.update(player.getUUID(), data -> GrantKeys.tryConsume(data, key));
-        if (!store.flush(player.getUUID())) {
-            // Rewards are already delivered; the key stays dirty in memory and the periodic flush retries it.
-            HabiLotteryMod.LOGGER.error("Daily task {} for {} paid out but the grant key is not yet on disk",
-                    task.id, player.getUUID());
-        }
-        return true;
+        return store.applyToPlayerWithRollback(player.getUUID(), data -> GrantKeys.tryConsume(data, key));
     }
 
     private static MailReward toMailReward(ServerPlayer player, DailyTaskDefinition task, DailyRewardEntry reward, long day) {

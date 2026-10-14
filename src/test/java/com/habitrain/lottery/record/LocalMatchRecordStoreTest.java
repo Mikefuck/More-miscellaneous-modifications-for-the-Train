@@ -121,6 +121,48 @@ class LocalMatchRecordStoreTest {
         return record;
     }
 
+    @Test
+    void corruptIndexRowDoesNotHideGoodRowsOrBlockNewSaves() throws Exception {
+        Path root = temp.resolve("corrupt-index");
+        assertTrue(LocalMatchRecordStore.save(root, match("first", 1)));
+        Path index = root.resolve("records/index.jsonl");
+        Files.writeString(index, "{bad-json\n", java.nio.file.StandardOpenOption.APPEND);
+        assertEquals(1, LocalMatchRecordStore.listWindow(root, 0, 10).total());
+        assertTrue(LocalMatchRecordStore.save(root, match("second", 2)));
+        assertEquals(2, LocalMatchRecordStore.listWindow(root, 0, 10).total());
+        assertTrue(LocalMatchRecordStore.repairIndex(root));
+        assertValidIndexAndMatchFiles(root, "first", "second");
+    }
+
+    @Test
+    void failedPruneKeepsEntitiesAndReportsFailureThenRebuildRepairsIndex() throws Exception {
+        Path root = temp.resolve("prune-failure");
+        Path matches = root.resolve("records/matches");
+        Files.createDirectories(matches);
+        var gson = new com.google.gson.Gson();
+        StringBuilder rows = new StringBuilder();
+        for (int i = 0; i < 201; i++) {
+            MatchRecord record = match("match-" + i, i);
+            Files.writeString(matches.resolve(record.matchId + ".json"), gson.toJson(record));
+            rows.append(gson.toJson(record.toSummary())).append('\n');
+        }
+        Path index = root.resolve("records/index.jsonl");
+        Files.writeString(index, rows);
+        Path blocker = index.resolveSibling("index.jsonl.bak");
+        Files.createDirectory(blocker);
+        Files.writeString(blocker.resolve("blocked"), "no replacement");
+        assertFalse(LocalMatchRecordStore.save(root, match("newest", 999)));
+        assertTrue(Files.isRegularFile(matches.resolve("match-0.json")));
+        assertTrue(Files.isRegularFile(matches.resolve("match-1.json")));
+        Files.delete(blocker.resolve("blocked"));
+        Files.delete(blocker);
+        assertTrue(LocalMatchRecordStore.repairIndex(root));
+        assertEquals(200, LocalMatchRecordStore.listWindow(root, 0, 10).total());
+        assertFalse(Files.exists(matches.resolve("match-0.json")));
+        for (var summary : LocalMatchRecordStore.readAllSummariesNewestFirst(root))
+            assertTrue(LocalMatchRecordStore.load(root, summary.matchId).isPresent());
+    }
+
     private static void assertValidIndexAndMatchFiles(Path lotteryRoot, String... ids) throws Exception {
         Path index = lotteryRoot.resolve("records").resolve("index.jsonl");
         assertTrue(Files.isRegularFile(index));

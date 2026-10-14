@@ -189,7 +189,9 @@ public final class DailyShopService {
 
         // Titles live in their own store: grant them first and take them back if the payment fails.
         List<String> granted = new ArrayList<>();
+        var ownedTitles = new java.util.HashSet<>(HabiTitleApi.owned(player.getUUID()));
         for (String title : titles) {
+            if (ownedTitles.contains(title)) continue;
             if (!HabiTitleApi.grant(player, title).ok()) {
                 revoke(player, granted);
                 return "failed";

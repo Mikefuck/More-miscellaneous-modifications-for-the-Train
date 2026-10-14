@@ -102,7 +102,7 @@ public class BackpackManagerMixin {
     }
 
     private static void persist(ServerPlayer player) {
-        if (player == null || !WorldLotteryPaths.ready()) {
+        if (player == null || !WorldLotteryPaths.ready() || LocalBackpackStore.isApplyingCommitted()) {
             return;
         }
         try {

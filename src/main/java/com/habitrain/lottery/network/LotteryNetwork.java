@@ -340,11 +340,7 @@ public final class LotteryNetwork {
     }
 
     public static void sendMailboxList(ServerPlayer player) {
-        if (player == null) {
-            return;
-        }
-        String json = GSON.toJson(MailService.list(player));
-        sendIfSupported(player, new MailboxListS2C(json));
+        if (player != null) MailboxPages.send(player);
     }
 
     public static boolean isOp(ServerPlayer player) {
@@ -393,6 +389,7 @@ public final class LotteryNetwork {
      * <p>Null-safe: a {@code null} uuid clears nothing and never throws.
      */
     public static void clearRateLimits(UUID playerId) {
+        MailboxPages.forget(playerId);
         if (playerId == null) {
             return;
         }
@@ -621,7 +618,10 @@ public final class LotteryNetwork {
                 catalog.version = 1;
             }
             TitlePaths.ensureDirs();
-            LocalTitleStore.get().saveCatalog(catalog);
+            if (!LocalTitleStore.get().saveCatalogChecked(catalog)) {
+                ServerPlayNetworking.send(player, new AdminActionResultS2C("称号模板保存失败，原模板已保留", false));
+                return;
+            }
             ServerPlayNetworking.send(player, new AdminActionResultS2C("称号模板库已保存", false));
             if (player.server != null) {
                 for (ServerPlayer p : player.server.getPlayerList().getPlayers()) {
@@ -691,13 +691,9 @@ public final class LotteryNetwork {
                     msg = ok ? (display.isBlank() ? "已清空佩戴" : "已设置佩戴称号") : "设佩戴失败（须已拥有）";
                 }
                 case "clear" -> {
-                    if (online != null) {
-                        TitleService.clearOnline(online);
-                    } else {
-                        TitleService.clearOffline(id);
-                    }
-                    ok = true;
-                    msg = "已清空玩家称号";
+                    ok = online != null ? TitleService.clearOnlineChecked(online)
+                            : LocalTitleStore.get().clearChecked(id);
+                    msg = ok ? "已清空玩家称号" : "称号保存失败，未清空";
                 }
                 default -> {
                     ServerPlayNetworking.send(player, new AdminActionResultS2C("未知称号操作: " + mode, false));
@@ -989,6 +985,37 @@ public final class LotteryNetwork {
         return ResourceLocation.fromNamespaceAndPath(HabiLotteryMod.MOD_ID, path);
     }
 
+    public static void resetClientState() {
+        ClientLotteryState.op = false;
+        ClientLotteryState.playerList = new PlayerAdminModels.PlayerListSnapshot();
+        ClientLotteryState.playerListVersion++;
+        ClientLotteryState.lastBackupJson = "";
+        ClientLotteryState.lastBackupVersion++;
+        ClientLotteryState.lastAdminMessage = "";
+        ClientLotteryState.titleCatalogJson = "";
+        ClientLotteryState.titlePlayersJson = "";
+        ClientLotteryState.titleVersion++;
+        ClientLotteryState.mailboxJson = "";
+        ClientLotteryState.mailboxOffset = 0;
+        ClientLotteryState.mailboxNext = -1;
+        ClientLotteryState.mailboxTotal = 0;
+        ClientLotteryState.mailboxUnclaimed = -1;
+        ClientLotteryState.mailboxVersion++;
+        ClientLotteryState.greenApples = 0;
+        ClientLotteryState.cardUseMenuQuestKey = "";
+        ClientLotteryState.cardUseRemainingUses = 0;
+        ClientLotteryState.cardUseRemainingSelfUses = 0;
+        ClientLotteryState.cardBalances = java.util.Map.of();
+        ClientLotteryState.cardInventoryVersion++;
+        ClientLotteryState.cardUseCandidatesJson = "";
+        ClientLotteryState.cardUseMenuVersion++;
+        ClientLoginState.hasData = false;
+        ClientLoginState.epochDay = 0;
+        ClientLoginState.year = ClientLoginState.month = ClientLoginState.dayOfMonth = 0;
+        ClientLoginState.streak = ClientLoginState.loginDaysMask = 0;
+        ClientLoginState.version++;
+    }
+
     /** Client-side cache (fields only; no client class references). */
     public static final class ClientLotteryState {
         public static boolean op;
@@ -1005,6 +1032,10 @@ public final class LotteryNetwork {
         /** Mailbox list JSON from last MailboxListS2C (list of MailJson). */
         public static String mailboxJson = "";
         public static int mailboxVersion;
+        public static int mailboxOffset;
+        public static int mailboxNext = -1;
+        public static int mailboxTotal;
+        public static int mailboxUnclaimed = -1;
         public static int greenApples;
         /** Card-use menu state from CardUseMenuS2C (questKey, remaining uses, candidate JSON). */
         public static String cardUseMenuQuestKey = "";

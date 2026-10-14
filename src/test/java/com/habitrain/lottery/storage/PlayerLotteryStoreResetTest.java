@@ -93,6 +93,53 @@ class PlayerLotteryStoreResetTest {
         PlayerLotteryStore store = PlayerLotteryStore.get();
         assertThrows(IllegalStateException.class, () -> store.onServerStarted(null));
         assertFalse(store.isTakeoverActive());
+        store.reset();
+        assertThrows(IllegalStateException.class, () -> store.onServerStarted(null));
+        assertFalse(store.applyToPlayerWithRollback(id, data -> data.greenApples = 10));
+        assertTrue(store.isLoadFailed(id));
+    }
+
+    @Test
+    void callbackFailureRestoresCacheAndDirtyState() {
+        WorldLotteryPaths.initForTests(temp);
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        UUID id = UUID.randomUUID();
+        assertTrue(store.applyToPlayerWithRollback(id, data -> data.greenApples = 10));
+        assertThrows(ArithmeticException.class, () -> store.applyToPlayerWithRollback(id, data -> {
+            data.greenApples = 1;
+            throw new ArithmeticException("second asset failed");
+        }));
+        assertEquals(10, store.getGreenApples(id));
+        assertFalse(store.isDirty(id));
+        store.reset();
+        assertEquals(10, store.getGreenApples(id));
+    }
+
+    @Test
+    void nullSkinMapIsNormalizedBeforeSnapshot() throws Exception {
+        WorldLotteryPaths.initForTests(temp);
+        UUID id = UUID.randomUUID();
+        Files.writeString(WorldLotteryPaths.playerFile(id), "{\"unlocked\":{\"knife\":null}}");
+        assertTrue(PlayerLotteryStore.get().applyToPlayerWithRollback(id, data -> data.greenApples = 7));
+    }
+
+    @Test
+    void deferredFlushCannotBeReportedAsDurableOrRunTransactionalMutator() {
+        WorldLotteryPaths.initForTests(temp);
+        UUID id = UUID.randomUUID();
+        var store = PlayerLotteryStore.get();
+        store.setGreenApples(id, 5);
+        store.beginDeferredFlush();
+        try {
+            assertFalse(store.flush(id));
+            assertFalse(store.applyToPlayerWithRollback(id, data -> fail("Must not invoke deferred transaction")));
+            assertFalse(Files.exists(WorldLotteryPaths.playerFile(id)));
+        } finally {
+            store.endDeferredFlush();
+        }
+        assertTrue(store.flush(id));
+        store.reset();
+        assertEquals(5, store.getGreenApples(id));
     }
 
     @Test

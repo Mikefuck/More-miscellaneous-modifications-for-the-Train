@@ -57,8 +57,7 @@ public final class DailyTaskTracker {
     private static final Map<UUID, SRERole> PENDING_SETTLEMENT = new LinkedHashMap<>();
     private static final Map<UUID, Boolean> SETTLED_WINS = new HashMap<>();
     private static boolean settlementPending;
-    /** Crate open request ids already counted (bounded, insertion order). */
-    private static final Set<String> COUNTED_OPENS = new java.util.LinkedHashSet<>();
+
 
     private DailyTaskTracker() { }
 
@@ -102,11 +101,34 @@ public final class DailyTaskTracker {
         settlementPending = true;
     }
 
-    /** Called for every successful open reply; a replayed request id (retry after lag) counts once. */
+    /** Compatibility entry point; reply replays do not advance daily progress. */
     public static void onCrateOpened(ServerPlayer player, String crateId, String openId) {
-        if (openId != null && !openId.isBlank() && !COUNTED_OPENS.add(openId)) return;
-        while (COUNTED_OPENS.size() > 512) COUNTED_OPENS.remove(COUNTED_OPENS.iterator().next());
-        safe("crate", () -> record(player, DailyTaskEvent.simple(DailyTaskType.OPEN_CRATE, 1, crateId)));
+        // Compatibility callback. CrateService now commits progress together with its receipt.
+    }
+
+    public static void prepareCrateProgress(ServerPlayer player, com.habitrain.lottery.crate.CrateService.PendingOpen pending) {
+        pending.taskEpochDay = com.habitrain.lottery.grant.LoginRewardService.todayEpochDayUtc();
+        var event = DailyTaskEvent.simple(DailyTaskType.OPEN_CRATE, 1, pending.crateId);
+        for (var task : DailyTaskConfigService.activeFor(player)) {
+            var id = DailyTaskConfigService.boardId(task.id);
+            if (event.matches(task) && !HabiDailyTaskApi.claimed(player, id))
+                pending.dailyTaskTargets.put(id.toString(), Math.min(task.target, HabiDailyTaskApi.progress(player, id) + 1));
+        }
+    }
+
+    /** Runs inside the same player-file mutation as the crate debit and receipt. */
+    public static void commitCrateProgress(com.habitrain.lottery.storage.PlayerLotteryData data,
+                                          com.habitrain.lottery.crate.CrateService.PendingOpen pending) {
+        long today = com.habitrain.lottery.grant.LoginRewardService.todayEpochDayUtc();
+        if (pending.taskEpochDay != today || pending.dailyTaskTargets == null || pending.dailyTaskTargets.isEmpty()) return;
+        if (data.dailyTaskEpochDay != today) {
+            data.dailyTaskEpochDay = today;
+            data.dailyTaskProgress = new LinkedHashMap<>();
+            data.dailyTaskClaims = new HashSet<>();
+            data.dailyTaskPending = new HashSet<>();
+        }
+        if (data.dailyTaskProgress == null) data.dailyTaskProgress = new LinkedHashMap<>();
+        pending.dailyTaskTargets.forEach((id, target) -> data.dailyTaskProgress.merge(id, target, Math::max));
     }
 
     /** {@code kind}: a faction card type, {@code self_select} or {@code limit_break}. */

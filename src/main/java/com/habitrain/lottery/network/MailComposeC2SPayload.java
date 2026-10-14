@@ -184,6 +184,13 @@ public record MailComposeC2SPayload(
         int fail = 0;
         switch (payload.targetMode) {
             case MODE_ALL_PLAYERS -> {
+                Map<UUID, String> recipients;
+                try { recipients = collectAllKnownPlayers(server); }
+                catch (RuntimeException failure) {
+                    HabiLotteryMod.LOGGER.error("Unable to collect all mail recipients", failure);
+                    player.sendSystemMessage(Component.literal("§c[邮箱] 收件人读取失败，未发送全员邮件"));
+                    return;
+                }
                 for (ServerPlayer p : server.getPlayerList().getPlayers()) {
                     if (MailService.send(p, draft)) {
                         ok++;
@@ -193,7 +200,7 @@ public record MailComposeC2SPayload(
                 }
                 // 离线部分：白名单（含从未进服）+ 曾进服玩家（playerdata），按 UUID 去重。
                 // 在线玩家已在上面发过，这里跳过，避免重复发放。
-                for (Map.Entry<UUID, String> entry : collectAllKnownPlayers(server).entrySet()) {
+                for (Map.Entry<UUID, String> entry : recipients.entrySet()) {
                     UUID uuid = entry.getKey();
                     if (server.getPlayerList().getPlayer(uuid) != null) {
                         continue;
@@ -267,18 +274,8 @@ public record MailComposeC2SPayload(
     private static Map<UUID, String> collectAllKnownPlayers(MinecraftServer server) {
         Map<UUID, String> players = new LinkedHashMap<>();
         try {
-            // 白名单条目携带 GameProfile（名字 + UUID，含从未进服玩家的登记 UUID）。
-            // getUser() 在映射中是包私有方法，这里通过反射读取（与 resolveOfflineUuid 的防御式风格一致）。
-            var getUserMethod = net.minecraft.server.players.StoredUserEntry.class
-                    .getDeclaredMethod("getUser");
-            getUserMethod.setAccessible(true);
             for (var entry : server.getPlayerList().getWhiteList().getEntries()) {
-                GameProfile profile;
-                try {
-                    profile = (GameProfile) getUserMethod.invoke(entry);
-                } catch (Throwable ignored) {
-                    profile = null;
-                }
+                GameProfile profile = (GameProfile) ((com.habitrain.lottery.mixin.StoredUserEntryAccessor) entry).habitrain$getUser();
                 if (profile == null) {
                     continue;
                 }
@@ -294,7 +291,7 @@ public record MailComposeC2SPayload(
                 players.putIfAbsent(id, name == null || name.isBlank() ? shortUuid(id) : name);
             }
         } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("Mail all-player whitelist scan failed: {}", t.toString());
+            throw new IllegalStateException("白名单读取失败，全员发送已取消", t);
         }
         try {
             Path dataDir = server.getWorldPath(LevelResource.PLAYER_DATA_DIR);
@@ -311,7 +308,7 @@ public record MailComposeC2SPayload(
                 }
             }
         } catch (Throwable t) {
-            HabiLotteryMod.LOGGER.warn("Mail all-player playerdata scan failed: {}", t.toString());
+            throw new IllegalStateException("玩家存档目录读取失败，全员发送已取消", t);
         }
         return players;
     }

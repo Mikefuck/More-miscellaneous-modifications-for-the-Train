@@ -60,7 +60,7 @@ public final class HabiLotteryApi {
         return addGreenApples(player == null ? null : player.getUUID(), delta);
     }
 
-    /** Grants apples once per key when {@code dedupe} is true. */
+    /** When dedupe is true, rejects keys still in the last-64-distinct-keys insertion window. */
     public static HabiAssetResult grantGreenApples(UUID uuid, int amount, String reason, boolean dedupe) {
         if (uuid == null) return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         if (!HabiAssetPolicy.isValidCurrencyOperation(HabiAssetOperation.ADD, amount))

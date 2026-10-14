@@ -102,10 +102,10 @@
 
 ```powershell
 # 哈比列车抽奖补齐
-.\gradlew.bat build --offline --rerun-tasks --gradle-user-home 'D:\Backup\mc mod\.gradle-user-home' --console=plain
+.\gradlew.bat build --no-daemon --offline --rerun-tasks --gradle-user-home 'D:\Backup\mc mod\.gradle-user-home' --console=plain
 
 # 皮肤mod
-.\gradlew.bat -I tools\verify-release-mixins.gradle build --offline --rerun-tasks --gradle-user-home 'D:\Backup\mc mod\.gradle-user-home' --console=plain
+.\gradlew.bat -I tools\verify-release-mixins.gradle build --no-daemon --offline --rerun-tasks --gradle-user-home 'D:\Backup\mc mod\.gradle-user-home' --console=plain
 ```
 
 - 抽奖补齐：305 项测试，0 失败、0 错误、0 跳过；独立皮肤边界检查通过。

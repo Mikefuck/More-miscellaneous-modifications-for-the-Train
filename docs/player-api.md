@@ -31,7 +31,7 @@ int balance = HabiLotteryApi.getGreenApples(uuid);
 HabiAssetResult added = HabiLotteryApi.addGreenApples(uuid, 25);
 HabiAssetResult set = HabiLotteryApi.setGreenApples(uuid, 100);
 
-// reason 在 dedupe=true 时作为持久化去重键。
+// reason 在 dedupe=true 时作为持久化去重键（最近 64 个不同键）。
 HabiAssetResult once = HabiLotteryApi.grantGreenApples(
         uuid, 10, "example:welcome:2026", true);
 ```
@@ -39,6 +39,8 @@ HabiAssetResult once = HabiLotteryApi.grantGreenApples(
 `addGreenApples` 允许正负增量并把结果限制在 `0..Integer.MAX_VALUE`；`setGreenApples` 只接受非负值。`addGreenApplesToOnline`、`setGreenApplesToOnline` 和 `clearGreenApplesForOnline` 用于当前在线玩家。
 
 旧金币和旧抽数字段不会被这些方法读取，也不会自动折算成绿苹果。
+
+去重键按插入顺序保留最近 64 个不同值；重复访问不会延长保留期，被淘汰的旧键可以再次使用。需要永久一次性发放的扩展应另存长期记录。默认配置任务及邮件领取使用独立的长期事务回执，不依赖此窗口。事务写入不接受 `beginDeferredFlush` 作用域；`flush` 返回 `false` 表示尚未持久化或被拒绝，不能据此宣布成功。
 
 ## 角色卡
 
@@ -81,6 +83,8 @@ List.of(HabiMailApi.crate("cobalt", 2), HabiMailApi.key("cobalt", 2));
 ```
 
 邮件领取时会把它们写入账户仓库的系统道具余额；清单中的所有箱子和专用钥匙都能被在线、离线和全员邮件自动识别。
+
+领取使用固定事务 ID 和各资产文件内的回执，最终邮箱标记写入失败可安全重试。已寄出的箱子或皮肤暂时不在目录中时保留待恢复状态，不静默丢弃。服务端保留历史邮件以支持去重，过期邮件过滤不会触发反复重写；新客户端分页获取邮箱，旧客户端仅显示有大小限制的第一页并提示升级。
 
 ## 快照
 

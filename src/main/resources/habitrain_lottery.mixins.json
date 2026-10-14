@@ -5,6 +5,7 @@
     "compatibilityLevel": "JAVA_21",
     "mixins": [
         "SrePlayerSkinsMysqlMixin",
+        "StoredUserEntryAccessor",
         "MatchRecordStoreMixin",
         "MatchRecordServiceMixin",
         "BackpackManagerMixin",

@@ -20,7 +20,7 @@
 }
 ```
 
-注册器在服务端和客户端各运行一次。注册失败会回滚该注册器本次写入的定义，不会留下半注册目录。
+注册器在服务端和客户端各运行一次。注册失败会回滚本次新增、替换和删除的声明，包括 `unregister` / `removeProvider` 及其关联的文字、枪声声明；重放失败时保留此前有效的定义与特效。
 
 ## 定义
 
@@ -42,7 +42,7 @@ HabiSkinApi.register(definition);
 
 ## 物品与组件
 
-`SkinItems.bindItem(type, item)` 绑定衣柜预览和世界持握的底物。装备后的物品写入 `habitrain_lottery:skin` 数据组件，内容是规范化的 `type/id`。服务器会在背包变化、登录和重生时校正组件；丢出的物品保留其外观，新的持有者会按解锁状态更新。
+`SkinItems.bindItem(ResourceLocation item, String type)` 绑定衣柜预览和世界持握的底物，例如 `SkinItems.bindItem(ResourceLocation.parse("example:blade"), "knife")`。装备后的物品写入 `habitrain_lottery:skin` 数据组件，内容是规范化的 `type/id`。服务器会在背包变化、登录和重生时校正组件；丢出的物品保留其外观，新的持有者会按解锁状态更新。
 
 扩展可以使用 `SkinEffects` 注册待机动画、投掷物继承和命中特效，详见 [skin-effects-api.md](skin-effects-api.md)。
 扩展还可使用 `SkinSounds` 声明可开关的自定义枪声，并读取射手同步偏好；独立预览上下文也已开放，详见 [skin-sounds-api.md](skin-sounds-api.md)。
@@ -85,7 +85,7 @@ HabiSkinPlayerApi.clearEquipped(player.getUUID(), "back");
 
 ## 邮件附件
 
-`HabiMailApi.skin(type, id)` 和 `MailReward.skin(type, id)` 创建皮肤附件。领取时服务端重新验证注册目录；未注册的附件不会发放，邮件保留待领取状态。皮肤附件和绿苹果、角色卡附件使用同一封邮件的回滚事务。
+`HabiMailApi.skin(type, id)` 和 `MailReward.skin(type, id)` 创建皮肤附件。领取时服务端重新验证注册目录；未注册的附件不会被静默删除，邮件保留待恢复状态。皮肤、绿苹果、角色卡使用同一封邮件的持久化奖励意图，各资产分别提交回执，重试继续未完成的步骤。
 
 ## 存档和能力声明
 

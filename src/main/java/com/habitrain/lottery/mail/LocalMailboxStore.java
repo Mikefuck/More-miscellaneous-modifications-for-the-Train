@@ -142,7 +142,7 @@ public final class LocalMailboxStore {
         // With backups off, readJson can only quarantine a corrupt mailbox — there is
         // no .bak to fall back to, so a damaged file means every mail in it is gone
         // and the player is permanently denied their mailbox contents.
-        boolean saved = AtomicJsonFiles.writeJson(path, root, GSON, false, true);
+        boolean saved = AtomicJsonFiles.writeJson(path, root, GSON, true, true);
         if (!saved) {
             HabiLotteryMod.LOGGER.error("Failed saving mailbox {}", path);
         }

@@ -34,8 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <h2>Why the animation cannot break</h2>
  * <ul>
- *   <li>It is a pure function of one monotonic wall clock (50 ticks/s, wrapped to stay
- *       precise), never of stored state, so pausing, reloading resources, changing
+ *   <li>It is a pure function of one monotonic clock (20 ticks/s, with double-precision phases), never of stored state, so pausing, reloading resources, changing
  *       dimension or respawning cannot desynchronise it.</li>
  *   <li>Every motion is continuous and periodic: constant-rate spin (modulo a full
  *       turn), and sines that pass through zero at {@code t = 0}. There is no
@@ -50,9 +49,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class SkinAnimationModels {
 
-    private static final float TAU = (float) (Math.PI * 2.0);
-    /** 1e9 ms ≈ 231 days of uptime before the clock wraps; the wrap itself is seamless. */
-    private static final long CLOCK_WRAP_MILLIS = 1_000_000_000L;
+    private static final double TAU = Math.PI * 2.0;
 
     /** Wrapper cache. Client-thread only in practice; the map is concurrent for safety. */
     private static final Map<CacheKey, BakedModel> CACHE = new ConcurrentHashMap<>();
@@ -74,7 +71,7 @@ public final class SkinAnimationModels {
         }
         // The cached wrapper is immutable and reads the clock per frame, so one instance
         // can be shared by every render of the same (skin, baked model) pair.
-        return CACHE.computeIfAbsent(new CacheKey(definition.type(), definition.id(), model),
+        return CACHE.computeIfAbsent(new CacheKey(definition.type(), definition.id(), model, animation),
                 key -> new AnimatedBakedModel(model, animation));
     }
 
@@ -83,9 +80,9 @@ public final class SkinAnimationModels {
         CACHE.clear();
     }
 
-    /** Animation clock in ticks, wrapped so it stays exact in a {@code float}. */
+    /** Compatibility clock in ticks. Internal transforms use double precision without clock resets. */
     public static float clockTicks() {
-        return (float) ((Util.getMillis() % CLOCK_WRAP_MILLIS) / 50.0);
+        return (float) (Util.getMillis() / 50.0);
     }
 
     private static ItemTransforms wrapTransforms(ItemTransforms base, SkinAnimation animation) {
@@ -111,7 +108,7 @@ public final class SkinAnimationModels {
     }
 
     /** Identity for the same skin + baked model; {@link BakedModel} does not override equals. */
-    private record CacheKey(String type, String id, BakedModel model) {
+    private record CacheKey(String type, String id, BakedModel model, SkinAnimation animation) {
     }
 
     private static final class AnimatedBakedModel implements BakedModel {
@@ -197,10 +194,13 @@ public final class SkinAnimationModels {
 
         @Override
         public void apply(boolean leftHand, PoseStack poseStack) {
-            float ticks = SkinAnimationModels.clockTicks();
+            applyAt(leftHand, poseStack, Util.getMillis() / 50.0);
+        }
+
+        void applyAt(boolean leftHand, PoseStack poseStack, double ticks) {
             if (bob) {
                 float offset = (float) (animation.bobUnits()
-                        * Math.sin(TAU * ticks / animation.bobPeriodTicks()));
+                        * Math.sin(TAU * (ticks % animation.bobPeriodTicks()) / animation.bobPeriodTicks()) / 16.0);
                 if (offset != 0.0F) {
                     poseStack.translate(0.0F, offset, 0.0F);
                 }
@@ -215,14 +215,14 @@ public final class SkinAnimationModels {
             }
             if (wobble) {
                 float degrees = (float) (animation.wobbleDegrees()
-                        * Math.sin(TAU * ticks / animation.wobblePeriodTicks()));
+                        * Math.sin(TAU * (ticks % animation.wobblePeriodTicks()) / animation.wobblePeriodTicks()));
                 if (degrees != 0.0F) {
                     poseStack.mulPose(Axis.XP.rotationDegrees(degrees));
                 }
             }
             if (pulse) {
                 float scale = 1.0F + (float) (animation.pulseAmount()
-                        * Math.sin(TAU * ticks / animation.pulsePeriodTicks()));
+                        * Math.sin(TAU * (ticks % animation.pulsePeriodTicks()) / animation.pulsePeriodTicks()));
                 if (scale != 1.0F) {
                     poseStack.scale(scale, scale, scale);
                 }

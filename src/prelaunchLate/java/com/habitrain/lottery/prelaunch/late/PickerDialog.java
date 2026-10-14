@@ -43,19 +43,46 @@ final class PickerDialog {
     }
 
     static Choice show(List<PickerOption> options, boolean updateOnLaunch, int autoContinueSeconds) {
+        AtomicReference<Window> window = new AtomicReference<>();
+        return awaitChoice(done -> {
+            Window created = new Window(options, updateOnLaunch, autoContinueSeconds, done);
+            window.set(created);
+            created.open();
+        }, () -> {
+            Window created = window.get();
+            if (created != null) {
+                try { created.stopCountdown(); } finally { created.frame.dispose(); }
+            }
+        });
+    }
+
+    /** Injectable EDT initialization lets failures and cancellation be tested without a desktop. */
+    static Choice awaitChoice(Consumer<Consumer<Choice>> open, Runnable close) {
+        if (SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Picker cannot block the EDT");
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Choice> result = new AtomicReference<>();
-        SwingUtilities.invokeLater(() -> new Window(options, updateOnLaunch, autoContinueSeconds, choice -> {
-            if (result.compareAndSet(null, choice)) {
-                latch.countDown();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        SwingUtilities.invokeLater(() -> {
+            if (cancelled.get()) { latch.countDown(); return; }
+            try {
+                open.accept(choice -> {
+                    if (result.compareAndSet(null, choice)) latch.countDown();
+                });
+            } catch (Throwable error) {
+                failure.set(error);
+                try { close.run(); } finally { latch.countDown(); }
             }
-        }).open());
+        });
         try {
             latch.await();
-        } catch (InterruptedException e) {
+        } catch (InterruptedException error) {
+            cancelled.set(true);
+            SwingUtilities.invokeLater(close);
             Thread.currentThread().interrupt();
             return new Choice(Action.DEFAULT, null, false);
         }
+        if (failure.get() != null) throw new IllegalStateException("Picker window initialization failed", failure.get());
         return result.get();
     }
 

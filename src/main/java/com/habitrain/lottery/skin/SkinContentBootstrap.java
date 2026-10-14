@@ -67,23 +67,13 @@ public final class SkinContentBootstrap {
             // Attribute every registration made below to this provider, so a registrar
             // that throws halfway through can be rolled back instead of leaving a
             // half-registered catalogue behind.
-            String previousProvider = HabiSkinApi.beginProvider(provider);
             try {
-                container.getEntrypoint().registerSkins();
+                com.habitrain.lottery.api.skin.SkinRegistrationTransaction.run(provider,
+                        () -> container.getEntrypoint().registerSkins());
                 HabiLotteryMod.LOGGER.info("Loaded skin API registrations from {}", provider);
             } catch (Throwable t) {
-                int rolledBack = HabiSkinApi.removeProvider(provider);
-                // The effects registries are attributed to the same provider, so a failing
-                // registrar must not leave half of its effects live either.
-                int effectsRolledBack = com.habitrain.lottery.api.skin.SkinEffects.removeProvider(provider);
-                com.habitrain.lottery.api.skin.SkinSounds.removeProvider(provider);
                 skippedProviders.add(provider);
-                HabiLotteryMod.LOGGER.error(
-                        "Skin API registrar failed for mod {} — rolled back {} partial registration(s) "
-                                + "and {} effect(s) from that provider and continued with the remaining registrars",
-                        provider, rolledBack, effectsRolledBack, t);
-            } finally {
-                HabiSkinApi.endProvider(previousProvider);
+                HabiLotteryMod.LOGGER.error("Skin registrar {} failed; restored its previous registrations", provider, t);
             }
         }
         lastSkippedProviders = List.copyOf(skippedProviders);

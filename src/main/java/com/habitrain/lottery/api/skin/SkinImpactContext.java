@@ -51,8 +51,8 @@ public record SkinImpactContext(
      * Queues {@code action} to run on the server thread after {@code delayTicks}
      * server ticks. {@code delayTicks <= 0} runs it on the next server tick.
      *
-     * <p>Queued actions are dropped when the server stops; they never outlive the
-     * level they were scheduled from.</p>
+     * <p>Queued actions are dropped when the server stops. Extensions must check any
+     * level/entity lifetime they depend on; dynamic level removal does not cancel the queue.</p>
      */
     public void schedule(int delayTicks, Runnable action) {
         scheduler.schedule(delayTicks, action);

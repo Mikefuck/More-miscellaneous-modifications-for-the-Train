@@ -80,9 +80,11 @@ public final class HabiSkinApi {
         }
         if (DEFINITIONS.size() >= 4096) throw new IllegalStateException("Skin catalog limit is 4096");
         DEFINITIONS.put(key, definition);
+        SkinRegistrationTransaction.changed(DEFINITIONS, key, null, definition);
         String provider = CURRENT_PROVIDER.get();
         if (provider != null) {
-            PROVIDERS.put(key, provider);
+            String beforeProvider = PROVIDERS.put(key, provider);
+            SkinRegistrationTransaction.changed(PROVIDERS, key, beforeProvider, provider);
         }
         org.slf4j.LoggerFactory.getLogger("habitrain_lottery_skins").debug("Registered skin API entry {} model={}", key, definition.model());
         return true;
@@ -102,10 +104,10 @@ public final class HabiSkinApi {
                 return false;
             }
             String key = key(normalizedType, normalizedId);
-            PROVIDERS.remove(key);
+            SkinRegistrationTransaction.remove(PROVIDERS, key);
             SkinSounds.removeEntry(key);
             SkinCardText.removeEntry(key);
-            return DEFINITIONS.remove(key) != null;
+            return SkinRegistrationTransaction.remove(DEFINITIONS, key) != null;
         } catch (IllegalArgumentException ignored) {
             return false;
         }
@@ -123,8 +125,8 @@ public final class HabiSkinApi {
             }
         }
         for (String key : owned) {
-            PROVIDERS.remove(key);
-            DEFINITIONS.remove(key);
+            SkinRegistrationTransaction.remove(PROVIDERS, key);
+            SkinRegistrationTransaction.remove(DEFINITIONS, key);
             SkinSounds.removeEntry(key);
             SkinCardText.removeEntry(key);
         }

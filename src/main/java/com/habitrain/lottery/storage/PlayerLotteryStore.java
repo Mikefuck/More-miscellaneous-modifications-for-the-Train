@@ -66,6 +66,17 @@ public final class PlayerLotteryStore {
             return true;
         }
         boolean[] ok = {true};
+        // Also discover accounts whose only remaining file is a previous quarantine.
+        try (var files = Files.list(players)) {
+            for (Path evidence : files.filter(path -> path.getFileName().toString()
+                    .matches("[0-9a-fA-F-]{36}\\.json\\.corrupt-.+")).toList()) {
+                Path primary = evidence.resolveSibling(evidence.getFileName().toString().substring(0, 41));
+                if (AtomicJsonFiles.readJson(primary, JsonObject.class, GSON).corrupt()) ok[0] = false;
+            }
+        } catch (Exception failure) {
+            HabiLotteryMod.LOGGER.error("Unable to check quarantined player accounts", failure);
+            return false;
+        }
         try (var files = Files.list(players)) {
             files.filter(Files::isRegularFile)
                     .filter(path -> path.getFileName().toString()
@@ -641,15 +652,15 @@ public final class PlayerLotteryStore {
 
     /**
      * Writes the player file only when dirty. Returns {@code true} when there is
-     * nothing to write, flush is deferred, or the atomic write succeeded.
+     * nothing to write or the atomic write succeeded. Rejected/deferred writes return false.
      * On failure the dirty flag is kept.
      */
     public boolean flush(UUID uuid) {
         if (uuid == null) {
             return true;
         }
-        if (isLoadFailed(uuid) || isFlushDeferred()
-                || !Boolean.TRUE.equals(dirty.get(uuid))) {
+        if (isLoadFailed(uuid) || isFlushDeferred()) return false;
+        if (!Boolean.TRUE.equals(dirty.get(uuid))) {
             return true;
         }
         PlayerLotteryData data = cache.get(uuid);
@@ -757,14 +768,19 @@ public final class PlayerLotteryStore {
      * @return {@code true} 表示改动已成功持久化；{@code false} 表示已回滚、调用方不得计为成功
      */
     public boolean applyToPlayerWithRollback(UUID uuid, java.util.function.Consumer<PlayerLotteryData> mutator) {
-        if (uuid == null || mutator == null || isLoadFailed(uuid)) {
+        if (uuid == null || mutator == null || isLoadFailed(uuid) || isFlushDeferred()) {
             return false;
         }
-        PlayerLotteryData snapshot = getOrLoad(uuid).copy();
+        PlayerLotteryData current = getOrLoad(uuid);
+        if (isLoadFailed(uuid)) return false;
+        PlayerLotteryData snapshot = current.copy();
         boolean wasDirty = isDirty(uuid);
-        update(uuid, mutator);
-        if (flush(uuid)) {
-            return true;
+        try {
+            update(uuid, mutator);
+            if (flush(uuid)) return true;
+        } catch (RuntimeException | Error failure) {
+            restoreSnapshot(uuid, snapshot, wasDirty);
+            throw failure;
         }
         restoreSnapshot(uuid, snapshot, wasDirty);
         HabiLotteryMod.LOGGER.error("bulk write failed for {}; rolled back (audit B-20)", uuid);
@@ -880,11 +896,15 @@ public final class PlayerLotteryStore {
             data.updatedAt = System.currentTimeMillis();
             return data;
         }
+        if (data.rewardReceipts == null) data.rewardReceipts = new java.util.HashSet<>();
         if (data.systemItems == null) data.systemItems = new java.util.HashMap<>();
         data.systemItems.entrySet().removeIf(e -> e.getKey() == null || e.getValue() == null || e.getValue() <= 0);
         if (data.unlocked == null) {
             data.unlocked = new HashMap<>();
         }
+        data.unlocked.entrySet().removeIf(e -> e.getKey() == null || e.getValue() == null);
+        data.unlocked.values().forEach(skins -> skins.entrySet()
+                .removeIf(e -> e.getKey() == null || e.getValue() == null));
         Map<String, Integer> counts = new HashMap<>();
         if (data.ownedSkinCounts != null) data.ownedSkinCounts.forEach((raw, count) -> {
             if (raw == null || count == null || count <= 0) return;

@@ -76,25 +76,25 @@ public final class LocalTitleStore {
     }
 
     public TitleCatalog loadCatalog() {
-        if (catalogCache != null) {
-            return catalogCache;
-        }
-        catalogCache = readCatalogFromDisk();
-        return catalogCache;
+        if (catalogCache == null) catalogCache = readCatalogFromDisk();
+        return GSON.fromJson(GSON.toJson(catalogCache), TitleCatalog.class);
     }
 
     public void saveCatalog(TitleCatalog catalog) {
+        saveCatalogChecked(catalog);
+    }
+
+    public boolean saveCatalogChecked(TitleCatalog catalog) {
         if (catalog == null) {
             catalog = emptyCatalog();
         }
         if (catalog.titles == null) {
             catalog.titles = new ArrayList<>();
         }
-        catalogCache = catalog;
-        catalogDirty = true;
-        if (writeCatalogToDisk(catalog)) {
-            catalogDirty = false;
-        }
+        if (!writeCatalogToDisk(catalog)) return false;
+        catalogCache = GSON.fromJson(GSON.toJson(catalog), TitleCatalog.class);
+        catalogDirty = false;
+        return true;
     }
 
     public PlayerTitleData loadPlayer(UUID uuid) {
@@ -109,7 +109,7 @@ public final class LocalTitleStore {
         PlayerTitleData cached = playerCache.get(uuid);
         if (cached != null) {
             JsonLoad.Status status = playerLoadStatus.getOrDefault(uuid, JsonLoad.Status.OK);
-            return new PlayerLoad(cached, status);
+            return new PlayerLoad(cached.copy(), status);
         }
         if (playerLoadStatus.get(uuid) == JsonLoad.Status.CORRUPT) {
             return new PlayerLoad(null, JsonLoad.Status.CORRUPT);
@@ -118,7 +118,7 @@ public final class LocalTitleStore {
             PlayerTitleData fresh = emptyPlayer();
             playerCache.put(uuid, fresh);
             playerLoadStatus.put(uuid, JsonLoad.Status.MISSING);
-            return new PlayerLoad(fresh, JsonLoad.Status.MISSING);
+            return new PlayerLoad(fresh.copy(), JsonLoad.Status.MISSING);
         }
         JsonLoad<PlayerTitleData> load = readPlayerFile(TitlePaths.playerFile(uuid));
         if (load.corrupt()) {
@@ -133,25 +133,27 @@ public final class LocalTitleStore {
                 : (load.ok() ? JsonLoad.Status.OK : JsonLoad.Status.MISSING);
         playerCache.put(uuid, data);
         playerLoadStatus.put(uuid, status);
-        return new PlayerLoad(data, status);
+        return new PlayerLoad(data.copy(), status);
     }
 
     public boolean savePlayer(UUID uuid, PlayerTitleData data) {
         if (uuid == null) {
             return false;
         }
-        if (playerLoadStatus.get(uuid) == JsonLoad.Status.CORRUPT) {
+        PlayerLoad existing = loadPlayerDetailed(uuid);
+        if (existing.corrupt()) {
             HabiLotteryMod.LOGGER.error("Refusing to overwrite corrupt title file {}", uuid);
             return false;
         }
         if (data == null) {
             data = emptyPlayer();
         }
-        normalizePlayer(data);
+        data = normalizePlayer(data.copy());
+        if (existing.data() != null && existing.data().rewardReceipts != null)
+            data.rewardReceipts.addAll(existing.data().rewardReceipts);
         data.updatedAt = System.currentTimeMillis();
-        playerCache.put(uuid, data);
-        playerDirty.put(uuid, true);
         if (writePlayerToDisk(uuid, data)) {
+            playerCache.put(uuid, data);
             playerDirty.remove(uuid);
             playerLoadStatus.put(uuid, JsonLoad.Status.OK);
             return true;
@@ -235,12 +237,30 @@ public final class LocalTitleStore {
     }
 
     public void clear(UUID uuid) {
+        clearChecked(uuid);
+    }
+
+    public boolean clearChecked(UUID uuid) {
         PlayerLoad load = loadPlayerDetailed(uuid);
         if (load.corrupt() || load.data() == null) {
-            return;
+            return false;
         }
         clearInMemory(load.data());
-        savePlayer(uuid, load.data());
+        return savePlayer(uuid, load.data());
+    }
+
+    /** Receipt and title ownership share one atomic file replacement. */
+    public boolean grantOnce(UUID uuid, String receipt, List<String> titles) {
+        PlayerLoad load = loadPlayerDetailed(uuid);
+        if (load.corrupt() || load.data() == null || receipt == null) return false;
+        PlayerTitleData next = load.data();
+        if (next.rewardReceipts.contains(receipt)) return true;
+        for (String title : titles) {
+            if (title == null || title.isBlank()) return false;
+            grantInMemory(next, title);
+        }
+        next.rewardReceipts.add(receipt);
+        return savePlayer(uuid, next);
     }
 
     /**
@@ -395,7 +415,8 @@ public final class LocalTitleStore {
             HabiLotteryMod.LOGGER.error("Failed creating title dirs", e);
             return false;
         }
-        boolean saved = AtomicJsonFiles.writeJson(TitlePaths.playerFile(uuid), data, GSON, false);
+        boolean saved = AtomicJsonFiles.writeJson(TitlePaths.playerFile(uuid), data, GSON, true,
+                playerLoadStatus.get(uuid) != JsonLoad.Status.OK_BACKUP);
         if (!saved) {
             HabiLotteryMod.LOGGER.error("Failed saving player titles {}", uuid);
         }
@@ -428,6 +449,7 @@ public final class LocalTitleStore {
         if (data.current == null) {
             data.current = "";
         }
+        if (data.rewardReceipts == null) data.rewardReceipts = new HashSet<>();
         return data;
     }
 }

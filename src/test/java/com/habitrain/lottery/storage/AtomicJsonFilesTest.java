@@ -123,6 +123,16 @@ class AtomicJsonFilesTest {
     }
 
     @Test
+    void quarantinedAccountStaysCorruptUntilExplicitRepair() throws Exception {
+        Path file = tmp.resolve("quarantined.json");
+        Files.writeString(file, "{broken");
+        assertTrue(AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON).corrupt());
+        assertTrue(AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON).corrupt());
+        Files.writeString(AtomicJsonFiles.bakPath(file), "{\"greenApples\":9}");
+        assertEquals(9, AtomicJsonFiles.readJson(file, PlayerLotteryData.class, GSON).value().greenApples);
+    }
+
+    @Test
     void writeBytesRoundTrip() throws Exception {
         Path file = tmp.resolve("placeholder.png");
         byte[] payload = new byte[]{1, 2, 3, 4};

@@ -19,10 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SkinStateCoordinator {
     private static final AtomicBoolean REGISTERED = new AtomicBoolean();
     /**
-     * Per-player fingerprint of the last inventory the mirror inspected. The scan only
-     * runs when the fingerprint changes, so a full 41-slot sweep no longer happens
-     * unconditionally for every player on every tick; any item change still triggers a
-     * sweep on the next tick, which is the invariant the mirror exists to enforce.
+     * Per-player fingerprint of the last inventory the mirror inspected. The fingerprint
+     * scans inventory every tick; an unchanged value skips the second scan that applies skins.
      */
     private static final Map<UUID, Long> LAST_INVENTORY = new HashMap<>();
     private SkinStateCoordinator() {}

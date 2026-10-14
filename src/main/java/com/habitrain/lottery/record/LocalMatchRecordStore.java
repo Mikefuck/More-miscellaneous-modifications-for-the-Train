@@ -65,8 +65,7 @@ public final class LocalMatchRecordStore {
                 if (!appendIndexLine(lotteryRoot, GSON.toJson(record.toSummary()))) {
                     return false;
                 }
-                pruneIfNeeded(lotteryRoot);
-                return true;
+                return pruneIfNeeded(lotteryRoot);
             } catch (Exception e) {
                 HabiLotteryMod.LOGGER.warn("Failed saving match record {}: {}", record.matchId, e.toString());
                 return false;
@@ -207,9 +206,13 @@ public final class LocalMatchRecordStore {
                 if (line == null || line.isBlank()) {
                     continue;
                 }
-                MatchRecord.Summary s = MatchRecord.summaryFromJson(line.trim());
-                if (s != null && s.matchId != null) {
-                    list.add(s);
+                try {
+                    MatchRecord.Summary summary = MatchRecord.summaryFromJson(line.trim());
+                    if (summary == null || MetaFeaturePaths.matchFile(lotteryRoot, summary.matchId) == null)
+                        throw new IllegalArgumentException("Invalid record index entry");
+                    list.add(summary);
+                } catch (RuntimeException invalid) {
+                    HabiLotteryMod.LOGGER.warn("Skipping damaged match index row at {}: {}", index, invalid.toString());
                 }
             }
         } catch (IOException e) {
@@ -242,36 +245,55 @@ public final class LocalMatchRecordStore {
         return AtomicJsonFiles.writeString(index, next, StandardCharsets.UTF_8, false, false);
     }
 
-    private static void pruneIfNeeded(Path lotteryRoot) {
-        if (lotteryRoot == null) {
-            return;
-        }
+    private static boolean pruneIfNeeded(Path lotteryRoot) {
+        if (lotteryRoot == null) return false;
         List<MatchRecord.Summary> all = readAllSummariesNewestFirstUnlocked(lotteryRoot);
-        if (all.size() <= MAX_RECORDS) {
-            return;
-        }
+        if (all.size() <= MAX_RECORDS) return true;
         List<MatchRecord.Summary> keep = all.subList(0, MAX_RECORDS);
         List<MatchRecord.Summary> drop = all.subList(MAX_RECORDS, all.size());
-        for (MatchRecord.Summary s : drop) {
-            Path dropPath = MetaFeaturePaths.matchFile(lotteryRoot, s.matchId);
-            if (dropPath == null) {
-                continue;
-            }
-            try {
-                Files.deleteIfExists(dropPath);
-            } catch (IOException ignored) {
-            }
+        if (!writeIndex(lotteryRoot, keep)) return false;
+        // A stale extra file is recoverable. An index pointing at deleted data is not.
+        for (MatchRecord.Summary summary : drop) {
+            Path file = MetaFeaturePaths.matchFile(lotteryRoot, summary.matchId);
+            if (file == null) continue;
+            try { Files.deleteIfExists(file); }
+            catch (IOException failure) { HabiLotteryMod.LOGGER.warn("Could not remove unindexed record {}", file, failure); }
         }
-        List<MatchRecord.Summary> oldestFirst = new ArrayList<>(keep);
-        oldestFirst.sort(Comparator.comparingLong(s -> s.createdAt));
-        String body = oldestFirst.stream()
-                .map(GSON::toJson)
-                .collect(Collectors.joining(System.lineSeparator()));
-        if (!body.isEmpty()) {
-            body = body + System.lineSeparator();
-        }
-        if (!AtomicJsonFiles.writeString(recordsIndex(lotteryRoot), body, StandardCharsets.UTF_8, false, false)) {
-            HabiLotteryMod.LOGGER.warn("Failed pruning records index at {}", recordsIndex(lotteryRoot));
+        return true;
+    }
+
+    private static boolean writeIndex(Path root, List<MatchRecord.Summary> summaries) {
+        List<MatchRecord.Summary> ordered = new ArrayList<>(summaries);
+        ordered.sort(Comparator.comparingLong(s -> s.createdAt));
+        String body = ordered.stream().map(GSON::toJson).collect(Collectors.joining(System.lineSeparator()));
+        return AtomicJsonFiles.writeString(recordsIndex(root), body.isEmpty() ? body : body + System.lineSeparator(),
+                StandardCharsets.UTF_8, true, true);
+    }
+
+    /** Rebuild the derived index from intact record entities on world startup. */
+    public static boolean repairIndex(Path root) {
+        synchronized (LOCK) {
+            if (root == null || !Files.isDirectory(matchesDir(root))) return true;
+            List<MatchRecord.Summary> summaries = new ArrayList<>();
+            try (var files = Files.list(matchesDir(root))) {
+                for (Path file : files.filter(Files::isRegularFile)
+                        .filter(p -> p.getFileName().toString().endsWith(".json")).toList()) {
+                    try {
+                        MatchRecord record = MatchRecord.fromJson(Files.readString(file, StandardCharsets.UTF_8));
+                        if (record != null && file.equals(MetaFeaturePaths.matchFile(root, record.matchId)))
+                            summaries.add(record.toSummary());
+                    } catch (RuntimeException | IOException invalid) {
+                        HabiLotteryMod.LOGGER.warn("Skipping damaged match entity {}", file, invalid);
+                    }
+                }
+            } catch (IOException failure) {
+                HabiLotteryMod.LOGGER.error("Cannot rebuild match index", failure);
+                return false;
+            }
+            summaries.sort(Comparator.comparingLong((MatchRecord.Summary summary) -> summary.createdAt).reversed());
+            summaries = dedupeKeepFirst(summaries);
+            if (!writeIndex(root, summaries)) return false;
+            return pruneIfNeeded(root);
         }
     }
 
