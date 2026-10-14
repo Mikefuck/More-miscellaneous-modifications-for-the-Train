@@ -194,16 +194,12 @@ public final class SkinAnimationModels {
 
         @Override
         public void apply(boolean leftHand, PoseStack poseStack) {
-            applyAt(leftHand, poseStack, Util.getMillis() / 50.0);
-        }
-
-        void applyAt(boolean leftHand, PoseStack poseStack, double ticks) {
-            if (bob) {
-                float offset = (float) (animation.bobUnits()
-                        * Math.sin(TAU * (ticks % animation.bobPeriodTicks()) / animation.bobPeriodTicks()) / 16.0);
-                if (offset != 0.0F) {
-                    poseStack.translate(0.0F, offset, 0.0F);
-                }
+            double ticks = Util.getMillis() / 50.0;
+            float offset = bobOffsetAt(ticks);
+            if (offset != 0.0F) {
+                // Compatibility contract: habitrain_skins 1.0.65 wraps this exact
+                // float translation inside apply to suppress bobbing in previews.
+                poseStack.translate(0.0F, offset, 0.0F);
             }
             super.apply(leftHand, poseStack);
             if (spin) {
@@ -227,6 +223,12 @@ public final class SkinAnimationModels {
                     poseStack.scale(scale, scale, scale);
                 }
             }
+        }
+
+        private float bobOffsetAt(double ticks) {
+            if (!bob) return 0.0F;
+            return (float) (animation.bobUnits()
+                    * Math.sin(TAU * (ticks % animation.bobPeriodTicks()) / animation.bobPeriodTicks()) / 16.0);
         }
 
         private static Quaternionf rotation(SkinAnimation.SpinAxis axis, float degrees) {
