@@ -30,6 +30,8 @@ HabiAssetResult consumed = HabiSystemItemApi.consume(player.getUUID(), id, 1);
 Map<String, Integer> balances = HabiSystemItemApi.balances(player.getUUID());
 ```
 
-所有操作必须在服务端线程执行。数量不能为负，余额溢出、余额不足、未知定义和损坏存档都会失败；成功表示已落盘。最多保存 4096 类道具。扩展卸载后余额仍保留，仓库会使用道具 ID 和箱子图标作为回退显示。
+所有操作必须在服务端线程执行。`grant` 和 `consume` 的数量必须为正；非法 ID、余额溢出、消费余额不足和损坏存档都会失败，世界或账户存储尚未就绪时返回 `NOT_READY`；成功表示已落盘。最多保存 4096 类道具。
+
+`register` 只提供名称、说明、图标和颜色等显示元数据，不是发放白名单。合法但尚未注册的 ID 也能发放、查询和消费；扩展卸载后余额仍保留，仓库会使用道具 ID 和箱子图标作为回退显示。需要检查拼写或限制道具种类的扩展，应在发放前自行检查 `definition(id.toString()) != null`，不能把 `grant` 的成功当作定义已注册的证明。
 
 管理员可以使用 `/hlt system_item <在线玩家> <命名空间:道具ID> <数量>` 发放道具。普通玩家不能修改账户条目。

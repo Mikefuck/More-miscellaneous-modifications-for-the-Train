@@ -40,6 +40,8 @@ import java.util.UUID;
 public final class HabiCardApi {
     /** Largest absolute balance accepted by {@link #set}. */
     public static final int MAX_COUNT = HabiAssetPolicy.MAX_CARD_COUNT;
+    /** Largest accumulated balance; distinct from the single-SET limit. */
+    public static final int MAX_BALANCE = HabiAssetPolicy.MAX_CARD_BALANCE;
     /** Largest additive delta accepted by {@link #add} (absolute value). */
     public static final int MAX_DELTA = HabiAssetPolicy.MAX_CARD_DELTA;
     /** Daily faction-card uses before bonus cards. */
@@ -85,7 +87,10 @@ public final class HabiCardApi {
         return all(uuid).getOrDefault(kind.id(), 0);
     }
 
-    /** Adds {@code delta} cards of {@code kind}. Delta must be in {@code [-1000, 1000]}. */
+    /**
+     * Adds a nonzero delta in {@code [-1000, 1000]} to the actual balance, flooring at zero.
+     * Overflow returns {@link HabiFailure#INVALID_VALUE} without changing the balance.
+     */
     public static HabiAssetResult add(UUID uuid, HabiCardKind kind, int delta) {
         return mutate(uuid, kind, HabiAssetOperation.ADD, delta);
     }
@@ -199,6 +204,11 @@ public final class HabiCardApi {
             return HabiAssetResult.fail(HabiFailure.NOT_READY);
         }
         CardOperation cardOperation = operation == HabiAssetOperation.ADD ? CardOperation.ADD : CardOperation.SET;
+        if (operation == HabiAssetOperation.ADD && value > 0) {
+            int current = get(uuid, kind);
+            if ((long) current + value > MAX_BALANCE)
+                return HabiAssetResult.fail(HabiFailure.INVALID_VALUE, current);
+        }
         CardMutationResult result;
         if (kind.isFactionCard()) {
             FactionCardType type = PlayerCardMutationPolicy.parseType(kind.id());

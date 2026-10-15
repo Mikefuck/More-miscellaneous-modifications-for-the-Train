@@ -76,6 +76,7 @@ public final class LocalTitleStore {
     }
 
     public TitleCatalog loadCatalog() {
+        if (!WorldLotteryPaths.ready()) return emptyCatalog();
         if (catalogCache == null) catalogCache = readCatalogFromDisk();
         return GSON.fromJson(GSON.toJson(catalogCache), TitleCatalog.class);
     }
@@ -103,7 +104,8 @@ public final class LocalTitleStore {
     }
 
     public PlayerLoad loadPlayerDetailed(UUID uuid) {
-        if (uuid == null) {
+        // Pre-world defaults are temporary, including their MISSING status.
+        if (uuid == null || !WorldLotteryPaths.ready()) {
             return new PlayerLoad(emptyPlayer(), JsonLoad.Status.MISSING);
         }
         PlayerTitleData cached = playerCache.get(uuid);
@@ -113,12 +115,6 @@ public final class LocalTitleStore {
         }
         if (playerLoadStatus.get(uuid) == JsonLoad.Status.CORRUPT) {
             return new PlayerLoad(null, JsonLoad.Status.CORRUPT);
-        }
-        if (!WorldLotteryPaths.ready()) {
-            PlayerTitleData fresh = emptyPlayer();
-            playerCache.put(uuid, fresh);
-            playerLoadStatus.put(uuid, JsonLoad.Status.MISSING);
-            return new PlayerLoad(fresh.copy(), JsonLoad.Status.MISSING);
         }
         JsonLoad<PlayerTitleData> load = readPlayerFile(TitlePaths.playerFile(uuid));
         if (load.corrupt()) {
@@ -137,7 +133,7 @@ public final class LocalTitleStore {
     }
 
     public boolean savePlayer(UUID uuid, PlayerTitleData data) {
-        if (uuid == null) {
+        if (uuid == null || !WorldLotteryPaths.ready()) {
             return false;
         }
         PlayerLoad existing = loadPlayerDetailed(uuid);

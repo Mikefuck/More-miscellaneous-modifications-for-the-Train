@@ -8,17 +8,21 @@
 
 ```json
 {
-  "depends": { "habitrain_lottery": ">=1.1.27" }
+  "depends": { "habitrain_lottery": ">=1.1.57" }
 }
 ```
 
 API 版本常量为 `HabiLotteryApi.API_VERSION == 2`，能力 ID 为 `habitrain_lottery_player_api`。所有写操作都必须在服务端主线程执行。
+
+本文的启动前读取保护和完整卡片余额规则从 1.1.57 起提供；现有方法签名保持兼容。
 
 ## 就绪与结果
 
 - `HabiLotteryApi.isReady()`：世界账户目录已经初始化。
 - `HabiLotteryApi.isPlayerStoreActive()`：玩家账户存储已经初始化并可写。
 - `HabiLotteryApi.server()`：当前服务器，未运行时为 `null`。
+
+世界未就绪时，绿苹果、卡片、系统道具和称号查询返回零或空值，皮肤查询返回空解锁列表与默认装备（默认皮肤始终可用、可用音效默认启用）。这些值只是临时默认值，不缓存为真实账户，也不创建存档。世界绑定或解除绑定时清除上一个生命周期的账户、称号及称号目录缓存；就绪后再次读取会装载当前世界文件。需要真实余额的扩展仍应等待就绪后查询。
 
 写方法返回 `HabiAssetResult`。`ok()` 表示权威 JSON 已成功落盘；失败时内存快照会恢复，`failure()` 提供稳定的 `HabiFailure` 枚举值。常见失败值有 `NOT_READY`、`INVALID_VALUE`、`CORRUPT_STORAGE`、`WRITE_FAILED` 和 `DUPLICATE_GRANT`。
 
@@ -51,6 +55,13 @@ int count = HabiCardApi.get(uuid, HabiCardKind.SELF_SELECT);
 HabiAssetResult result = HabiCardApi.add(uuid, HabiCardKind.SELF_SELECT, 1);
 Map<String, Integer> all = HabiCardApi.all(uuid);
 ```
+
+六类卡使用相同的数量规则：
+
+- `add` 的单次增量为 `-1000..1000`，不能为 0；按实际余额增减，负增量最多减到 0，因此不是验证足额扣款的支付接口。
+- `set` 的目标值为 `0..100000`，`MAX_COUNT` 表示这个单次设定限制。
+- 累计余额为 `0..Integer.MAX_VALUE`，由 `MAX_BALANCE` 声明。邮件或其他奖励累积超过 10 万张后仍按实际余额处理，例如 `200000 + 1 = 200001`。
+- 正增量导致整数溢出时返回 `INVALID_VALUE` 并保留原值；邮件及开箱发奖也拒绝溢出，不截断已有卡片。
 
 四类阵营卡与上游角色分配同步；自选卡和突破上限卡只保存在本模组账户仓库。每日次数和额外次数使用 `dailyFactionCardRemaining`、`dailySelfSelectRemaining` 及对应的 bonus/reset 方法。
 

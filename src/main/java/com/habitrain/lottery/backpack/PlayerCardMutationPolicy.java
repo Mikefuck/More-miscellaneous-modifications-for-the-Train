@@ -9,7 +9,9 @@ import static com.habitrain.lottery.backpack.PlayerCardAdminModels.CardOperation
 /** Server-authoritative parsing and numeric rules for one-player card edits. */
 public final class PlayerCardMutationPolicy {
     public static final int MAX_DELTA = 1_000;
+    /** Limit for a single SET request, not the stored balance. */
     public static final int MAX_COUNT = 100_000;
+    public static final int MAX_BALANCE = Integer.MAX_VALUE;
 
     private PlayerCardMutationPolicy() {
     }
@@ -44,7 +46,13 @@ public final class PlayerCardMutationPolicy {
 
     public static int targetCount(int current, CardOperation operation, int value) {
         validate(operation, value);
-        long target = operation == CardOperation.SET ? value : (long) Math.max(0, current) + value;
-        return (int) Math.max(0L, Math.min(MAX_COUNT, target));
+        return operation == CardOperation.SET ? value : addToBalance(current, value);
+    }
+
+    /** Preserves reward-granted balances above the SET limit; overflow never mutates assets. */
+    public static int addToBalance(int current, int delta) {
+        long target = (long) Math.max(0, current) + delta;
+        if (target > MAX_BALANCE) throw new IllegalArgumentException("角色卡余额溢出");
+        return (int) Math.max(0L, target);
     }
 }

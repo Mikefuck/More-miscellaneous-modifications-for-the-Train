@@ -46,6 +46,14 @@ class HabiAssetPolicyTest {
     }
 
     @Test
+    void additiveCardPolicyPreservesFullBalancesAndRejectsOverflow() {
+        assertEquals(200_001, HabiAssetPolicy.applyCardCount(200_000, HabiAssetOperation.ADD, 1));
+        assertEquals(199_999, HabiAssetPolicy.applyCardCount(200_000, HabiAssetOperation.ADD, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> HabiAssetPolicy.applyCardCount(Integer.MAX_VALUE, HabiAssetOperation.ADD, 1));
+    }
+
+    @Test
     void dailyRemainingAddsBonusAndSubtractsUses() {
         assertEquals(4, HabiAssetPolicy.dailyRemaining(0, 0, 4));
         assertEquals(2, HabiAssetPolicy.dailyRemaining(2, 0, 4));

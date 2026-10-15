@@ -45,6 +45,10 @@ public final class WorldLotteryPaths {
         root = null;
         configDir = null;
         playersDir = null;
+        // Shutdown flushes before unbinding. Never carry cached assets (or failure
+        // flags) into another world, and never flush them against a new root.
+        PlayerLotteryStore.get().reset();
+        com.habitrain.lottery.title.LocalTitleStore.get().reset();
     }
 
     /** Alias for {@link #clear()} used by shutdown. */
@@ -61,6 +65,7 @@ public final class WorldLotteryPaths {
         } catch (IOException e) {
             throw new IllegalStateException("Cannot create habitrain_lottery world dirs", e);
         }
+        clear();
         root = lotteryRoot;
         configDir = nextConfig;
         playersDir = nextPlayers;

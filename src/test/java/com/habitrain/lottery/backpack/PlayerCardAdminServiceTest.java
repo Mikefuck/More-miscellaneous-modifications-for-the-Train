@@ -7,6 +7,7 @@ import java.util.EnumMap;
 import java.util.Map;
 
 import static com.habitrain.lottery.backpack.PlayerCardAdminModels.CardOperation.SET;
+import static com.habitrain.lottery.backpack.PlayerCardAdminModels.CardOperation.ADD;
 import static com.habitrain.lottery.backpack.PlayerCardAdminModels.CardStoreStatus.ONLINE_LIVE;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -50,6 +51,31 @@ class PlayerCardAdminServiceTest {
 
         assertFalse(result.ok());
         assertEquals(2, live.count(FactionCardType.KILLER));
+        assertEquals(0, live.persistCalls);
+        assertFalse(live.resent);
+    }
+
+    @Test
+    void onlineIncrementAboveSetLimitPreservesActualBalanceAndRollsBackFailedWrites() {
+        FakeOnlineCardAccess live = new FakeOnlineCardAccess(200_000, true);
+        var added = PlayerCardAdminService.mutateOnline(live, FactionCardType.KILLER, ADD, 1);
+        assertTrue(added.ok());
+        assertEquals(200_001, added.newCount());
+        assertEquals(1, live.lastDelta);
+        assertTrue(live.resent);
+
+        FakeOnlineCardAccess failing = new FakeOnlineCardAccess(200_000, false);
+        assertFalse(PlayerCardAdminService.mutateOnline(failing, FactionCardType.KILLER, ADD, 1).ok());
+        assertEquals(200_000, failing.count(FactionCardType.KILLER));
+        assertFalse(failing.resent);
+    }
+
+    @Test
+    void onlineOverflowDoesNotWriteOrResend() {
+        FakeOnlineCardAccess live = new FakeOnlineCardAccess(Integer.MAX_VALUE, true);
+        assertFalse(PlayerCardAdminService.mutateOnline(live, FactionCardType.KILLER, ADD, 1).ok());
+        assertEquals(Integer.MAX_VALUE, live.count(FactionCardType.KILLER));
+        assertEquals(0, live.lastDelta);
         assertEquals(0, live.persistCalls);
         assertFalse(live.resent);
     }

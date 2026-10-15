@@ -24,7 +24,7 @@ public final class HabiSystemItemApi {
         }
     }
 
-    /** Register once during mod initialization. Duplicate ids are rejected. */
+    /** Register display metadata once during mod initialization. Duplicate ids are rejected. */
     public static void register(Definition definition) {
         if (DEFINITIONS.putIfAbsent(definition.id().toString(), definition) != null)
             throw new IllegalArgumentException("Duplicate system item: " + definition.id());
@@ -46,7 +46,10 @@ public final class HabiSystemItemApi {
         return store.isLoadFailed(uuid) ? Map.of() : Map.copyOf(data.systemItems);
     }
 
-    /** Grants a positive quantity and writes it before returning success. Unknown ids retain their balances. */
+    /**
+     * Grants a positive quantity and writes it before returning success, including unregistered ids.
+     * Registration supplies display metadata; it is not an issuance allowlist.
+     */
     public static HabiAssetResult grant(UUID uuid, ResourceLocation id, int amount) {
         return amount <= 0 ? HabiAssetResult.fail(HabiFailure.INVALID_VALUE) : change(uuid, id, amount);
     }

@@ -48,4 +48,15 @@ class PlayerCardMutationPolicyTest {
         assertEquals(0, PlayerCardMutationPolicy.targetCount(1, ADD, -1000));
         assertEquals(25, PlayerCardMutationPolicy.targetCount(3, SET, 25));
     }
+
+    @Test
+    void additiveEditsPreserveBalancesBeyondTheSetLimit() {
+        assertEquals(100_001, PlayerCardMutationPolicy.targetCount(100_000, ADD, 1));
+        assertEquals(200_001, PlayerCardMutationPolicy.targetCount(200_000, ADD, 1));
+        assertEquals(199_999, PlayerCardMutationPolicy.targetCount(200_000, ADD, -1));
+        assertEquals(100_000, PlayerCardMutationPolicy.targetCount(200_000, SET, 100_000));
+        assertEquals(Integer.MAX_VALUE, PlayerCardMutationPolicy.targetCount(Integer.MAX_VALUE - 1, ADD, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> PlayerCardMutationPolicy.targetCount(Integer.MAX_VALUE, ADD, 1));
+    }
 }

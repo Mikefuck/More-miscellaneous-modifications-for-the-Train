@@ -25,7 +25,8 @@ import java.util.UUID;
  * in-game {@code /hlt skins} command uses, so the world JSON stays
  * authoritative and online skin state mirrors are refreshed automatically.</p>
  *
- * <p>Server thread only.</p>
+ * <p>Server thread only. Before world readiness, reads return temporary empty/default
+ * skin state without caching it; default skins and enabled sounds remain defaults.</p>
  */
 public final class HabiSkinPlayerApi {
     /** Skin used when nothing is equipped. */

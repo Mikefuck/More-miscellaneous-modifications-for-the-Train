@@ -739,7 +739,7 @@ public final class CrateService {
                 var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(entry.getKey());
                 int count = com.habitrain.lottery.api.player.HabiCardApi.get(player.getUUID(), kind);
                 if (entry.getValue() > com.habitrain.lottery.api.player.HabiCardApi.MAX_DELTA
-                        || Math.addExact(count, entry.getValue()) > com.habitrain.lottery.api.player.HabiCardApi.MAX_COUNT)
+                        || Math.addExact(count, entry.getValue()) > com.habitrain.lottery.api.player.HabiCardApi.MAX_BALANCE)
                     return fail(canonicalCrate, canonicalKey, "crates.card_full");
             }
         } catch (ArithmeticException error) { return fail(canonicalCrate, canonicalKey, "crates.reward_overflow"); }
@@ -880,7 +880,7 @@ public final class CrateService {
             var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(reward.cardKind);
             return kind != null && total <= com.habitrain.lottery.api.player.HabiCardApi.MAX_DELTA
                     && Math.addExact(com.habitrain.lottery.api.player.HabiCardApi.get(uuid, kind), total)
-                    <= com.habitrain.lottery.api.player.HabiCardApi.MAX_COUNT;
+                    <= com.habitrain.lottery.api.player.HabiCardApi.MAX_BALANCE;
         } catch (ArithmeticException error) { return false; }
     }
 
@@ -905,7 +905,7 @@ public final class CrateService {
                     default -> next.cards.getOrDefault(kind.id(), 0);
                 };
                 int target = Math.addExact(before, amount);
-                if (target > com.habitrain.lottery.api.player.HabiCardApi.MAX_COUNT)
+                if (target < 0 || target > com.habitrain.lottery.api.player.HabiCardApi.MAX_BALANCE)
                     throw new IllegalArgumentException("Crate card balance overflow");
                 switch (kind) {
                     case SELF_SELECT -> next.selfSelectCards = target;

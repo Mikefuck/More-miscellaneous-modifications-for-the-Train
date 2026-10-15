@@ -11,8 +11,10 @@ import com.habitrain.lottery.backpack.PlayerCardMutationPolicy;
 public final class HabiAssetPolicy {
     /** Largest green-apple balance the API will persist. */
     public static final int MAX_CURRENCY = Integer.MAX_VALUE;
-    /** Largest allowed absolute card balance. */
+    /** Largest card value accepted by a single SET request. */
     public static final int MAX_CARD_COUNT = PlayerCardMutationPolicy.MAX_COUNT;
+    /** Largest stored card balance, including accumulated rewards. */
+    public static final int MAX_CARD_BALANCE = PlayerCardMutationPolicy.MAX_BALANCE;
     /** Largest allowed additive card delta (absolute value). */
     public static final int MAX_CARD_DELTA = PlayerCardMutationPolicy.MAX_DELTA;
 
@@ -56,18 +58,15 @@ public final class HabiAssetPolicy {
         return value >= 0 && value <= MAX_CARD_COUNT;
     }
 
-    /** Applies an ADD/SET to a card balance, clamped into {@code [0, MAX_CARD_COUNT]}. */
+    /**
+     * SET is clamped to {@code [0, MAX_CARD_COUNT]}; ADD preserves the full balance,
+     * floors at zero and throws {@link IllegalArgumentException} on integer overflow.
+     * Call {@link #isValidCardOperation} separately to enforce request limits.
+     */
     public static int applyCardCount(int current, HabiAssetOperation operation, int value) {
-        long target = operation == HabiAssetOperation.SET
-                ? value
-                : (long) Math.max(0, current) + value;
-        if (target < 0L) {
-            target = 0L;
-        }
-        if (target > MAX_CARD_COUNT) {
-            target = MAX_CARD_COUNT;
-        }
-        return (int) target;
+        return operation == HabiAssetOperation.SET
+                ? Math.max(0, Math.min(MAX_CARD_COUNT, value))
+                : PlayerCardMutationPolicy.addToBalance(current, value);
     }
 
     /**

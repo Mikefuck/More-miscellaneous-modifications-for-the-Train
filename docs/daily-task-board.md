@@ -1,4 +1,4 @@
-# 每日任务 API v1
+# 每日任务 API v2
 
 每日任务终端 `habitrain_lottery:daily_task_board` 展示本模组内置任务与扩展模组注册的任务。上游任务不会复制到列表。
 
@@ -40,6 +40,17 @@ HabiDailyTaskApi.register(new HabiDailyTaskApi.Task(
 
 最多注册 32 个任务。定义包含 ID、标题、说明、目标值、奖励说明和 `ClaimAction`。`ClaimAction` 只有在奖励已经可靠落盘后才应返回 `true`。
 
+## v2 能力与兼容
+
+v2 保留 v1 的任务注册、单任务推进与领取入口，并增加按玩家筛选世界配置任务及批量推进：
+
+- `tasks()` 返回静态注册任务和全部世界配置任务；同 ID 时世界配置优先。
+- `tasksFor(player)` 返回该玩家当天实际可见的任务，包含随机池筛选结果。
+- `advanceAll(player, amounts)` 一次持久化多个任务的进度，跳过未知、未激活及非正增量。
+- `setConfiguredTasks(tasks, active)` 由本模组的世界配置服务使用，会整体替换配置任务；普通扩展仍使用 `register`。
+
+需要 v2 的扩展应声明 `habitrain_lottery >=1.1.57`。1.1.57 将发布元数据修正为 v2；较早版本即使已包含部分 v2 实现，元数据仍可能声明 v1，不应只凭能力 ID 推断其版本。
+
 ## 进度与领取
 
 - 游戏事件确认后调用 `HabiDailyTaskApi.advance(player, id, amount)`。
@@ -62,9 +73,9 @@ HabiDailyTaskApi.register(new HabiDailyTaskApi.Task(
 ```json
 {
   "depends": {
-    "habitrain_lottery": ">=1.1.27"
+    "habitrain_lottery": ">=1.1.57"
   }
 }
 ```
 
-能力 ID 为 `habitrain_lottery_daily_api`，API 类为 `com.habitrain.lottery.api.daily.HabiDailyTaskApi`，版本常量为 `API_VERSION = 1`。
+能力 ID 为 `habitrain_lottery_daily_api`，API 类为 `com.habitrain.lottery.api.daily.HabiDailyTaskApi`，版本常量为 `API_VERSION = 2`，发布元数据 `custom["habitrain_lottery:daily_api"].version` 同样为 `2`。

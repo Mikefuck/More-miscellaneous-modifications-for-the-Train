@@ -390,7 +390,11 @@ public final class LocalBackpackStore {
         if (!cards.containsKey(key) && cards.containsKey(key.toLowerCase(Locale.ROOT))) {
             key = key.toLowerCase(Locale.ROOT);
         }
-        cards.put(key, Math.max(0, current + amount));
+        try {
+            cards.put(key, PlayerCardMutationPolicy.addToBalance(current, amount));
+        } catch (IllegalArgumentException overflow) {
+            return false;
+        }
         return save(uuid, cards);
     }
 
@@ -437,7 +441,12 @@ public final class LocalBackpackStore {
                 : defaultCards();
         String key = type.questKey.toLowerCase(Locale.ROOT);
         int current = Math.max(0, cards.getOrDefault(key, 0));
-        int target = PlayerCardMutationPolicy.targetCount(current, operation, value);
+        int target;
+        try {
+            target = PlayerCardMutationPolicy.targetCount(current, operation, value);
+        } catch (IllegalArgumentException overflow) {
+            return CardMutationResult.failure(overflow.getMessage(), CardStoreStatus.STORED);
+        }
         cards.put(key, target);
         if (!save(uuid, cards)) {
             CardStoreStatus status = load.isMissing() ? CardStoreStatus.MISSING : CardStoreStatus.STORED;

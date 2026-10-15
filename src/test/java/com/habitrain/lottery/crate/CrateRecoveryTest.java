@@ -119,6 +119,24 @@ class CrateRecoveryTest {
         assertEquals(1, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.get(pending.keyId));
     }
 
+    @Test void crateGrantPreservesRewardBalancesBeyondTheSetLimit() throws Exception {
+        assertTrue(LocalBackpackStore.setSelfSelectCards(uuid, 200_000));
+        assertTrue(finish().success());
+        assertEquals(200_001, LocalBackpackStore.selfSelectCards(uuid));
+        assertTrue(finish().success());
+        assertEquals(200_001, LocalBackpackStore.selfSelectCards(uuid));
+    }
+
+    @Test void overflowingCardRewardKeepsCrateAndKeyUntilRetrySucceeds() throws Exception {
+        assertTrue(LocalBackpackStore.setSelfSelectCards(uuid, Integer.MAX_VALUE));
+        assertFalse(finish().success());
+        assertEquals(Integer.MAX_VALUE, LocalBackpackStore.selfSelectCards(uuid));
+        assertEquals(1, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.get(pending.keyId));
+        assertTrue(LocalBackpackStore.addSelfSelectCards(uuid, -1));
+        assertTrue(finish().success());
+        assertEquals(Integer.MAX_VALUE, LocalBackpackStore.selfSelectCards(uuid));
+    }
+
     @Test void legacyCommittedReceiptSkipsCardBalanceRepair() throws Exception {
         pending.rewardProtocol = 0;
         assertTrue(PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> {

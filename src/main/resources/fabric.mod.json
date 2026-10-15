@@ -62,7 +62,7 @@
             "facade": "com.habitrain.lottery.api.player.HabiLotteryApi"
         },
         "habitrain_lottery:daily_api": {
-            "version": 1,
+            "version": 2,
             "facade": "com.habitrain.lottery.api.daily.HabiDailyTaskApi"
         }
     }

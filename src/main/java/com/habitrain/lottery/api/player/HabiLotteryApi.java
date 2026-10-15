@@ -36,6 +36,7 @@ public final class HabiLotteryApi {
         return HabiLotteryMod.getServer();
     }
 
+    /** Returns 0 before the world is ready, without caching a missing account. */
     public static int getGreenApples(UUID uuid) {
         return uuid == null ? 0 : PlayerLotteryStore.get().getGreenApples(uuid);
     }

@@ -24,7 +24,7 @@ public final class HabiTitleApi {
     private HabiTitleApi() {
     }
 
-    /** Owned title display strings in storage order; empty on missing/corrupt data. */
+    /** Owned titles in storage order; empty before world readiness or on missing/corrupt data. */
     public static List<String> owned(UUID uuid) {
         if (uuid == null) {
             return List.of();
@@ -46,7 +46,7 @@ public final class HabiTitleApi {
         return List.copyOf(out);
     }
 
-    /** Currently equipped title, or {@code ""} when none. */
+    /** Currently equipped title, or {@code ""} before world readiness or when none. */
     public static String current(UUID uuid) {
         if (uuid == null) {
             return "";

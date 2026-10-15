@@ -260,7 +260,7 @@ public final class PlayerLotteryStore {
      * @return data that should remain cached, or {@code null} when primary+.bak are corrupt
      */
     PlayerLotteryData adoptJoin(UUID uuid) {
-        if (uuid == null) {
+        if (uuid == null || !WorldLotteryPaths.ready()) {
             return null;
         }
         if (cache.containsKey(uuid) && isDirty(uuid)) {
@@ -299,7 +299,7 @@ public final class PlayerLotteryStore {
      * Restore a prior cache snapshot after a failed flush so grant/login keys can retry.
      */
     public void restoreSnapshot(UUID uuid, PlayerLotteryData snapshot, boolean dirtyFlag) {
-        if (uuid == null || snapshot == null) {
+        if (uuid == null || snapshot == null || !WorldLotteryPaths.ready()) {
             return;
         }
         cache.put(uuid, snapshot);
@@ -338,6 +338,9 @@ public final class PlayerLotteryStore {
     }
 
     public PlayerLotteryData getOrLoad(UUID uuid) {
+        // An unbound world is not a missing account. Return a disposable default;
+        // caching it would hide and later overwrite an existing player's file.
+        if (uuid == null || !WorldLotteryPaths.ready()) return normalize(null);
         if (isLoadFailed(uuid)) {
             HabiLotteryMod.LOGGER.error("Lottery data load-failed for {}, refusing cached zeros", uuid);
             return normalize(null);
@@ -370,6 +373,7 @@ public final class PlayerLotteryStore {
     }
 
     public void update(UUID uuid, Consumer<PlayerLotteryData> mutator) {
+        if (uuid == null || !WorldLotteryPaths.ready()) return;
         if (isLoadFailed(uuid)) {
             HabiLotteryMod.LOGGER.error("Refusing lottery mutation for load-failed {}", uuid);
             return;
@@ -621,7 +625,7 @@ public final class PlayerLotteryStore {
     }
 
     public boolean tryConsumeGrantKey(UUID uuid, String key) {
-        if (isLoadFailed(uuid)) {
+        if (uuid == null || !WorldLotteryPaths.ready() || isLoadFailed(uuid)) {
             return false;
         }
         PlayerLotteryData d = getOrLoad(uuid);
@@ -723,7 +727,7 @@ public final class PlayerLotteryStore {
     }
 
     public void markDirty(UUID uuid) {
-        if (uuid == null || isLoadFailed(uuid)) {
+        if (uuid == null || !WorldLotteryPaths.ready() || isLoadFailed(uuid)) {
             return;
         }
         dirty.put(uuid, true);
@@ -768,7 +772,8 @@ public final class PlayerLotteryStore {
      * @return {@code true} 表示改动已成功持久化；{@code false} 表示已回滚、调用方不得计为成功
      */
     public boolean applyToPlayerWithRollback(UUID uuid, java.util.function.Consumer<PlayerLotteryData> mutator) {
-        if (uuid == null || mutator == null || isLoadFailed(uuid) || isFlushDeferred()) {
+        if (uuid == null || mutator == null || !WorldLotteryPaths.ready()
+                || isLoadFailed(uuid) || isFlushDeferred()) {
             return false;
         }
         PlayerLotteryData current = getOrLoad(uuid);

@@ -25,7 +25,7 @@ Fabric 1.21.1 账户功能模组。当前版本提供独立皮肤目录与皮肤
 
 ```text
 mods/
-  habitrain_lottery-1.1.56.jar
+  habitrain_lottery-1.1.57.jar
   star_rail_express-4.3.0.jar
   habitrain_core-2.0.19.jar
 ```
@@ -76,7 +76,7 @@ mods/
 - [皮肤 API v3](docs/skin-api.md)
 - [皮肤卡片右下角文字 API v1](docs/skin-card-text-api.md)
 - [皮肤特效 API v1](docs/skin-effects-api.md)
-- [每日任务 API v1](docs/daily-task-board.md)
+- [每日任务 API v2](docs/daily-task-board.md)
 - [账户仓库与特殊道具](docs/account-warehouse.md)
 
 皮肤 API 只负责注册、显示、解锁和装备，不提供任何随机奖励入口。绿苹果 API 的完整方法名是 `getGreenApples`、`setGreenApples`、`addGreenApples` 和 `grantGreenApples`。

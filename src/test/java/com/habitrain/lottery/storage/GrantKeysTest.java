@@ -1,16 +1,37 @@
 package com.habitrain.lottery.storage;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class GrantKeysTest {
+    @TempDir Path world;
+
+    @BeforeEach
+    void setup() {
+        WorldLotteryPaths.initForTests(world);
+    }
+
     @AfterEach
     void tearDown() {
-        PlayerLotteryStore.get().reset();
+        WorldLotteryPaths.clear();
+    }
+
+    @Test
+    void unboundWorldCannotConsumeGrantKey() {
+        UUID id = UUID.randomUUID();
+        WorldLotteryPaths.clear();
+        assertFalse(PlayerLotteryStore.get().tryConsumeGrantKey(id, "before-start"));
+        assertFalse(PlayerLotteryStore.get().isDirty(id));
+        WorldLotteryPaths.initForTests(world);
+        assertTrue(PlayerLotteryStore.get().tryConsumeGrantKey(id, "before-start"));
+        assertFalse(PlayerLotteryStore.get().tryConsumeGrantKey(id, "before-start"));
     }
 
     @Test
