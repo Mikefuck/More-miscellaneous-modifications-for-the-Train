@@ -27,7 +27,7 @@ public final class InventorySkinApplier {
         int changed = 0;
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            String type = SkinItems.typeOf(stack);
+            String type = SkinItemPolicy.excludesSkin(stack) ? null : SkinItems.typeOf(stack);
             if (type == null) {
                 if (stack.has(SkinComponents.SKIN)) { stack.remove(SkinComponents.SKIN); changed++; }
                 if (stack.has(SkinComponents.CUSTOM_SOUND)) { stack.remove(SkinComponents.CUSTOM_SOUND); changed++; }

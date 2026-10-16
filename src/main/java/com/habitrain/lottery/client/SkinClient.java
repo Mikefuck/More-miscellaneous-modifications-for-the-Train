@@ -2,6 +2,7 @@ package com.habitrain.lottery.client;
 
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
+import com.habitrain.lottery.bridge.SkinItemPolicy;
 import com.habitrain.lottery.skin.SkinNetwork;
 import com.habitrain.lottery.skin.SkinComponents;
 import com.habitrain.lottery.client.gui.SkinWardrobeScreen;
@@ -83,6 +84,7 @@ public final class SkinClient {
      * the documented fallback. Availability is decided by the sprite instead.</p>
      */
     public static BakedModel model(ItemStack stack, boolean inHand, BakedModel fallback) {
+        if (SkinItemPolicy.excludesSkin(stack)) return fallback;
         var skin = HabiSkinApi.fromEntry(stack.get(SkinComponents.SKIN));
         if (skin.isEmpty()) return fallback;
         SkinDefinition definition = skin.get();
