@@ -310,6 +310,8 @@
   "screen.habitrain_lottery.wardrobe.filter.2": "未解锁",
   "screen.habitrain_lottery.wardrobe.sort.owned": "装备优先",
   "screen.habitrain_lottery.wardrobe.sort.name": "名称排序",
+  "screen.habitrain_lottery.wardrobe.sort.quality": "品质排序",
+  "screen.habitrain_lottery.wardrobe.sort.quality_name": "品质·名称",
   "screen.habitrain_lottery.wardrobe.equip": "装备皮肤",
   "screen.habitrain_lottery.wardrobe.restore": "恢复默认",
   "screen.habitrain_lottery.wardrobe.equipped": "已装备",

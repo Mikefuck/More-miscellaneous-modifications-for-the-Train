@@ -310,6 +310,8 @@
   "screen.habitrain_lottery.wardrobe.filter.2": "Locked",
   "screen.habitrain_lottery.wardrobe.sort.owned": "Equipped first",
   "screen.habitrain_lottery.wardrobe.sort.name": "Name order",
+  "screen.habitrain_lottery.wardrobe.sort.quality": "Quality first",
+  "screen.habitrain_lottery.wardrobe.sort.quality_name": "Quality + name",
   "screen.habitrain_lottery.wardrobe.equip": "Equip",
   "screen.habitrain_lottery.wardrobe.restore": "Restore default",
   "screen.habitrain_lottery.wardrobe.equipped": "Equipped",

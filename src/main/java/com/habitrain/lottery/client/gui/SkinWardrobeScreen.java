@@ -133,7 +133,7 @@ public final class SkinWardrobeScreen extends Screen {
         filterButton = action(x + searchWidth + 4, search.getY(), controlWidth, text("filter.0"), b -> {
             filter = (filter + 1) % 3; page = 0; refreshCatalog();
         });
-        sortButton = action(x + searchWidth + controlWidth + 8, search.getY(), controlWidth, text("sort.owned"), b -> {
+        sortButton = action(x + searchWidth + controlWidth + 8, search.getY(), controlWidth, text("sort.quality"), b -> {
             sortByName = !sortByName; page = 0; refreshCatalog();
         });
         equip = action(layout.detailX() + 8, layout.gridY() + layout.contentHeight() - 28,
@@ -241,6 +241,12 @@ public final class SkinWardrobeScreen extends Screen {
         Comparator<Entry> comparator = Comparator.comparing(e -> e.name().getString().toLowerCase(Locale.ROOT));
         if (!sortByName) comparator = Comparator.comparing((Entry e) -> !e.equipped())
                 .thenComparing(e -> !e.owned()).thenComparing(comparator);
+        if (!titles()) {
+            // Keep the default appearance first and quality groups intact in both sort modes.
+            comparator = Comparator.comparing((Entry e) -> !"default".equals(e.id()))
+                    .thenComparing(Entry::quality, Comparator.nullsLast(Comparator.reverseOrder()))
+                    .thenComparing(comparator);
+        }
         visible = catalog.stream().filter(e -> filter == 0 || (filter == 1 ? e.owned() : !e.owned()))
                 .filter(e -> e.id().toLowerCase(Locale.ROOT).contains(term)
                         || e.name().getString().toLowerCase(Locale.ROOT).contains(term))
@@ -307,7 +313,8 @@ public final class SkinWardrobeScreen extends Screen {
         previous.active = page > 0; next.active = page < pages() - 1;
         reload.active = pendingId == null && pendingSoundId == null && (received || Util.getMillis() - requestAt > 1200);
         filterButton.setMessage(text("filter." + filter));
-        sortButton.setMessage(text(sortByName ? "sort.name" : "sort.owned"));
+        sortButton.setMessage(text(titles() ? (sortByName ? "sort.name" : "sort.owned")
+                : (sortByName ? "sort.quality_name" : "sort.quality")));
         hats.visible = "hat".equals(type()); hats.setMessage(text("hats." + WardrobeExtras.hatMode()));
         view.visible = !titles();
         view.active = !titles();
