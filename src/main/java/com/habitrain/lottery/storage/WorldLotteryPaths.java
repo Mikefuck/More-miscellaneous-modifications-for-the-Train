@@ -42,6 +42,7 @@ public final class WorldLotteryPaths {
     }
 
     public static void clear() {
+        com.habitrain.lottery.card.SelfSelectRoleConfigService.reset();
         root = null;
         configDir = null;
         playersDir = null;

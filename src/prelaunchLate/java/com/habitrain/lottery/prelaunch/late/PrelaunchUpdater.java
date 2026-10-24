@@ -2,10 +2,10 @@ package com.habitrain.lottery.prelaunch.late;
 
 import com.habitrain.lottery.prelaunch.AutoModpackState;
 import com.habitrain.lottery.prelaunch.PrelaunchConfig;
+import com.habitrain.lottery.prelaunch.PrelaunchCooldown;
 import com.habitrain.lottery.prelaunch.PrelaunchLog;
 import com.habitrain.lottery.prelaunch.ServerAddressParser;
 import com.habitrain.lottery.prelaunch.ServerListReader;
-import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -61,6 +61,12 @@ final class PrelaunchUpdater {
         try {
             FabricLoader loader = FabricLoader.getInstance();
             PrelaunchConfig config = PrelaunchConfig.load(loader.getConfigDir());
+            if (PrelaunchCooldown.isActive(loader.getConfigDir(), System.currentTimeMillis())) {
+                actionStarted = true;
+                PrelaunchLog.info("Recent successful update: skipping the picker and network update for this launch");
+                loadSelected();
+                return;
+            }
             List<PickerOption> options = buildOptions(
                     ServerListReader.read(loader.getGameDir().resolve("servers.dat")));
             if (options.isEmpty()) {
@@ -155,6 +161,7 @@ final class PrelaunchUpdater {
     /** What AutoModpack's preload would have done on its own. */
     private static void runDefault(boolean updateOnLaunch) {
         if (!updateOnLaunch) {
+            loadSelected();
             return;
         }
         Selected selected = Selected.current();
@@ -171,7 +178,7 @@ final class PrelaunchUpdater {
             }
         }
         ClientCacheUtils.deleteDummyFiles();
-        new ModpackUpdater(latest, selected.addresses, selected.secret, selected.dir).processModpackUpdate(null);
+        new PrelaunchModpackUpdater(latest, selected.addresses, selected.secret, selected.dir, null).processModpackUpdate(null);
     }
 
     /** Loads the already installed, selected modpack without touching the network. */
@@ -182,7 +189,7 @@ final class PrelaunchUpdater {
         }
         ClientCacheUtils.deleteDummyFiles();
         // Without server content AutoModpack only applies and loads what is on disk.
-        new ModpackUpdater(null, selected.addresses, selected.secret, selected.dir).processModpackUpdate(null);
+        new PrelaunchModpackUpdater(null, selected.addresses, selected.secret, selected.dir, null).processModpackUpdate(null);
     }
 
     /** @return false when nothing was applied and the caller should load the current modpack */
@@ -225,7 +232,7 @@ final class PrelaunchUpdater {
             Jsons.ModpackContentFields serverContent = content.get();
 
             progress.status("正在比对本地文件…");
-            ModpackUtils.UpdateCheckResult result = ModpackUtils.isUpdate(serverContent, target.dir);
+            ModpackUtils.UpdateCheckResult result = ModpackFileAudit.check(serverContent, target.dir);
             if (result.requiresUpdate()) {
                 progress.hide();
                 if (!confirmDownload(option, serverContent, result.filesToUpdate())) {
@@ -239,29 +246,22 @@ final class PrelaunchUpdater {
             // an in-game join.
             GlobalVariables.selectedModpackDir = target.dir;
             ClientCacheUtils.deleteDummyFiles();
-            ModpackUpdater updater = new ModpackUpdater(serverContent, target.addresses, target.secret, target.dir);
+            PrelaunchModpackUpdater updater = new PrelaunchModpackUpdater(serverContent, target.addresses, target.secret, target.dir, progress);
             if (!result.requiresUpdate()) {
                 progress.close();
                 updater.processModpackUpdate(result);
-                return true;
+                return updater.successful();
             }
 
             // AutoModpack's preload refuses JARs without a public Modrinth/CurseForge match; the player
             // just confirmed them, so go straight to the download step like its in-game screen does.
             Path contentFile = target.dir.resolve(GlobalVariables.hostModpackContentFile.getFileName());
-            setModpackContentFile(updater, contentFile);
             updater.fullDownload = !Files.exists(contentFile);
             progress.status("正在准备下载…");
-            progress.follow(() -> updater.downloadManager);
-            // On success AutoModpack applies the modpack; if mods changed it shows its own
-            // "restart your game" window and exits the process.
+            // The subclass recognizes a successful apply and schedules a fresh JVM after this one exits.
             updater.startUpdate(result.filesToUpdate());
             progress.close();
-            if (!updater.failedDownloads.isEmpty()) {
-                Ui.error("有 " + updater.failedDownloads.size() + " 个文件下载失败（详见 logs/latest.log）。<br>"
-                        + "可以重新启动游戏再试一次。");
-            }
-            return true;
+            return updater.successful();
         } catch (McLoginClient.LoginException e) {
             PrelaunchLog.error("Prelaunch login failed", e);
             progress.close();
@@ -354,13 +354,6 @@ final class PrelaunchUpdater {
             }
             return true;
         }
-    }
-
-    private static void setModpackContentFile(ModpackUpdater updater, Path contentFile) throws ReflectiveOperationException {
-        // startUpdate() expects processModpackUpdate() to have set this; we skip that method on purpose.
-        Field field = ModpackUpdater.class.getDeclaredField("modpackContentFile");
-        field.setAccessible(true);
-        field.set(updater, contentFile);
     }
 
     // ---- targets ----

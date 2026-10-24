@@ -6,11 +6,13 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import javax.swing.JLabel;
+import javax.swing.JDialog;
 import javax.swing.JOptionPane;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
+import javax.swing.Timer;
 
 /** Small helpers for the blocking Swing dialogs shown from the (non-EDT) loader thread. */
 final class Ui {
@@ -60,6 +62,25 @@ final class Ui {
         run(() -> {
             ensureLookAndFeel();
             JOptionPane.showMessageDialog(null, label(message), TITLE, JOptionPane.ERROR_MESSAGE);
+        });
+    }
+
+    /** Auto-closes even when the player leaves the update window unattended. */
+    static void noticeBeforeExit(String message) {
+        if (java.awt.GraphicsEnvironment.isHeadless()) return;
+        run(() -> {
+            ensureLookAndFeel();
+            JOptionPane pane = new JOptionPane(label(message), JOptionPane.INFORMATION_MESSAGE);
+            JDialog dialog = pane.createDialog(null, TITLE);
+            Timer timer = new Timer(5_000, event -> dialog.dispose());
+            timer.setRepeats(false);
+            timer.start();
+            try {
+                dialog.setVisible(true);
+            } finally {
+                timer.stop();
+                dialog.dispose();
+            }
         });
     }
 

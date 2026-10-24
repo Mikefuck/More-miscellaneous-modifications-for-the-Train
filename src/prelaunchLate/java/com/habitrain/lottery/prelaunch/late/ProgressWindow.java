@@ -69,7 +69,7 @@ final class ProgressWindow {
                     return;
                 }
                 if (!current.isRunning()) {
-                    label.setText("下载完成，正在安装整合包…（如需重启，AutoModpack 会弹出提示）");
+                    label.setText("下载完成，正在安装并校验… 完成后将重启或自动退出");
                     bar.setIndeterminate(true);
                     bar.setStringPainted(false);
                     return;

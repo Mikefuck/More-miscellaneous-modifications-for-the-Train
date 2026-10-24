@@ -52,6 +52,7 @@ public final class HabiLotteryMod implements ModInitializer {
         com.habitrain.lottery.skin.SkinNetwork.register();
         com.habitrain.lottery.skin.BackSkinNetwork.register();
         LotteryNetwork.registerServer();
+        com.habitrain.lottery.network.SelfSelectAdminNetwork.register();
         com.habitrain.lottery.network.MailboxPages.register();
         com.habitrain.lottery.network.CrateNetwork.register();
         com.habitrain.lottery.network.DailyTaskAdminNetwork.register();
@@ -65,6 +66,7 @@ public final class HabiLotteryMod implements ModInitializer {
             server = s;
             try {
                 WorldLotteryPaths.init(s);
+                com.habitrain.lottery.card.SelfSelectRoleConfigService.load();
                 try {
                     MetaFeaturePaths.ensureDirs();
                     TitlePaths.ensureDirs();

@@ -89,6 +89,7 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
     testImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    testImplementation files("libs/automodpack-mc1.21.1-fabric-4.0.6.jar")
     // 运行时由 stageTestRuntime 单独放入 prelaunch/prelaunchLate 目录，避免目录内容被平铺进 libs。
     testCompileOnly sourceSets.prelaunch.output
     testCompileOnly sourceSets.prelaunchLate.output

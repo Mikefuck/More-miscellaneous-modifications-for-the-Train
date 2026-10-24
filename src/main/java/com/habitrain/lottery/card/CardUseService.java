@@ -179,6 +179,11 @@ public final class CardUseService {
             player.sendSystemMessage(Component.literal("§c[自选卡] 下局已有生效的卡牌"));
             return;
         }
+        ResourceLocation requestedRole = ResourceLocation.tryParse(roleId);
+        if (requestedRole != null && !SelfSelectRoleConfigService.isAllowed(requestedRole)) {
+            player.sendSystemMessage(Component.translatable("screen.habitrain_lottery.self_select.role_blocked"));
+            return;
+        }
         SRERole role = resolveCandidate(FactionCardType.NONE, roleId);
         if (role == null || SelfSelectForces.isRoleTaken(role.identifier())) {
             player.sendSystemMessage(Component.literal("§c[自选卡] 角色无效或已被其他玩家自选"));
@@ -197,6 +202,7 @@ public final class CardUseService {
     static boolean consumeSelfSelect(UUID uuid, ResourceLocation roleId) {
         if (uuid == null || roleId == null || SelfSelectForces.has(uuid)
                 || ActiveCardForces.get(uuid) != null || SelfSelectForces.isRoleTaken(roleId)
+                || !SelfSelectRoleConfigService.isAllowed(roleId)
                 || DailySelfSelectService.remaining(uuid) <= 0) return false;
         if (!LocalBackpackStore.addSelfSelectCards(uuid, -SELF_SELECT_COST)) return false;
         if (!DailySelfSelectService.recordSuccessfulUse(uuid)) {
@@ -219,6 +225,15 @@ public final class CardUseService {
      * <p>Vanilla base roles (killer/vigilante/civilian) are included for self-selection.
      */
     public static List<SRERole> listCandidates(FactionCardType type) {
+        List<SRERole> candidates = listUnrestrictedCandidates(type);
+        if (type == FactionCardType.NONE) {
+            candidates.removeIf(role -> !SelfSelectRoleConfigService.isAllowed(role.identifier()));
+        }
+        return candidates;
+    }
+
+    /** Editor roster before this mod's restrictions, from the same effective API directory. */
+    static List<SRERole> listUnrestrictedCandidates(FactionCardType type) {
         List<SRERole> candidates = new ArrayList<>();
         if (type == null) {
             return candidates;

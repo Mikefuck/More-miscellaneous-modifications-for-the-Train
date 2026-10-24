@@ -36,12 +36,12 @@ import java.util.Map;
  * OP-gated operations console for player assets, titles, skins and mail.
  */
 public class LotteryConfigRootScreen extends Screen {
-    private static final String[] TABS = {"玩家资产", "称号管理", "皮肤内容", "开箱管理", "撰写邮件", "每日任务"};
+    private static final String[] TABS = {"玩家资产", "称号管理", "皮肤内容", "开箱管理", "撰写邮件", "每日任务", "自选卡设置"};
     private static final ConfigSectionId[] SECTION_IDS = {
             ConfigSectionId.PLAYERS, ConfigSectionId.TITLES, ConfigSectionId.SKINS,
-            ConfigSectionId.CRATES, ConfigSectionId.MAIL, ConfigSectionId.DAILY
+            ConfigSectionId.CRATES, ConfigSectionId.MAIL, ConfigSectionId.DAILY, ConfigSectionId.SELF_SELECT
     };
-    private static final int[] NAV_ORDER = {0, 1, 2, 3, 5, 4};
+    private static final int[] NAV_ORDER = {0, 1, 2, 6, 3, 5, 4};
     private static final int ROW_H = 22;
     private static final int TAB_PLAYERS = 0;
     private static final int TAB_TITLES = 1;
@@ -49,6 +49,7 @@ public class LotteryConfigRootScreen extends Screen {
     private static final int TAB_CRATES = 3;
     private static final int TAB_MAIL = 4;
     private static final int TAB_DAILY = 5;
+    private static final int TAB_SELF_SELECT = 6;
     private static final Gson GSON = new Gson();
 
     private final Screen parent;
@@ -320,6 +321,9 @@ public class LotteryConfigRootScreen extends Screen {
             case TAB_CRATES -> buildCratesTab(contentY, contentH);
             case TAB_MAIL -> buildMailTab(contentY, contentH);
             case TAB_DAILY -> buildDailyTab(contentY, contentH);
+            case TAB_SELF_SELECT -> addTab(Button.builder(Component.translatable("screen.habitrain_lottery.self_select.open"),
+                    b -> minecraft.setScreen(new SelfSelectRoleConfigScreen(this)))
+                    .bounds(pageLeft(), contentY, Math.min(180, pageWidth()), 20).build());
             default -> {
             }
         }
@@ -329,7 +333,8 @@ public class LotteryConfigRootScreen extends Screen {
     }
 
     private void applyOpWidgetLocks() {
-        if (selectedTab == TAB_SKINS || selectedTab == TAB_CRATES || selectedTab == TAB_DAILY) {
+        if (selectedTab == TAB_SKINS || selectedTab == TAB_CRATES || selectedTab == TAB_DAILY
+                || selectedTab == TAB_SELF_SELECT) {
             return;
         }
         boolean readOnly = !LotteryClientNetwork.canSendPlay() || !LotteryNetwork.ClientLotteryState.op;
@@ -1468,6 +1473,7 @@ public class LotteryConfigRootScreen extends Screen {
             return;
         }
         int y = nav.y() + 8;
+        int rowStep = Math.max(16, Math.min(18, (nav.height() - 32) / NAV_ORDER.length));
         ConfigSectionId.Group previousGroup = null;
         for (int position = 0; position < NAV_ORDER.length; position++) {
             int tab = NAV_ORDER[position];
@@ -1478,7 +1484,7 @@ public class LotteryConfigRootScreen extends Screen {
             tabX[tab] = nav.x() + 4;
             tabY[tab] = y;
             tabW[tab] = Math.max(0, nav.width() - 8);
-            y += 18;
+            y += rowStep;
             previousGroup = group;
         }
     }
