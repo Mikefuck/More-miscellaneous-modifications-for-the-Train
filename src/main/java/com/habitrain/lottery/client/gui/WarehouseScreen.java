@@ -63,6 +63,7 @@ public final class WarehouseScreen extends Screen {
     private enum Kind { TAB, PRIMARY, GHOST }
 
     private final Screen parent;
+    private final WarehouseCloseKey closeKey;
     private WarehouseLayout layout;
     private Page page = Page.WAREHOUSE;
     private String filter = "all", query = "";
@@ -105,7 +106,12 @@ public final class WarehouseScreen extends Screen {
     private final CrateParticles motes = new CrateParticles();
     private float moteClock;
 
-    public WarehouseScreen(Screen parent) { super(text("title")); this.parent = parent; }
+    public WarehouseScreen(Screen parent) { this(parent, false); }
+    public WarehouseScreen(Screen parent, boolean waitForInventoryRelease) {
+        super(text("title"));
+        this.parent = parent;
+        this.closeKey = new WarehouseCloseKey(waitForInventoryRelease);
+    }
     private static Component text(String suffix, Object... args) { return Component.translatable(KEY + suffix, args); }
     private static Component translated(String key) { return Component.translatableWithFallback(key, key); }
     private static long now() { return Util.getMillis(); }
@@ -1207,6 +1213,11 @@ public final class WarehouseScreen extends Screen {
     }
 
     @Override public boolean keyPressed(int key, int scan, int modifiers) {
+        boolean inventoryKey = minecraft != null && minecraft.options.keyInventory.matches(key, scan);
+        boolean searching = detail == null && search != null && search.isFocused();
+        if (closeKey.press(inventoryKey, searching)) { onClose(); return true; }
+        // 长按打开的剩余连发必须吞掉；搜索框仍可输入背包键对应的字符。
+        if (inventoryKey && !searching) return true;
         if (key == 256) {
             if (detail != null) { closeDetail(); return true; }
             if (page == Page.ROLES) { switchPage(Page.WAREHOUSE); return true; }
@@ -1240,6 +1251,10 @@ public final class WarehouseScreen extends Screen {
             positionTiles(); return true;
         }
         return super.keyPressed(key, scan, modifiers);
+    }
+    @Override public boolean keyReleased(int key, int scan, int modifiers) {
+        closeKey.release(minecraft != null && minecraft.options.keyInventory.matches(key, scan));
+        return super.keyReleased(key, scan, modifiers);
     }
     @Override public boolean charTyped(char c, int modifiers) { return detail == null && !busy() && super.charTyped(c, modifiers); }
     @Override public void onClose() { if (minecraft != null) minecraft.setScreen(parent); }

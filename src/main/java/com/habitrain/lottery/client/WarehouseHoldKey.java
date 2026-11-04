@@ -104,7 +104,7 @@ public final class WarehouseHoldKey {
         } else if (held >= HOLD_MS) {
             pressedAt = -1;
             mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.ENDER_CHEST_OPEN, 1.1F, 0.6F));
-            mc.setScreen(new WarehouseScreen(null));
+            mc.setScreen(new WarehouseScreen(null, true));
         }
     }
 
