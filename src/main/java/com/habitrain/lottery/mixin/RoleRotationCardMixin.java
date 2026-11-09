@@ -1,9 +1,12 @@
 package com.habitrain.lottery.mixin;
 
 import com.habitrain.lottery.HabiLotteryMod;
+import com.habitrain.lottery.backpack.ActiveCardForces;
+import com.habitrain.lottery.card.RolePoolVisibility;
 import com.habitrain.lottery.card.RotationCardGroups;
 import io.wifi.starrailexpress.api.SRERole;
 import io.wifi.starrailexpress.game.modes.funny.rotation.SingleSelectDraftState;
+import net.minecraft.server.level.ServerLevel;
 import org.agmas.harpymodloader.modded_murder.PlayerRoleWeightManager;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -252,7 +255,42 @@ public abstract class RoleRotationCardMixin {
                 }
             }
         }
+        if (playerUuid != null && ActiveCardForces.get(playerUuid) != null && cardType >= 0 && cardType <= 3) {
+            for (SRERole candidate : currentCandidates) {
+                if (candidate != null
+                        && RotationCardGroups.matchesRoleType(cardType, PlayerRoleWeightManager.getRoleType(candidate))) {
+                    ActiveCardForces.markCandidateOffered(playerUuid);
+                    break;
+                }
+            }
+        }
         ci.cancel();
+    }
+
+    /**
+     * Clears {@code CANDIDATE_OFFERED} for any card holder who genuinely picked a role matching
+     * their forced faction before {@code adjustRemainingRoles} rebalances underfilled factions
+     * ({@code B-12}). If the balancer subsequently overwrites a Civilian card holder's Civilian
+     * pick with a Killer/Vigilante/Neutral role, {@code OnGameTrueStarted} refunds their card.
+     */
+    @Inject(method = "adjustRemainingRoles", at = @At("HEAD"), require = 0)
+    private void habi$protectMatchedDraftPicksBeforeAdjust(ServerLevel serverWorld, CallbackInfo ci) {
+        if (selectedRoles == null || selectedRoles.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<UUID, SRERole> entry : selectedRoles.entrySet()) {
+            UUID uid = entry.getKey();
+            SRERole picked = entry.getValue();
+            Integer forcedRoleType = ActiveCardForces.get(uid);
+            if (uid == null || picked == null || forcedRoleType == null) {
+                continue;
+            }
+            int cardGroup = RotationCardGroups.fromForcedType(forcedRoleType);
+            if (cardGroup >= 0 && cardGroup <= 3
+                    && RotationCardGroups.matchesRoleType(cardGroup, PlayerRoleWeightManager.getRoleType(picked))) {
+                ActiveCardForces.clearCandidateOffered(uid);
+            }
+        }
     }
 
     /**
@@ -282,7 +320,8 @@ public abstract class RoleRotationCardMixin {
             }
 
             for (String name : new String[]{
-                    "getPlayerCardType", "assignRotationOrder", "prepareCandidatesForPlayer"}) {
+                    "getPlayerCardType", "assignRotationOrder", "prepareCandidatesForPlayer",
+                    "adjustRemainingRoles"}) {
                 if (!declaredMethods.contains(name)) {
                     HabiLotteryMod.LOGGER.error(
                             "habitrain_lottery upstream fingerprint: {} no longer declares method {}() — "

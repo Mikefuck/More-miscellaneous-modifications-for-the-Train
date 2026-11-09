@@ -104,7 +104,47 @@ afterEvaluate {
     )
 }
 
-def stagedTestRuntimeDir = new File(gradle.gradleUserHomeDir, "habitrain-lottery-test-runtime")
+def workspacePathHash = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(rootDir.canonicalPath.getBytes("UTF-8"))
+        .encodeHex().toString().substring(0, 12)
+def stagedTestRuntimeBase = new File(gradle.gradleUserHomeDir, "habitrain-lottery-test-runtime/${workspacePathHash}")
+// B-25: Reap any leftover run-<pid>-* staging dirs from terminated processes, then allocate a
+// per-invocation ASCII staging directory + tmpdir so concurrent `./gradlew test --no-daemon`
+// runs in the same workspace never collide on staged JARs, classes, or java.io.tmpdir.
+if (stagedTestRuntimeBase.isDirectory()) {
+    stagedTestRuntimeBase.listFiles()?.each { child ->
+        if (!child.isDirectory()) return
+        def matcher = (child.name =~ /^run-(\d+)-[0-9a-f]+$/)
+        if (!matcher.matches()) return
+        try {
+            long pid = Long.parseLong(matcher.group(1))
+            if (pid != ProcessHandle.current().pid()
+                    && !ProcessHandle.of(pid).map { it.isAlive() }.orElse(false)) {
+                child.deleteDir()
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+}
+def testRunInvocationId = "${ProcessHandle.current().pid()}-${UUID.randomUUID().toString().substring(0, 8)}"
+def stagedTestInvocationDir = new File(stagedTestRuntimeBase, "run-${testRunInvocationId}")
+def stagedTestRuntimeDir = new File(stagedTestInvocationDir, "classpath")
+def stagedTestTempDir = new File(stagedTestInvocationDir, "tmp")
+def stagedTestBinaryResultsDir = new File(stagedTestInvocationDir, "binary-results")
+def stagedTestXmlReportDir = new File(stagedTestInvocationDir, "junit-xml")
+def stagedTestHtmlReportDir = new File(stagedTestInvocationDir, "html-report")
+
+tasks.named("clean") {
+    doLast {
+        if (stagedTestRuntimeBase.isDirectory()) {
+            stagedTestRuntimeBase.listFiles()?.each { child ->
+                if (!child.name.startsWith("run-") && !child.name.endsWith(".lock")) {
+                    try { child.deleteDir(); child.delete() } catch (Throwable ignored) {}
+                }
+            }
+        }
+    }
+}
 
 tasks.register("stageTestRuntime", Sync) {
     dependsOn(tasks.named("testClasses"))
@@ -126,12 +166,56 @@ tasks.register("stageTestRuntime", Sync) {
     }
 }
 
+def copyDirectoryBestEffort
+copyDirectoryBestEffort = { File srcDir, File dstDir ->
+    if (srcDir == null || !srcDir.isDirectory()) return
+    dstDir.mkdirs()
+    srcDir.listFiles()?.each { entry ->
+        File target = new File(dstDir, entry.name)
+        if (entry.isDirectory()) {
+            copyDirectoryBestEffort(entry, target)
+        } else {
+            java.nio.file.Files.copy(
+                    entry.toPath(),
+                    target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+}
+
+def cleanupStagedTestRuntime = tasks.register("cleanupStagedTestRuntime") {
+    def publishedXmlDir = layout.buildDirectory.dir("test-results/test")
+    def publishedHtmlDir = layout.buildDirectory.dir("reports/tests/test")
+    doLast {
+        try {
+            stagedTestRuntimeBase.mkdirs()
+            File lockFile = new File(stagedTestRuntimeBase, "publish-reports.lock")
+            try (def raf = new java.io.RandomAccessFile(lockFile, "rw");
+                 def channel = raf.getChannel();
+                 def lock = channel.lock()) {
+                copyDirectoryBestEffort(stagedTestXmlReportDir, publishedXmlDir.get().asFile)
+                copyDirectoryBestEffort(stagedTestHtmlReportDir, publishedHtmlDir.get().asFile)
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            stagedTestInvocationDir.deleteDir()
+        } catch (Throwable ignored) {
+            // Best-effort on Windows if mmap handles lag; dead-PID reaper cleans up next run.
+        }
+    }
+}
+
 tasks.named("test", Test).configure {
     useJUnitPlatform()
-    def workspaceTestTemp = layout.buildDirectory.dir('test-tmp').get().asFile
-    systemProperty 'java.io.tmpdir', workspaceTestTemp.absolutePath
-    doFirst { workspaceTestTemp.mkdirs() }
+    systemProperty 'junit.jupiter.extensions.autodetection.enabled', 'true'
+    systemProperty 'java.io.tmpdir', stagedTestTempDir.absolutePath
+    binaryResultsDirectory.set(stagedTestBinaryResultsDir)
+    reports.junitXml.outputLocation.set(stagedTestXmlReportDir)
+    reports.html.outputLocation.set(stagedTestHtmlReportDir)
+    doFirst { stagedTestTempDir.mkdirs() }
     dependsOn(tasks.named("stageTestRuntime"))
+    finalizedBy(cleanupStagedTestRuntime)
     // Gradle's Windows test worker corrupts non-ASCII classpath entries.
     testClassesDirs = files(new File(stagedTestRuntimeDir, "test"))
     classpath = files(
@@ -183,7 +267,12 @@ tasks.named("assemble") {
 publishing {
     publications {
         create("mavenJava", MavenPublication) {
-            from components.java
+            artifact(remapJar) {
+                builtBy remapJar
+            }
+            artifact(remapSourcesJar) {
+                builtBy remapSourcesJar
+            }
         }
     }
     repositories {
@@ -191,14 +280,73 @@ publishing {
     }
 }
 
-// Guard the independent component boundary and the empty built-in skin catalog.
+// Guard the independent component boundary and the empty built-in skin catalog (source + bytecode).
 tasks.register('verifyIndependentSkins') {
+    dependsOn tasks.named('compileJava')
     doLast {
         def roots = ['api/skin', 'skin']
+        def forbiddenSourcePattern = /(?m)^\s*import\s+(?:static\s+)?(io\.wifi|org\.agmas|pro\.fazeclan|net\.exmo\.sre|dev\.doctor4t)\./
         roots.each { dir ->
             fileTree("src/main/java/com/habitrain/lottery/${dir}").matching { include '**/*.java' }.each { source ->
-                if (source.getText('UTF-8') =~ /import (io\.wifi|org\.agmas|pro\.fazeclan)\./) {
+                if (source.getText('UTF-8') =~ forbiddenSourcePattern) {
                     throw new GradleException("Upstream import in independent skin component: ${source}")
+                }
+            }
+        }
+        def forbiddenInternalPrefixes = ['io/wifi/', 'org/agmas/', 'pro/fazeclan/', 'net/exmo/sre/', 'dev/doctor4t/']
+        def forbiddenDotPrefixes = forbiddenInternalPrefixes.collect { it.replace('/', '.') }
+        roots.each { dir ->
+            def classRoot = layout.buildDirectory.dir("classes/java/main/com/habitrain/lottery/${dir}").get().asFile
+            if (!classRoot.isDirectory()) return
+            fileTree(classRoot).matching { include '**/*.class' }.each { classFile ->
+                byte[] bytes = classFile.bytes
+                // Parse JVM class constant pool CONSTANT_Utf8_info (tag 1) entries directly so no
+                // import static, inline FQN, method descriptor, or field type can slip through.
+                def dis = new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes))
+                int magic = dis.readInt()
+                if (magic != (int) 0xCAFEBABE) throw new GradleException("Invalid class file: ${classFile}")
+                dis.readUnsignedShort() // minor
+                dis.readUnsignedShort() // major
+                int cpCount = dis.readUnsignedShort()
+                for (int i = 1; i < cpCount; i++) {
+                    int tag = dis.readUnsignedByte()
+                    switch (tag) {
+                        case 1: // CONSTANT_Utf8
+                            String utf = dis.readUTF()
+                            if (forbiddenInternalPrefixes.any { utf.contains(it) } || forbiddenDotPrefixes.any { utf.contains(it) }) {
+                                throw new GradleException("Upstream bytecode reference '${utf}' in independent skin class: ${classFile}")
+                            }
+                            break
+                        case 3: // Integer
+                        case 4: // Float
+                            dis.skipBytes(4)
+                            break
+                        case 5: // Long
+                        case 6: // Double
+                            dis.skipBytes(8)
+                            i++ // takes two constant pool slots
+                            break
+                        case 7: // Class
+                        case 8: // String
+                        case 16: // MethodType
+                        case 19: // Module
+                        case 20: // Package
+                            dis.skipBytes(2)
+                            break
+                        case 9: // Fieldref
+                        case 10: // Methodref
+                        case 11: // InterfaceMethodref
+                        case 12: // NameAndType
+                        case 17: // Dynamic
+                        case 18: // InvokeDynamic
+                            dis.skipBytes(4)
+                            break
+                        case 15: // MethodHandle
+                            dis.skipBytes(3)
+                            break
+                        default:
+                            throw new GradleException("Unknown constant pool tag ${tag} in ${classFile}")
+                    }
                 }
             }
         }

@@ -1,10 +1,17 @@
 package com.habitrain.lottery.card;
 
+import net.minecraft.network.chat.Component;
+
 /**
  * Shared reject predicate for occupation-card Request and Confirm.
  */
 public final class CardUseGates {
+    public static final String REJECT_KEY = "message.habitrain_lottery.card.reject_in_match";
     public static final String REJECT_MESSAGE = "§c[职业卡] 对局进行中不能使用职业卡";
+
+    public static Component rejectComponent() {
+        return Component.translatable(REJECT_KEY);
+    }
 
     private CardUseGates() {
     }

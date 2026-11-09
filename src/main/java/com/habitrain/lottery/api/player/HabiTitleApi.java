@@ -1,6 +1,5 @@
 package com.habitrain.lottery.api.player;
 
-import com.habitrain.lottery.storage.WorldLotteryPaths;
 import com.habitrain.lottery.title.LocalTitleStore;
 import com.habitrain.lottery.title.PlayerTitleData;
 import com.habitrain.lottery.title.TitleService;
@@ -26,7 +25,7 @@ public final class HabiTitleApi {
 
     /** Owned titles in storage order; empty before world readiness or on missing/corrupt data. */
     public static List<String> owned(UUID uuid) {
-        if (uuid == null) {
+        if (uuid == null || !ApiGuards.isOnServerThread()) {
             return List.of();
         }
         LocalTitleStore.PlayerLoad load = LocalTitleStore.get().loadPlayerDetailed(uuid);
@@ -48,7 +47,7 @@ public final class HabiTitleApi {
 
     /** Currently equipped title, or {@code ""} before world readiness or when none. */
     public static String current(UUID uuid) {
-        if (uuid == null) {
+        if (uuid == null || !ApiGuards.isOnServerThread()) {
             return "";
         }
         LocalTitleStore.PlayerLoad load = LocalTitleStore.get().loadPlayerDetailed(uuid);
@@ -63,8 +62,9 @@ public final class HabiTitleApi {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         if (display == null || display.isBlank()) {
             return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
@@ -92,8 +92,9 @@ public final class HabiTitleApi {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         if (display == null || display.isBlank()) {
             return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
@@ -119,21 +120,23 @@ public final class HabiTitleApi {
     /**
      * Equips an owned title; a {@code null}/blank display clears the current
      * title. Returns {@link HabiFailure#TITLE_NOT_OWNED} when the player does
-     * not own it.
+     * not own it, and {@link HabiFailure#CORRUPT_STORAGE} if the player's title
+     * storage is unreadable.
      */
     public static HabiAssetResult setCurrent(UUID uuid, String display) {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
+        }
+        LocalTitleStore.PlayerLoad load = LocalTitleStore.get().loadPlayerDetailed(uuid);
+        if (load.corrupt()) {
+            return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
         }
         String wanted = display == null ? "" : display;
         if (!wanted.isBlank()) {
-            LocalTitleStore.PlayerLoad load = LocalTitleStore.get().loadPlayerDetailed(uuid);
-            if (load.corrupt()) {
-                return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
-            }
             if (load.data() == null || load.data().owned == null || !load.data().owned.contains(wanted)) {
                 return HabiAssetResult.fail(HabiFailure.TITLE_NOT_OWNED);
             }
@@ -154,8 +157,9 @@ public final class HabiTitleApi {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         LocalTitleStore.PlayerLoad load = LocalTitleStore.get().loadPlayerDetailed(uuid);
         if (load.corrupt()) {

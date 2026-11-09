@@ -2,14 +2,17 @@ package com.habitrain.lottery.api.player;
 
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.testutil.TestRegistryResetExtension;
 import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
+@ExtendWith(TestRegistryResetExtension.class)
 class HabiSystemItemApiTest {
     @TempDir Path temp;
     private final ResourceLocation item = ResourceLocation.parse("events:ticket");

@@ -26,7 +26,9 @@ public class MapIntroduceEmptyMixin {
             Minecraft mc = Minecraft.getInstance();
             if (mc.player != null) {
                 mc.player.displayClientMessage(
-                        Component.literal("§c暂无地图介绍数据。请检查世界目录 train_maps/ 与地图配置。"),
+                        Component.translatableWithFallback(
+                                "message.habitrain_lottery.map_introduce.empty",
+                                "§c暂无地图介绍数据。请检查世界目录 train_maps/ 与地图配置。"),
                         false);
             }
         }

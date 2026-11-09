@@ -30,6 +30,10 @@ public final class GameRestart {
     }
 
     public static GameRestart capture(Path configDir, String[] gameArguments) throws IOException {
+        return capture(resolveGameDir(configDir), configDir, gameArguments);
+    }
+
+    public static GameRestart capture(Path gameDir, Path configDir, String[] gameArguments) throws IOException {
         List<String> command = buildCommand(javaExecutable(), ManagementFactory.getRuntimeMXBean().getInputArguments(),
                 System.getProperty("java.class.path", ""), System.getProperty("sun.java.command", ""), gameArguments);
         // Copy the standalone class before any update can replace this mod's own JAR.
@@ -46,7 +50,20 @@ public final class GameRestart {
             }
         }
         Files.move(temporary, helper, StandardCopyOption.REPLACE_EXISTING);
-        return new GameRestart(command, Path.of("").toAbsolutePath(), helper);
+        Path resolvedDir = gameDir != null ? gameDir.toAbsolutePath().normalize() : resolveGameDir(configDir);
+        return new GameRestart(command, resolvedDir, helper);
+    }
+
+    static Path resolveGameDir(Path configDir) {
+        if (configDir == null) {
+            return Path.of("").toAbsolutePath().normalize();
+        }
+        Path abs = configDir.toAbsolutePath().normalize();
+        Path fileName = abs.getFileName();
+        if (fileName != null && "config".equalsIgnoreCase(fileName.toString()) && abs.getParent() != null) {
+            return abs.getParent();
+        }
+        return abs;
     }
 
     static List<String> buildCommand(String java, List<String> vmArguments, String classpath,
@@ -75,6 +92,7 @@ public final class GameRestart {
     public Prepared prepare() throws Exception {
         Path log = directory.resolve("logs/habitrain-restart.log");
         Files.createDirectories(log.getParent());
+        RestartHelper.rotateLogIfOversized(log);
         ProcessBuilder builder = new ProcessBuilder(javaExecutable(), "-cp", helperJar.toString(),
                 RestartHelper.class.getName()).directory(directory.toFile())
                 .redirectError(ProcessBuilder.Redirect.appendTo(log.toFile()));

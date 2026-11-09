@@ -2,6 +2,7 @@ package com.habitrain.lottery.mail;
 
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.PlayerStateGate;
+import com.habitrain.lottery.card.ServerMatchGate;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.LocalMailboxStore.MailJson;
 import com.habitrain.lottery.mail.LocalMailboxStore.MailLoad;
@@ -9,7 +10,6 @@ import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
 import io.wifi.starrailexpress.backpack.BackpackManager;
-import io.wifi.starrailexpress.cca.SREGameWorldComponent;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
 import net.minecraft.network.chat.Component;
@@ -47,8 +47,14 @@ public final class MailService {
     private MailService() {
     }
 
-    private static Object mailboxLock(UUID uuid) {
+    static Object mailboxLock(UUID uuid) {
         return MAILBOX_LOCKS.computeIfAbsent(uuid, id -> new Object());
+    }
+
+    /** Clears per-player monitors and log dedupe state on server shutdown. */
+    public static void onServerStopping() {
+        MAILBOX_LOCKS.clear();
+        LOGGED_UNRESOLVED_CLAIMS.clear();
     }
 
     /**
@@ -65,7 +71,7 @@ public final class MailService {
         if (loaded.corrupt() || mails == null) {
             return loaded;
         }
-        if (reconcileClaimMarkers(uuid, mails) && !LocalMailboxStore.save(uuid, mails)) {
+        if (reconcileClaimMarkers(uuid, mails) && !LocalMailboxStore.save(uuid, mails, !loaded.usedBackup())) {
             HabiLotteryMod.LOGGER.error(
                     "Failed persisting the reconciled mailbox of {}; the interrupted claim will be "
                             + "reconciled again on the next load", uuid);
@@ -122,6 +128,44 @@ public final class MailService {
         return hasPrefix(mail, CLAIMING_PREFIX);
     }
 
+    static boolean hasClaimFailedMarker(MailJson mail) {
+        return hasPrefix(mail, CLAIM_FAILED_PREFIX);
+    }
+
+    /**
+     * Marks a recovered {@code mail:<id>} delivery as {@code claimed = true, read = true} on disk
+     * under the recipient's mailbox monitor so mailbox state never split-brains after recovery.
+     */
+    static boolean markClaimedFromRecovery(UUID uuid, String mailId) {
+        if (uuid == null || mailId == null || mailId.isBlank() || !WorldLotteryPaths.ready()) {
+            return false;
+        }
+        synchronized (mailboxLock(uuid)) {
+            MailLoad loaded = loadReconciled(uuid);
+            if (loaded.corrupt()) {
+                return false;
+            }
+            List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
+            MailJson found = null;
+            for (MailJson m : list) {
+                if (m != null && mailId.equals(m.id)) {
+                    found = m;
+                    break;
+                }
+            }
+            if (found == null) {
+                return true;
+            }
+            if (found.claimed && found.read && !hasClaimingMarker(found)) {
+                return true;
+            }
+            found.claimed = true;
+            found.read = true;
+            clearClaimMarkers(found);
+            return LocalMailboxStore.save(uuid, list, !loaded.usedBackup());
+        }
+    }
+
     private static boolean hasPrefix(MailJson mail, String prefix) {
         if (mail == null || mail.commands == null || prefix == null) {
             return false;
@@ -149,7 +193,7 @@ public final class MailService {
                 }
                 List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
                 list.add(LocalMailboxStore.fromDraft(draft));
-                queued = LocalMailboxStore.save(uuid, list);
+                queued = LocalMailboxStore.save(uuid, list, !loaded.usedBackup());
             } catch (Exception e) {
                 HabiLotteryMod.LOGGER.error("send mail to {} failed", target.getGameProfile().getName(), e);
                 return false;
@@ -158,7 +202,7 @@ public final class MailService {
         if (!queued) {
             return false;
         }
-        target.sendSystemMessage(Component.literal("§a[邮箱] 你收到一封新邮件：" + draft.title()));
+        target.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.received", draft.title()));
         return true;
     }
 
@@ -175,7 +219,7 @@ public final class MailService {
             MailJson mail = LocalMailboxStore.fromDraft(draft);
             mail.id = id;
             list.add(mail);
-            return LocalMailboxStore.save(uuid, list);
+            return LocalMailboxStore.save(uuid, list, !loaded.usedBackup());
         }
     }
 
@@ -183,16 +227,23 @@ public final class MailService {
         if (uuid == null || draft == null || !WorldLotteryPaths.ready() || !publishedRewards(draft)) {
             return false;
         }
+        return sendOfflineTo(com.habitrain.lottery.storage.MetaFeaturePaths.mailPlayer(uuid), uuid, nameHint, draft);
+    }
+
+    /** Append-only background delivery bound to the originating world's immutable path. */
+    public static boolean sendOfflineTo(java.nio.file.Path mailbox, UUID uuid, String nameHint, MailDraft draft) {
+        if (mailbox == null || uuid == null || draft == null) return false;
         synchronized (mailboxLock(uuid)) {
             try {
-                MailLoad loaded = loadReconciled(uuid);
+                // Appending must not reconcile player asset receipts on this I/O thread.
+                MailLoad loaded = LocalMailboxStore.loadFrom(mailbox);
                 if (loaded.corrupt()) {
                     HabiLotteryMod.LOGGER.error("Refusing to send offline mail over corrupt mailbox {}", uuid);
                     return false;
                 }
                 List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
                 list.add(LocalMailboxStore.fromDraft(draft));
-                if (!LocalMailboxStore.save(uuid, list)) {
+                if (!LocalMailboxStore.saveTo(mailbox, list, !loaded.usedBackup())) {
                     return false;
                 }
                 HabiLotteryMod.LOGGER.info("Queued offline mail for {} ({})", nameHint, uuid);
@@ -235,7 +286,7 @@ public final class MailService {
             return 0;
         }
         if (PlayerStateGate.spectatorRestOrDead(player)) {
-            player.sendSystemMessage(Component.literal(PlayerStateGate.MAIL_BLOCKED));
+            player.sendSystemMessage(PlayerStateGate.mailBlockedComponent());
             return 0;
         }
         UUID uuid = player.getUUID();
@@ -243,7 +294,7 @@ public final class MailService {
             MailLoad loaded = loadReconciled(uuid);
             if (loaded.corrupt()) {
                 HabiLotteryMod.LOGGER.error("Refusing claimAll on corrupt mailbox {}", uuid);
-                player.sendSystemMessage(Component.literal("§c[邮箱] 邮箱数据损坏，无法领取"));
+                player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.corrupt"));
                 return 0;
             }
             List<String> ids = new ArrayList<>();
@@ -256,7 +307,7 @@ public final class MailService {
                 ids.add(m.id);
             }
             if (ids.isEmpty()) {
-                player.sendSystemMessage(Component.literal("§e[邮箱] 没有可领取的邮件"));
+                player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.none_claimable"));
                 return 0;
             }
             int count = 0;
@@ -266,9 +317,9 @@ public final class MailService {
                 }
             }
             if (count > 0) {
-                player.sendSystemMessage(Component.literal("§a[邮箱] 已领取 " + count + " 封邮件"));
+                player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.claimed_all", count));
             } else {
-                player.sendSystemMessage(Component.literal("§e[邮箱] 没有可领取的邮件"));
+                player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.none_claimable"));
             }
             return count;
         }
@@ -309,7 +360,7 @@ public final class MailService {
                 }
                 out.add(m);
             }
-            if (changed && !LocalMailboxStore.save(uuid, list)) {
+            if (changed && !LocalMailboxStore.save(uuid, list, !loaded.usedBackup())) {
                 HabiLotteryMod.LOGGER.error("Failed persisting mailbox read flags for {}", uuid);
             }
             return out;
@@ -322,7 +373,7 @@ public final class MailService {
         }
         if (PlayerStateGate.spectatorRestOrDead(player)) {
             if (announce) {
-                player.sendSystemMessage(Component.literal(PlayerStateGate.MAIL_BLOCKED));
+                player.sendSystemMessage(PlayerStateGate.mailBlockedComponent());
             }
             return false;
         }
@@ -339,27 +390,29 @@ public final class MailService {
         List<MailJson> list = loaded.mails() != null ? loaded.mails() : new ArrayList<>();
         MailJson target = findClaimable(list, mailId);
         if (target == null) {
-            if (announce) player.sendSystemMessage(Component.literal("§e[邮箱] 该邮件已领取、已过期或等待核对"));
+            if (announce) player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.already_or_expired"));
             return false;
         }
         List<MailReward> rewards;
         try {
             rewards = MailCommandsCodec.decodeStrict(target.commands);
         } catch (IllegalArgumentException invalid) {
-            player.sendSystemMessage(Component.literal("§c[邮箱] 附件暂时无法解析，请联系管理员；邮件已保留"));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.invalid_attachment"));
             return false;
         }
         if (refuseFactionCardInGame(rewards, isSreGameActive(player))) {
-            player.sendSystemMessage(Component.literal("§c[邮箱] 局中不能领取阵营卡、自选卡或突破上限卡"));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.cards_blocked_in_match"));
             return false;
         }
-        boolean delivered = RewardDelivery.grant(player, "mail:" + mailId,
+        String deliveryKey = "mail:" + mailId;
+        boolean delivered = RewardDelivery.grant(player, deliveryKey,
                 () -> new RewardDelivery.Plan(rewards, List.of(), null));
-        if (!delivered || !finishClaim(target, true, () -> LocalMailboxStore.save(uuid, list))) {
-            player.sendSystemMessage(Component.literal("§e[邮箱] 领取尚未完成，请稍后重试；已到账附件不会重复发放"));
+        if (!delivered || !finishClaim(target, true, () -> LocalMailboxStore.save(uuid, list, !loaded.usedBackup()))) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.claim_incomplete"));
             return false;
         }
-        if (announce) player.sendSystemMessage(Component.literal("§a[邮箱] 已领取：" + target.title));
+        RewardDelivery.cleanupCompleted(uuid, deliveryKey);
+        if (announce) player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.claimed_one", target.title));
         return true;
     }
 
@@ -460,7 +513,11 @@ public final class MailService {
 
     /** As {@link #grantTransactional(ServerPlayer, List)}, with {@code tag} prefixing the chat receipts. */
     public static boolean grantTransactional(ServerPlayer player, List<MailReward> rewards, String tag) {
-        if (player == null || rewards == null || !WorldLotteryPaths.ready()) return false;
+        if (player == null || rewards == null || !WorldLotteryPaths.ready()
+                || PlayerLotteryStore.get().isFlushDeferred()) return false;
+        if (containsFactionCard(rewards) && !LocalBackpackStore.prepareOnline(player)) {
+            return false;
+        }
         RewardSnapshot snap;
         try {
             snap = snapshotRewards(player);
@@ -471,10 +528,13 @@ public final class MailService {
         try {
             applyRewardsStrict(player, rewards, tag);
             return true;
-        } catch (RuntimeException failure) {
+        } catch (Throwable failure) {
             HabiLotteryMod.LOGGER.error("Direct reward grant failed for {}; rolling back", player.getUUID(), failure);
             if (!restoreRewards(player, snap)) {
                 HabiLotteryMod.LOGGER.error("Direct reward rollback failed for {}; manual review required", player.getUUID());
+            }
+            if (failure instanceof Error err) {
+                throw err;
             }
             return false;
         }
@@ -493,18 +553,60 @@ public final class MailService {
         if (player == null) {
             throw new IllegalArgumentException("player");
         }
+        if (PlayerLotteryStore.get().isFlushDeferred()) {
+            throw new IllegalStateException("Player lottery store flush is deferred");
+        }
         if (rewards == null || rewards.isEmpty()) {
             return;
         }
+        boolean hasFactionCards = false;
         for (MailReward reward : rewards) {
-            if (reward != null && reward.kind() == MailReward.Kind.SKIN
-                    && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty())
+            if (reward == null || reward.amount() == 0) {
+                continue;
+            }
+            if (reward.kind() == MailReward.Kind.SKIN
+                    && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty()) {
                 throw new IllegalArgumentException("Skin provider unavailable: " + reward.factionType());
+            }
+            if ((reward.kind() == MailReward.Kind.CRATE || reward.kind() == MailReward.Kind.KEY)
+                    && CrateCatalog.find(reward.factionType()) == null) {
+                throw new IllegalArgumentException("Unknown crate attachment: " + reward.factionType());
+            }
+            if (reward.kind() == MailReward.Kind.FACTION_CARD
+                    && FactionCardType.fromString(reward.factionType()) != FactionCardType.NONE) {
+                hasFactionCards = true;
+            }
+        }
+        if (hasFactionCards && !LocalBackpackStore.prepareOnline(player)) {
+            throw new IllegalStateException("Backpack not ready");
         }
         UUID uuid = player.getUUID();
-        long greenAppleDelta = 0;
+        long greenAppleDelta = 0L;
+        for (MailReward r : rewards) {
+            if (r != null && r.kind() == MailReward.Kind.GREEN_APPLES && r.amount() != 0) {
+                greenAppleDelta = Math.addExact(greenAppleDelta, (long) r.amount());
+            }
+        }
+        if (greenAppleDelta != 0L) {
+            PlayerLotteryData current = PlayerLotteryStore.get().getOrLoad(player);
+            if (PlayerLotteryStore.get().isLoadFailed(uuid)) {
+                throw new IllegalStateException("Player lottery store unreadable");
+            }
+            long preview = Math.addExact((long) current.greenApples, greenAppleDelta);
+            if (preview < 0L) {
+                throw new IllegalStateException("Insufficient green apples");
+            }
+            if (preview > Integer.MAX_VALUE) {
+                throw new IllegalStateException("Green apple balance overflow");
+            }
+        }
         List<CardDelta> cards = new ArrayList<>();
         Map<String, Integer> systemItemDeltas = new LinkedHashMap<>();
+        Component tagComp = "[邮箱]".equals(tag)
+                ? Component.translatable("message.habitrain_lottery.tag.mail")
+                : "[每日任务]".equals(tag)
+                        ? Component.translatable("message.habitrain_lottery.tag.daily_task")
+                        : Component.literal(tag == null ? "" : tag);
         List<Component> messages = new ArrayList<>();
         for (MailReward r : rewards) {
             if (r == null || r.amount() == 0) {
@@ -517,20 +619,21 @@ public final class MailService {
                             .orElseThrow(() -> new IllegalArgumentException("Skin provider unavailable: " + reward.factionType()));
                     if (!PlayerLotteryStore.get().awardSkin(uuid, skin.type(), skin.id(), Math.max(1, r.amount())))
                         throw new IllegalStateException("Skin reward could not be persisted");
-                    messages.add(Component.literal("§a" + tag + " 已解锁皮肤 " + reward.factionType()));
+                    messages.add(Component.translatable(
+                            "message.habitrain_lottery.reward.skin_unlocked", tagComp, reward.factionType()));
                 }
                 case GREEN_APPLES -> {
-                    greenAppleDelta += r.amount();
-                    messages.add(Component.literal(
-                            (r.amount() >= 0 ? "§a" : "§e") + tag + " 绿苹果 "
-                                    + (r.amount() >= 0 ? "+" : "") + r.amount()));
+                    messages.add(r.amount() >= 0
+                            ? Component.translatable("message.habitrain_lottery.reward.green_apples_gained", tagComp, r.amount())
+                            : Component.translatable("message.habitrain_lottery.reward.green_apples_spent", tagComp, r.amount()));
                 }
                 case FACTION_CARD -> {
                     FactionCardType type = FactionCardType.fromString(r.factionType());
                     if (type != FactionCardType.NONE) {
                         cards.add(new CardDelta(type, r.amount()));
-                        messages.add(Component.literal(
-                                "§a" + tag + " 获得阵营卡 " + type.questKey + " x" + r.amount()));
+                        messages.add(Component.translatable(
+                                "message.habitrain_lottery.reward.faction_card",
+                                tagComp, Component.translatable(type.displayName), r.amount()));
                     }
                 }
                 case SELF_SELECT_CARD -> {
@@ -539,7 +642,8 @@ public final class MailService {
                     if (!LocalBackpackStore.addSelfSelectCards(uuid, r.amount())) {
                         throw new IllegalStateException("Self-select reward could not be persisted");
                     }
-                    messages.add(Component.literal("§a" + tag + " 获得自选卡 x" + r.amount()));
+                    messages.add(Component.translatable(
+                            "message.habitrain_lottery.reward.self_select_card", tagComp, r.amount()));
                 }
                 case LIMIT_BREAK_CARD -> {
                     if (!LocalBackpackStore.addLimitBreakCards(uuid, r.amount())) {
@@ -554,10 +658,12 @@ public final class MailService {
                     }
                     String itemId = r.kind() == MailReward.Kind.CRATE
                             ? entry.crateItemId() : entry.keyItemId();
-                    systemItemDeltas.merge(itemId, r.amount(), Integer::sum);
-                    messages.add(Component.literal("§a" + tag + " 获得 "
-                            + (r.kind() == MailReward.Kind.CRATE ? "箱子 " : "钥匙 ")
-                            + entry.id() + " x" + r.amount()));
+                    systemItemDeltas.merge(itemId, r.amount(), Math::addExact);
+                    messages.add(Component.translatable(
+                            r.kind() == MailReward.Kind.CRATE
+                                    ? "message.habitrain_lottery.reward.crate"
+                                    : "message.habitrain_lottery.reward.key",
+                            tagComp, entry.id(), r.amount()));
                 }
             }
         }
@@ -575,19 +681,30 @@ public final class MailService {
                 throw new IllegalStateException("Mail crate/key reward could not be persisted");
             }
         }
-        if (greenAppleDelta != 0) {
+        if (greenAppleDelta != 0L) {
             long delta = greenAppleDelta;
-            PlayerLotteryStore.get().update(uuid, data -> data.greenApples = (int) Math.max(0L,
-                    Math.min(Integer.MAX_VALUE, (long) data.greenApples + delta)));
-            if (PlayerLotteryStore.get().isLoadFailed(uuid) || !PlayerLotteryStore.get().flush(uuid)) {
+            if (!PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> {
+                long next = Math.addExact((long) data.greenApples, delta);
+                if (next < 0L) {
+                    throw new IllegalStateException("Insufficient green apples");
+                }
+                if (next > Integer.MAX_VALUE) {
+                    throw new IllegalStateException("Green apple balance overflow");
+                }
+                data.greenApples = (int) next;
+            })) {
                 throw new IllegalStateException("Mail green-apple reward could not be persisted");
             }
         }
-        for (CardDelta card : cards) {
-            BackpackManager.addCard(player, card.type, card.amount);
-        }
-        if (!cards.isEmpty() && !LocalBackpackStore.saveFromEnumMap(uuid, BackpackManager.getCards(player))) {
-            throw new IllegalStateException("Faction-card reward could not be persisted");
+        if (!cards.isEmpty()) {
+            LocalBackpackStore.runWithApplyingCommitted(() -> {
+                for (CardDelta card : cards) {
+                    BackpackManager.addCard(player, card.type, card.amount);
+                }
+            });
+            if (!LocalBackpackStore.saveFromEnumMap(uuid, BackpackManager.getCards(player))) {
+                throw new IllegalStateException("Faction-card reward could not be persisted");
+            }
         }
         com.habitrain.lottery.skin.SkinNetwork.sync(player);
         for (Component msg : messages) {
@@ -633,18 +750,20 @@ public final class MailService {
             }
             com.habitrain.lottery.bridge.SkinStateCoordinator.reassertPlayer(player, "mail_rollback");
         }, () -> {
-            Map<FactionCardType, Integer> now = BackpackManager.getCards(player);
-            for (FactionCardType type : FactionCardType.values()) {
-                if (type == FactionCardType.NONE) {
-                    continue;
+            LocalBackpackStore.runWithApplyingCommitted(() -> {
+                Map<FactionCardType, Integer> now = BackpackManager.getCards(player);
+                for (FactionCardType type : FactionCardType.values()) {
+                    if (type == FactionCardType.NONE) {
+                        continue;
+                    }
+                    int want = snap.cards.getOrDefault(type, 0);
+                    int have = now == null ? 0 : now.getOrDefault(type, 0);
+                    int delta = want - have;
+                    if (delta != 0) {
+                        BackpackManager.addCard(player, type, delta);
+                    }
                 }
-                int want = snap.cards.getOrDefault(type, 0);
-                int have = now == null ? 0 : now.getOrDefault(type, 0);
-                int delta = want - have;
-                if (delta != 0) {
-                    BackpackManager.addCard(player, type, delta);
-                }
-            }
+            });
             if (!LocalBackpackStore.saveFromEnumMap(uuid, BackpackManager.getCards(player))) {
                 throw new IllegalStateException("Faction-card rollback could not be persisted");
             }
@@ -652,19 +771,7 @@ public final class MailService {
     }
 
     static boolean isSreGameActive(ServerPlayer player) {
-        try {
-            if (player == null || player.level() == null) {
-                return false;
-            }
-            SREGameWorldComponent game = SREGameWorldComponent.KEY.get(player.level());
-            if (game == null) {
-                return false;
-            }
-            SREGameWorldComponent.GameStatus status = game.getGameStatus();
-            return status != null && status != SREGameWorldComponent.GameStatus.INACTIVE;
-        } catch (Exception t) {
-            return false;
-        }
+        return ServerMatchGate.hasActiveMatch(player);
     }
 
     private record CardDelta(FactionCardType type, int amount) {

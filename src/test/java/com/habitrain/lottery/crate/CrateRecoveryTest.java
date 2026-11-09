@@ -7,6 +7,7 @@ import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.time.LotteryDayClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDate;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
@@ -33,6 +35,7 @@ class CrateRecoveryTest {
     private CrateService.PendingOpen pending;
 
     @BeforeEach void setup() throws Exception {
+        LotteryDayClock.setTestClock(Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneOffset.UTC));
         WorldLotteryPaths.initForTests(root);
         PlayerLotteryStore.get().reset();
         stateField = CrateService.class.getDeclaredField("state");
@@ -53,7 +56,7 @@ class CrateRecoveryTest {
         pending.taskEpochDay = LoginRewardService.todayEpochDayUtc();
         pending.dailyTaskTargets.put("habitrain_lottery:open_test", 1);
         var state = new CrateService.State();
-        CrateOutputQuota.resetWindows(state, LocalDate.now(ZoneOffset.UTC));
+        CrateOutputQuota.resetWindows(state, LotteryDayClock.today());
         pending.weekKey = state.weekKey;
         pending.monthKey = state.monthKey;
         state.pendingOpens.put(pending.openId, pending);
@@ -69,6 +72,7 @@ class CrateRecoveryTest {
         stateField.set(null, oldState);
         PlayerLotteryStore.get().reset();
         WorldLotteryPaths.clear();
+        LotteryDayClock.resetAll();
     }
 
     @Test void committedCardsCanBeSpentBeforeFinalStateRecovery() throws Exception {
@@ -87,10 +91,15 @@ class CrateRecoveryTest {
     }
 
     @Test void cardReceiptSurvivesPlayerWriteFailureAndSpending() throws Exception {
+        assertTrue(PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> {
+            data.systemItems.put(CrateService.crateItemId("woodland"), 0);
+            data.systemItems.put(pending.keyId, 0);
+            data.pendingCrateDebits.add(pending.openId);
+        }));
         Path blocker = blockBackup(WorldLotteryPaths.playerFile(uuid));
         assertFalse(finish().success());
         assertEquals(1, LocalBackpackStore.selfSelectCards(uuid));
-        assertEquals(1, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.get(pending.keyId));
+        assertEquals(0, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.getOrDefault(pending.keyId, 0));
         assertTrue(LocalBackpackStore.addSelfSelectCards(uuid, -1));
         restart();
         unblock(blocker);
@@ -99,11 +108,11 @@ class CrateRecoveryTest {
         assertEquals(0, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.getOrDefault(pending.keyId, 0));
     }
 
-    @Test void callbackOverflowRestoresDebitAndRetryDoesNotRegrantCards() throws Exception {
+    @Test void callbackOverflowKeepsFrozenDebitAndRetryDoesNotRegrantCards() throws Exception {
         pending.apples = 1;
         assertTrue(PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> data.greenApples = Integer.MAX_VALUE));
         assertFalse(finish().success());
-        assertEquals(1, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.get(pending.keyId));
+        assertEquals(0, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.getOrDefault(pending.keyId, 0));
         assertFalse(PlayerLotteryStore.get().isDirty(uuid));
         assertTrue(LocalBackpackStore.addSelfSelectCards(uuid, -1));
         assertTrue(PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> data.greenApples = 0));
@@ -127,11 +136,11 @@ class CrateRecoveryTest {
         assertEquals(200_001, LocalBackpackStore.selfSelectCards(uuid));
     }
 
-    @Test void overflowingCardRewardKeepsCrateAndKeyUntilRetrySucceeds() throws Exception {
+    @Test void overflowingCardRewardKeepsDebitReservedUntilRetrySucceeds() throws Exception {
         assertTrue(LocalBackpackStore.setSelfSelectCards(uuid, Integer.MAX_VALUE));
         assertFalse(finish().success());
         assertEquals(Integer.MAX_VALUE, LocalBackpackStore.selfSelectCards(uuid));
-        assertEquals(1, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.get(pending.keyId));
+        assertEquals(0, PlayerLotteryStore.get().getOrLoad(uuid).systemItems.getOrDefault(pending.keyId, 0));
         assertTrue(LocalBackpackStore.addSelfSelectCards(uuid, -1));
         assertTrue(finish().success());
         assertEquals(Integer.MAX_VALUE, LocalBackpackStore.selfSelectCards(uuid));

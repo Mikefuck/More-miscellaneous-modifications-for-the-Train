@@ -1,5 +1,6 @@
 package com.habitrain.lottery.api.daily;
 
+import com.habitrain.lottery.api.player.ApiGuards;
 import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.storage.PlayerLotteryData;
@@ -8,9 +9,10 @@ import com.habitrain.lottery.storage.WorldLotteryPaths;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Server-side extension point for the daily-task board. The lottery mod itself registers one
@@ -33,7 +35,7 @@ public final class HabiDailyTaskApi {
     private static volatile Map<ResourceLocation, Task> configured = Map.of();
     /** Which configured tasks a player sees today (random pool); never null. */
     private static volatile java.util.function.BiPredicate<ServerPlayer, ResourceLocation> configuredActive = (p, id) -> true;
-    private static final java.util.List<ClaimListener> CLAIM_LISTENERS = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private static final List<ClaimListener> CLAIM_LISTENERS = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private HabiDailyTaskApi() { }
 
@@ -62,6 +64,7 @@ public final class HabiDailyTaskApi {
     }
 
     public static synchronized void register(Task task) {
+        if (task == null) throw new IllegalArgumentException("Task must not be null");
         if (TASKS.size() >= 32) throw new IllegalStateException("Daily task board is full (32 tasks)");
         if (TASKS.putIfAbsent(task.id(), task) != null) {
             throw new IllegalArgumentException("Duplicate daily task: " + task.id());
@@ -76,11 +79,11 @@ public final class HabiDailyTaskApi {
     }
 
     /** The tasks shown on one player's board today: static tasks plus that player's active configured tasks. */
-    public static synchronized java.util.List<Task> tasksFor(ServerPlayer player) {
-        java.util.List<Task> out = new java.util.ArrayList<>();
+    public static synchronized List<Task> tasksFor(ServerPlayer player) {
+        List<Task> out = new java.util.ArrayList<>();
         for (Task task : TASKS.values()) if (!configured.containsKey(task.id())) out.add(task);
         for (Task task : configured.values()) if (configuredActive.test(player, task.id())) out.add(task);
-        return out;
+        return List.copyOf(out);
     }
 
     /**
@@ -90,9 +93,16 @@ public final class HabiDailyTaskApi {
     public static synchronized void setConfiguredTasks(java.util.Collection<Task> tasks,
                                                        java.util.function.BiPredicate<ServerPlayer, ResourceLocation> active) {
         Map<ResourceLocation, Task> next = new LinkedHashMap<>();
-        if (tasks != null) for (Task task : tasks) next.putIfAbsent(task.id(), task);
+        if (tasks != null) for (Task task : tasks) if (task != null) next.putIfAbsent(task.id(), task);
         configured = Collections.unmodifiableMap(next);
         configuredActive = active == null ? (p, id) -> true : active;
+    }
+
+    public static synchronized void clearForTest() {
+        TASKS.clear();
+        configured = Map.of();
+        configuredActive = (p, id) -> true;
+        CLAIM_LISTENERS.clear();
     }
 
     public static void addClaimListener(ClaimListener listener) {
@@ -109,6 +119,7 @@ public final class HabiDailyTaskApi {
 
     /** Opens the board for a player without requiring the block. */
     public static void open(ServerPlayer player) {
+        if (player == null || !ApiGuards.isOnServerThread()) return;
         LotteryNetwork.sendDailyTaskSnapshot(player, true);
     }
 
@@ -122,7 +133,7 @@ public final class HabiDailyTaskApi {
      * amounts are skipped; returns false when nothing could be persisted.
      */
     public static boolean advanceAll(ServerPlayer player, Map<ResourceLocation, Integer> amounts) {
-        if (!ready(player) || PlayerLotteryStore.get().isFlushDeferred() || amounts == null || amounts.isEmpty()) return false;
+        if (!ready(player) || !ApiGuards.isServerThreadAndReady() || amounts == null || amounts.isEmpty()) return false;
         Map<ResourceLocation, Task> targets = new LinkedHashMap<>();
         amounts.forEach((id, amount) -> {
             Task task = lookup(player, id);
@@ -131,8 +142,8 @@ public final class HabiDailyTaskApi {
         if (targets.isEmpty()) return false;
         PlayerLotteryStore store = PlayerLotteryStore.get();
         PlayerLotteryData before = store.getOrLoad(player).copy();
-        boolean dirty = store.isDirty(player.getUUID());
-        long day = LoginRewardService.todayEpochDayUtc();
+        boolean wasDirty = store.isDirty(player.getUUID());
+        long day = com.habitrain.lottery.time.LotteryDayClock.monotonicEpochDay(before.dailyTaskEpochDay);
         store.update(player.getUUID(), data -> {
             resetDay(data, day);
             targets.forEach((id, task) -> {
@@ -143,7 +154,7 @@ public final class HabiDailyTaskApi {
             });
         });
         if (!store.flush(player.getUUID())) {
-            store.restoreSnapshot(player.getUUID(), before, dirty);
+            store.restoreSnapshot(player.getUUID(), before, wasDirty);
             return false;
         }
         LotteryNetwork.sendDailyTaskSnapshot(player, false);
@@ -153,29 +164,31 @@ public final class HabiDailyTaskApi {
     /** Claims a completed task once per UTC day. Only the server may invoke this. */
     public static boolean claim(ServerPlayer player, ResourceLocation id) {
         Task task = lookup(player, id);
-        if (!ready(player) || PlayerLotteryStore.get().isFlushDeferred() || task == null) return false;
+        if (!ready(player) || !ApiGuards.isServerThreadAndReady() || task == null) return false;
         PlayerLotteryStore store = PlayerLotteryStore.get();
         PlayerLotteryData data = store.getOrLoad(player);
-        long day = LoginRewardService.todayEpochDayUtc();
+        long day = com.habitrain.lottery.time.LotteryDayClock.monotonicEpochDay(data.dailyTaskEpochDay);
         String key = id.toString();
         if (data.dailyTaskEpochDay != day || data.dailyTaskClaims != null && data.dailyTaskClaims.contains(key)
                 || progressOf(data, key) < task.target()) {
             return false;
         }
         PlayerLotteryData before = data.copy();
-        boolean dirty = store.isDirty(player.getUUID());
+        boolean wasDirty = store.isDirty(player.getUUID());
         store.update(player.getUUID(), value -> {
             resetDay(value, day);
             value.dailyTaskPending.add(key);
         });
         if (!store.flush(player.getUUID())) {
-            store.restoreSnapshot(player.getUUID(), before, dirty);
+            store.restoreSnapshot(player.getUUID(), before, wasDirty);
             return false;
         }
         PlayerLotteryData pending = store.getOrLoad(player).copy();
+        boolean pendingWasDirty = store.isDirty(player.getUUID());
         try {
             if (task.claimAction().grant(player, id, day)) {
                 PlayerLotteryData rewardedPending = store.getOrLoad(player).copy();
+                boolean rewardedWasDirty = store.isDirty(player.getUUID());
                 store.update(player.getUUID(), value -> {
                     value.dailyTaskPending.remove(key);
                     value.dailyTaskClaims.add(key);
@@ -191,34 +204,38 @@ public final class HabiDailyTaskApi {
                     LotteryNetwork.sendDailyTaskSnapshot(player, false);
                     return true;
                 }
-                store.restoreSnapshot(player.getUUID(), rewardedPending, false);
+                store.restoreSnapshot(player.getUUID(), rewardedPending, rewardedWasDirty);
                 return false;
             }
         } catch (RuntimeException error) {
             com.habitrain.lottery.HabiLotteryMod.LOGGER.error("Daily task claim failed: {}", id, error);
         }
         store.update(player.getUUID(), value -> value.dailyTaskPending.remove(key));
-        if (!store.flush(player.getUUID())) store.restoreSnapshot(player.getUUID(), pending, false);
+        if (!store.flush(player.getUUID())) {
+            store.restoreSnapshot(player.getUUID(), pending, pendingWasDirty);
+        }
         LotteryNetwork.sendDailyTaskSnapshot(player, false);
         return false;
     }
 
     public static int progress(ServerPlayer player, ResourceLocation id) {
-        if (!ready(player)) return 0;
+        if (id == null || !ready(player)) return 0;
         PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(player);
-        return data.dailyTaskEpochDay == LoginRewardService.todayEpochDayUtc() && data.dailyTaskProgress != null
+        long day = com.habitrain.lottery.time.LotteryDayClock.monotonicEpochDay(data.dailyTaskEpochDay);
+        return data.dailyTaskEpochDay == day && data.dailyTaskProgress != null
                 ? progressOf(data, id.toString()) : 0;
     }
 
     public static boolean claimed(ServerPlayer player, ResourceLocation id) {
-        if (!ready(player)) return false;
+        if (id == null || !ready(player)) return false;
         PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(player);
-        return data.dailyTaskEpochDay == LoginRewardService.todayEpochDayUtc()
+        long day = com.habitrain.lottery.time.LotteryDayClock.monotonicEpochDay(data.dailyTaskEpochDay);
+        return data.dailyTaskEpochDay == day
                 && data.dailyTaskClaims != null && data.dailyTaskClaims.contains(id.toString());
     }
 
     private static boolean ready(ServerPlayer player) {
-        if (player == null || !WorldLotteryPaths.ready()) return false;
+        if (player == null || !ApiGuards.isOnServerThread() || !WorldLotteryPaths.ready()) return false;
         PlayerLotteryStore store = PlayerLotteryStore.get();
         store.getOrLoad(player);
         return !store.isLoadFailed(player.getUUID());

@@ -9,13 +9,18 @@ import java.util.Set;
 
 public final class PlayerLotteryData {
     public static final int RECENT_GRANTS_CAP = 64;
+    public static final int REWARD_RECEIPTS_CAP = 512;
+    public static final int CRATE_OPEN_HISTORY_CAP = 1024;
+    public static final int PAID_SHOP_ORDERS_CAP = 128;
 
     public int version = 2;
     public long updatedAt;
     /** New currency. Legacy coin and draw balances are discarded, never converted. */
     public int greenApples;
-    /** Long-lived reward transaction receipts; independent of the bounded public grant-key window. */
-    public Set<String> rewardReceipts = new HashSet<>();
+    /** Bounded FIFO reward transaction receipts; independent of the public grant-key window. */
+    public Set<String> rewardReceipts = new BoundedStringSet(REWARD_RECEIPTS_CAP);
+    /** Unfinished cross-file rewards must survive eviction of the completed-receipt window. */
+    public Set<String> pendingRewardReceipts = new LinkedHashSet<>();
     /** Virtual system rewards, separate from the physical player inventory. */
     public Map<String, Integer> systemItems = new HashMap<>();
     public Map<String, Map<String, Boolean>> unlocked = new HashMap<>();
@@ -23,7 +28,26 @@ public final class PlayerLotteryData {
     public Map<String, Integer> ownedSkinCounts = new HashMap<>();
     /** Durable crate receipts prevent a repeated network request from granting a second reward. */
     public Map<String, String> crateReceipts = new java.util.LinkedHashMap<>();
-    public java.util.Set<String> crateOpenHistory = new java.util.HashSet<>();
+    public java.util.Set<String> crateOpenHistory = new BoundedStringSet(CRATE_OPEN_HISTORY_CAP);
+    /** Open IDs whose crate and key have already been pre-debited before crate settlement finishes. */
+    public Set<String> pendingCrateDebits = new LinkedHashSet<>();
+    /** Card reservations and their quota debit commit together, before the backpack debit. */
+    public Map<String, CardUse> pendingCardUses = new HashMap<>();
+
+    public static final class CardUse {
+        public String kind;
+        public String roleId;
+        public long day;
+
+        public CardUse() { }
+        public CardUse(String kind, String roleId, long day) {
+            this.kind = kind;
+            this.roleId = roleId;
+            this.day = day;
+        }
+    }
+    /** Shop purchase keys whose green-apple debit and limit counter have committed on disk. */
+    public Set<String> paidShopPurchases = new BoundedStringSet(PAID_SHOP_ORDERS_CAP);
     public long inventoryRevision;
     public Map<String, String> equipped = new HashMap<>();
     /** Canonical type/id entries for which this shooter uses the original weapon sounds. */
@@ -81,12 +105,18 @@ public final class PlayerLotteryData {
         c.version = version;
         c.updatedAt = updatedAt;
         c.greenApples = greenApples;
-        if (rewardReceipts != null) c.rewardReceipts.addAll(rewardReceipts);
+        c.rewardReceipts = new BoundedStringSet(REWARD_RECEIPTS_CAP, rewardReceipts);
+        if (pendingRewardReceipts != null) c.pendingRewardReceipts.addAll(pendingRewardReceipts);
         if (systemItems != null) c.systemItems.putAll(systemItems);
         unlocked.forEach((k, v) -> c.unlocked.put(k, new HashMap<>(v)));
         if (ownedSkinCounts != null) c.ownedSkinCounts.putAll(ownedSkinCounts);
         if (crateReceipts != null) c.crateReceipts.putAll(crateReceipts);
-        if (crateOpenHistory != null) c.crateOpenHistory.addAll(crateOpenHistory);
+        c.crateOpenHistory = new BoundedStringSet(CRATE_OPEN_HISTORY_CAP, crateOpenHistory);
+        if (pendingCrateDebits != null) c.pendingCrateDebits.addAll(pendingCrateDebits);
+        if (pendingCardUses != null) pendingCardUses.forEach((id, use) -> {
+            if (use != null) c.pendingCardUses.put(id, new CardUse(use.kind, use.roleId, use.day));
+        });
+        c.paidShopPurchases = new BoundedStringSet(PAID_SHOP_ORDERS_CAP, paidShopPurchases);
         c.inventoryRevision = inventoryRevision;
         c.equipped.putAll(equipped);
         if (disabledSkinSounds != null) c.disabledSkinSounds.addAll(disabledSkinSounds);
@@ -119,6 +149,56 @@ public final class PlayerLotteryData {
             return src;
         }
         return new RecentGrants(src);
+    }
+
+    /** Wrap {@code src} as a FIFO insertion-order set capped at {@code maxSize}. */
+    public static Set<String> asBoundedSet(Collection<String> src, int maxSize) {
+        if (src instanceof BoundedStringSet bounded && bounded.maxSize() == maxSize) {
+            return bounded;
+        }
+        return new BoundedStringSet(maxSize, src);
+    }
+
+    /** Insertion-order FIFO set that evicts the oldest entry once {@code maxSize} is exceeded. */
+    public static class BoundedStringSet extends LinkedHashSet<String> {
+        private final int maxSize;
+
+        public BoundedStringSet(int maxSize) {
+            super(Math.min(Math.max(1, maxSize) + 4, 128));
+            this.maxSize = Math.max(1, maxSize);
+        }
+
+        public BoundedStringSet(int maxSize, Collection<? extends String> initial) {
+            this(maxSize);
+            if (initial != null) {
+                for (String item : initial) {
+                    if (item != null && !item.isBlank()) {
+                        add(item);
+                    }
+                }
+            }
+        }
+
+        public int maxSize() {
+            return maxSize;
+        }
+
+        @Override
+        public boolean add(String s) {
+            if (s == null) {
+                return false;
+            }
+            boolean added = super.add(s);
+            while (size() > maxSize) {
+                var it = iterator();
+                if (!it.hasNext()) {
+                    break;
+                }
+                it.next();
+                it.remove();
+            }
+            return added;
+        }
     }
 
     /** Insertion-order set that drops the oldest key once {@link #RECENT_GRANTS_CAP} is exceeded. */

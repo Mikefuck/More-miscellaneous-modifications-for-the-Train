@@ -38,6 +38,8 @@ public final class SkinWardrobeScreen extends Screen {
     private static final int BACK = 0xFF101D2A, PANEL = 0xFF1B2D3D, TILE = 0xFF223849;
     private static final int LINE = 0xFF415A6B, INK = 0xFFE8F1EE, MUTED = 0xFFA4B8C3;
     private static final int BRASS = 0xFFE9BD76, MINT = 0xFF8AD7BC;
+    private static final ItemStack NAME_TAG_ICON = new ItemStack(Items.NAME_TAG);
+    private static final ItemStack BARRIER_ICON = new ItemStack(Items.BARRIER);
     /** Drag sensitivities per pixel; pitch is clamped so the model never flips over. */
     private static final float YAW_SENSITIVITY = 0.03F, PITCH_SENSITIVITY = 0.02F, PITCH_LIMIT = 1.4F;
     private final Screen parent;
@@ -86,28 +88,25 @@ public final class SkinWardrobeScreen extends Screen {
      */
     static Component skinName(String type, String id) {
         String key = "skin.habitrain_lottery." + type + "." + id;
-        return key.equals(Component.translatable(key).getString())
-                ? legacySkinName(type, id)
-                : Component.translatable(key);
+        return Language.getInstance().has(key)
+                ? Component.translatable(key)
+                : legacySkinName(type, id);
     }
 
     /** {@code screen.sre.skins.<type>.<id>.name} when translated, otherwise the raw id. */
     private static Component legacySkinName(String type, String id) {
         String key = "screen.sre.skins." + type + "." + id + ".name";
-        // translatableWithFallback cannot tell "translated" from "fell back", so the
-        // resolved string is compared against the key: vanilla returns the key itself
-        // when no translation is installed.
-        return key.equals(Component.translatable(key).getString())
-                ? Component.literal(id)
-                : Component.translatable(key);
+        return Language.getInstance().has(key)
+                ? Component.translatable(key)
+                : Component.literal(id);
     }
 
     /** The legacy v1 description key, when the installed language file still defines it. */
     private static Component legacySkinDescription(String type, String id) {
         String key = "screen.sre.skins." + type + "." + id + ".desc";
-        return key.equals(Component.translatable(key).getString())
-                ? Component.empty()
-                : Component.translatable(key);
+        return Language.getInstance().has(key)
+                ? Component.translatable(key)
+                : Component.empty();
     }
 
     @Override protected void init() {
@@ -215,10 +214,10 @@ public final class SkinWardrobeScreen extends Screen {
         if (titles()) {
             // Upstream only accepts owned title IDs; do not offer an unsupported clear request.
             if (titleEquipped.isBlank()) list.add(new Entry("default", text("no_title"), true, true, true,
-                    BRASS, new ItemStack(Items.NAME_TAG), null));
+                    BRASS, NAME_TAG_ICON, null));
             for (String id : knownTitles.stream().filter(s -> s != null && !s.isBlank()).distinct().toList()) {
                 list.add(new Entry(id, Component.translatableWithFallback(id, id), true,
-                        id.equals(titleEquipped), true, BRASS, new ItemStack(Items.NAME_TAG), null));
+                        id.equals(titleEquipped), true, BRASS, NAME_TAG_ICON, null));
             }
         } else if (received) {
             boolean hasEquipped = SkinClient.entries().stream().anyMatch(e -> e.type().equals(type()) && e.equipped());
@@ -257,8 +256,8 @@ public final class SkinWardrobeScreen extends Screen {
     }
     private ItemStack defaultIcon() {
         return switch (type()) {
-            case "title" -> new ItemStack(Items.NAME_TAG);
-            case "back" -> new ItemStack(Items.BARRIER);
+            case "title" -> NAME_TAG_ICON;
+            case "back" -> BARRIER_ICON;
             default -> SkinItems.defaultStack(type());
         };
     }
@@ -460,7 +459,11 @@ public final class SkinWardrobeScreen extends Screen {
         } else {
             int size = Math.max(16, Math.min(w - 32, artBottom - artTop - 4));
             g.enableScissor(x + 4, artTop, x + w - 4, artBottom);
-            drawIcon(g, entry, x + w / 2, (artTop + artBottom) / 2, size); g.disableScissor();
+            try {
+                drawIcon(g, entry, x + w / 2, (artTop + artBottom) / 2, size);
+            } finally {
+                g.disableScissor();
+            }
         }
         if (h > 180) clippedText(g, Component.literal(entry.id()), x + 10, artBottom - 12, w - 20, MUTED);
         clippedText(g, state(entry), x + 10, y + h - 42, w - 20 - (view.visible ? 48 : 0),
@@ -471,8 +474,14 @@ public final class SkinWardrobeScreen extends Screen {
     }
     private void drawIcon(GuiGraphics g, Entry entry, int cx, int cy, int size) {
         if (entry.icon().isEmpty()) { g.drawCenteredString(font, "?", cx, cy - 4, MUTED); return; }
-        g.pose().pushPose(); g.pose().translate(cx - size / 2f, cy - size / 2f, 0);
-        g.pose().scale(size / 16f, size / 16f, 1); g.renderFakeItem(entry.icon(), 0, 0); g.pose().popPose();
+        g.pose().pushPose();
+        try {
+            g.pose().translate(cx - size / 2f, cy - size / 2f, 0);
+            g.pose().scale(size / 16f, size / 16f, 1);
+            g.renderFakeItem(entry.icon(), 0, 0);
+        } finally {
+            g.pose().popPose();
+        }
     }
     private void clippedText(GuiGraphics g, Component component, int x, int y, int maxWidth, int color) {
         String value = component.getString();
@@ -490,8 +499,11 @@ public final class SkinWardrobeScreen extends Screen {
             g.renderOutline(getX(), getY(), getWidth(), getHeight(), border);
             if (chosen) g.fill(getX() + 3, getY() + getHeight() - 2, getX() + getWidth() - 3, getY() + getHeight() - 1, BRASS);
             g.enableScissor(getX() + 3, getY(), getX() + getWidth() - 3, getY() + getHeight());
-            g.drawCenteredString(font, getMessage(), getX() + getWidth() / 2, getY() + (getHeight() - 8) / 2, active ? INK : MUTED);
-            g.disableScissor();
+            try {
+                g.drawCenteredString(font, getMessage(), getX() + getWidth() / 2, getY() + (getHeight() - 8) / 2, active ? INK : MUTED);
+            } finally {
+                g.disableScissor();
+            }
         }
     }
     private final class TileButton extends ActionButton {
@@ -535,7 +547,11 @@ public final class SkinWardrobeScreen extends Screen {
             g.fill(x + 1, y + 1, x + 3, y + h - 1, entry.color());
             int size = Math.max(16, Math.min(44, h - 40));
             g.enableScissor(x + 4, y + 2, x + w - 4, y + h - 29);
-            drawIcon(g, entry, x + w / 2, y + (h - 28) / 2, size); g.disableScissor();
+            try {
+                drawIcon(g, entry, x + w / 2, y + (h - 28) / 2, size);
+            } finally {
+                g.disableScissor();
+            }
             clippedText(g, entry.name(), x + 7, y + h - 26, w - 14, entry.owned() ? INK : MUTED);
             Component status = state(entry);
             int statusWidth = w - 14;

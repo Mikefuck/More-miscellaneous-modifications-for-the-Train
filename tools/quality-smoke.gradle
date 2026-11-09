@@ -1,11 +1,19 @@
-// Render quality metadata with the real GUI and the current external skin provider.
+// Render quality metadata with the real GUI and an optional external skin provider (-PskinModJar=...).
+// Usage: .\gradlew.bat -I tools\quality-smoke.gradle runClient --no-daemon -PskinModJar=..\path\to\skins-dev.jar
 apply from: new File(gradle.startParameter.currentDir, 'tools/warehouse-smoke.gradle')
 allprojects {
     afterEvaluate {
-        dependencies {
-            // The upstream fixture is Mojang-named, so use the matching development jar.
-            // Production @Pseudo injections cannot be remapped back without its hierarchy.
-            runtimeOnly files('../皮肤mod/build/devlibs/habitrain_skins-1.0.40-dev.jar')
+        def skinModJarPath = project.findProperty('skinModJar')
+        if (skinModJarPath != null && !skinModJarPath.toString().isBlank()) {
+            def skinJarFile = file(skinModJarPath.toString())
+            if (!skinJarFile.isFile()) {
+                throw new GradleException("Configured -PskinModJar does not exist: ${skinJarFile}")
+            }
+            dependencies {
+                // The upstream fixture is Mojang-named, so use the matching development jar.
+                // Production @Pseudo injections cannot be remapped back without its hierarchy.
+                runtimeOnly files(skinJarFile)
+            }
         }
         sourceSets.smoke.java.setSrcDirs(['tools/quality-smoke/java'])
         sourceSets.smoke.resources.setSrcDirs(['tools/quality-smoke/resources'])

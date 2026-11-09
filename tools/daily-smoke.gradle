@@ -1,5 +1,5 @@
 // Daily-task editor + tracker verification in a real integrated server; test-only, never in release jars.
-// Usage: ./gradlew -I tools/daily-smoke.gradle runClient --gradle-user-home ../.gradle-user-home
+// Usage: ./gradlew -I tools/daily-smoke.gradle runClient --no-daemon --gradle-user-home ../.gradle-user-home
 //        add -PdailySmokeMode=match to play a real match and check every task type
 //        add -PdailySmokeMode=mail to drive the terminal mailbox tab (screenshots in daily-smoke-mail/)
 allprojects {

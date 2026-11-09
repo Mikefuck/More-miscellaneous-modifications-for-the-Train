@@ -56,11 +56,14 @@ class ExternalCardApiTest {
         assertEquals(Integer.MAX_VALUE, result.newValue());
         assertFalse(RewardDelivery.deliver(player, "mail:overflow", () -> new RewardDelivery.Plan(
                 List.of(reward(kind, 1)), List.of(), null)));
+        assertFalse(java.nio.file.Files.exists(RewardDelivery.path(player, "mail:overflow")),
+                "Capacity rejection must not arm an intent that can later issue an unrequested reward");
         assertEquals(Integer.MAX_VALUE, HabiCardApi.get(player, kind));
         WorldLotteryPaths.initForTests(root);
         assertEquals(Integer.MAX_VALUE, HabiCardApi.get(player, kind));
         assertEquals(Integer.MAX_VALUE - 1, HabiCardApi.add(player, kind, -1).newValue());
-        assertTrue(RewardDelivery.deliver(player, "mail:overflow", () -> null));
+        assertTrue(RewardDelivery.deliver(player, "mail:overflow", () -> new RewardDelivery.Plan(
+                List.of(reward(kind, 1)), List.of(), null)));
         assertEquals(Integer.MAX_VALUE, HabiCardApi.get(player, kind));
     }
 

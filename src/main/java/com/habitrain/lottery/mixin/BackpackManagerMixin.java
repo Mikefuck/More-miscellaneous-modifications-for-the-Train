@@ -1,9 +1,8 @@
 package com.habitrain.lottery.mixin;
 
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.backpack.ActiveCardForces;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
-import com.habitrain.lottery.backpack.DailyFactionCardService;
+import com.habitrain.lottery.card.CardUseService;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
 import io.wifi.starrailexpress.backpack.BackpackManager;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
@@ -50,29 +49,11 @@ public class BackpackManagerMixin {
             ServerPlayer player,
             FactionCardType type,
             CallbackInfoReturnable<Boolean> cir) {
-        if (player != null && com.habitrain.lottery.card.SelfSelectForces.has(player.getUUID())) {
-            cir.setReturnValue(false);
-            return;
-        }
-        if (player != null && DailyFactionCardService.hasReachedLimit(player)) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§c[职业卡] 今日使用次数已达上限，可使用突破上限卡增加 1 次"));
-            cir.setReturnValue(false);
-        }
+        cir.setReturnValue(CardUseService.activateFactionCard(player, type));
     }
 
     @Inject(method = "addCard", at = @At("RETURN"))
     private static void habi$persistAdd(ServerPlayer player, FactionCardType type, int count, CallbackInfo ci) {
-        persist(player);
-    }
-
-    @Inject(method = "activateCard", at = @At("RETURN"))
-    private static void habi$persistActivate(ServerPlayer player, FactionCardType type, CallbackInfoReturnable<Boolean> cir) {
-        if (player == null || !Boolean.TRUE.equals(cir.getReturnValue())) {
-            return;
-        }
-        ActiveCardForces.record(player.getUUID(), type);
-        DailyFactionCardService.recordSuccessfulUse(player);
         persist(player);
     }
 

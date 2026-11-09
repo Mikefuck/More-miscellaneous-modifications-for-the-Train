@@ -54,7 +54,7 @@ final class PrelaunchModpackUpdater extends ModpackUpdater {
                     && !launchContent.mcVersion.equals(GlobalVariables.MC_VERSION)) {
                 throw new IllegalStateException("Minecraft version changes require a new launch from the launcher");
             }
-            captured = GameRestart.capture(configDir, loader.getLaunchArguments(false));
+            captured = GameRestart.capture(loader.getGameDir(), configDir, loader.getLaunchArguments(false));
         } catch (Exception e) {
             PrelaunchLog.warn("Cannot capture automatic restart (%s); successful updates will request a launcher restart",
                     e.getClass().getSimpleName());
@@ -71,7 +71,8 @@ final class PrelaunchModpackUpdater extends ModpackUpdater {
         successful = false;
         try {
             Path directory = directory();
-            var result = content == null ? null : ModpackFileAudit.check(content, directory);
+            Jsons.ModpackContentFields latest = effectiveContent(this, content);
+            var result = latest == null ? null : ModpackFileAudit.check(latest, directory);
             if (result != null && result.requiresUpdate()) {
                 // Preserve AutoModpack's public-JAR approval policy on its automatic/default path.
                 super.processModpackUpdate(result);
@@ -79,7 +80,7 @@ final class PrelaunchModpackUpdater extends ModpackUpdater {
             }
             var before = installedState();
             initializeDownload(this);
-            if (content != null) {
+            if (latest != null) {
                 Files.writeString((Path) field("modpackContentFile").get(this),
                         (String) field("serverModpackContentJson").get(this));
             }
@@ -102,8 +103,9 @@ final class PrelaunchModpackUpdater extends ModpackUpdater {
             before = installedState();
             initializeDownload(this);
             window.follow(() -> downloadManager);
-            completed = runUpdate(() -> super.startUpdate(files)) && failedDownloads.isEmpty();
-            if (completed && ModpackFileAudit.check(content, directory()).requiresUpdate()) {
+            completed = !window.isCancelled() && runUpdate(() -> super.startUpdate(files)) && failedDownloads.isEmpty();
+            Jsons.ModpackContentFields latest = effectiveContent(this, content);
+            if (completed && latest != null && ModpackFileAudit.check(latest, directory()).requiresUpdate()) {
                 PrelaunchLog.warn("AutoModpack completed, but installed files do not match the server manifest");
                 completed = false;
             }
@@ -114,8 +116,10 @@ final class PrelaunchModpackUpdater extends ModpackUpdater {
             window.close();
         }
         if (!completed) {
-            Ui.error("整合包更新未成功完成，游戏不会自动重启。<br>"
-                    + "请检查网络后重试；详情见 logs/latest.log。<br>本次不会开启 5 分钟免弹窗。");
+            if (!window.isCancelled()) {
+                Ui.error("整合包更新未成功完成，游戏不会自动重启。<br>"
+                        + "请检查网络后重试；详情见 logs/latest.log。<br>本次不会开启 5 分钟免弹窗。");
+            }
             return;
         }
         successful = true;
@@ -125,6 +129,19 @@ final class PrelaunchModpackUpdater extends ModpackUpdater {
             successful = false;
             PrelaunchLog.error("Could not finish the installed modpack", e);
         }
+    }
+
+    static Jsons.ModpackContentFields effectiveContent(ModpackUpdater updater, Jsons.ModpackContentFields fallback) {
+        if (updater != null) {
+            try {
+                Jsons.ModpackContentFields refreshed = (Jsons.ModpackContentFields) field("serverModpackContent").get(updater);
+                if (refreshed != null) {
+                    return refreshed;
+                }
+            } catch (ReflectiveOperationException ignored) {
+            }
+        }
+        return fallback;
     }
 
     private Path directory() throws ReflectiveOperationException {

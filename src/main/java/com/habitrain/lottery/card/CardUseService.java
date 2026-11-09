@@ -2,6 +2,7 @@ package com.habitrain.lottery.card;
 
 import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
+import com.habitrain.lottery.PlayerStateGate;
 import com.habitrain.lottery.backpack.ActiveCardForces;
 import com.habitrain.lottery.backpack.DailyFactionCardService;
 import com.habitrain.lottery.backpack.DailySelfSelectService;
@@ -9,7 +10,6 @@ import com.habitrain.lottery.backpack.PlayerCardAdminService;
 import com.habitrain.lottery.backpack.FactionCardRoleTypes;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
 import com.habitrain.lottery.backpack.LimitBreakCardService;
-import com.habitrain.core.api.match.MatchStateApi;
 import com.habitrain.core.api.role.v2.EffectiveRole;
 import com.habitrain.core.api.role.v2.QueryPurpose;
 import com.habitrain.core.api.role.v2.RoleCatalogApi;
@@ -26,7 +26,6 @@ import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import org.agmas.harpymodloader.Harpymodloader;
 import org.agmas.harpymodloader.SREDisableManager;
@@ -126,7 +125,7 @@ public final class CardUseService {
             if (!PlayerLotteryStore.get().isTakeoverActive() || rejectIfNotLobby(player)) return;
             if (LIMIT_BREAK_KEY.equals(questKey) && "bonus".equals(mode)) {
                 if (!LimitBreakCardService.useFromBackpack(player)) {
-                    player.sendSystemMessage(Component.literal("§c[突破上限卡] 卡牌不足、今日额外次数已满，或存档不可写"));
+                    player.sendSystemMessage(Component.translatable("message.habitrain_lottery.limit_break.use_failed"));
                 } else {
                     com.habitrain.lottery.daily.config.DailyTaskTracker.onCardUsed(player, LIMIT_BREAK_KEY);
                 }
@@ -139,44 +138,99 @@ public final class CardUseService {
             handleRequest(player, INVENTORY_KEY);
         } catch (Throwable t) {
             HabiLotteryMod.LOGGER.warn("Card use confirm failed for {}", player.getUUID(), t);
-            player.sendSystemMessage(Component.literal("§c[职业卡] 使用失败: " + t.getMessage()));
+            player.sendSystemMessage(Component.translatable(
+                    "message.habitrain_lottery.card.use_error", String.valueOf(t.getMessage())));
+        }
+    }
+
+    /**
+     * Full lobby, storage, corruption, exclusivity, and daily-quota gate shared by GUI
+     * activation and upstream {@code /sre:pass activate} ({@code BackpackManagerMixin} {@code B-13}).
+     */
+    public static boolean canActivateFactionCard(ServerPlayer player, FactionCardType type) {
+        if (player == null || type == null || type == FactionCardType.NONE) {
+            return false;
+        }
+        UUID uuid = player.getUUID();
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        if (!store.isTakeoverActive() || store.isLoadFailed(uuid) || store.isFlushDeferred()) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.card.storage_unavailable"));
+            return false;
+        }
+        if (rejectIfNotLobby(player)) {
+            return false;
+        }
+        if (LocalBackpackStore.loadResult(uuid).corrupt()) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.card.storage_corrupt"));
+            return false;
+        }
+        if (SelfSelectForces.has(uuid) || ActiveCardForces.get(uuid) != null || isRoleForceQueued(uuid)
+                || CardActivationJournal.hasPending(uuid)) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.card.already_active"));
+            return false;
+        }
+        if (DailyFactionCardService.hasReachedLimit(player)) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.card.daily_limit_reached"));
+            return false;
+        }
+        return true;
+    }
+
+    public static boolean isRoleForceQueued(UUID uuid) {
+        if (uuid == null) {
+            return false;
+        }
+        try {
+            return RoleForceApi.instance().isQueued(uuid);
+        } catch (RuntimeException | LinkageError ignored) {
+            return false;
         }
     }
 
     /** 直接使用 — consume one card via the upstream activation path. */
     private static void doDirectUse(ServerPlayer player, FactionCardType type) {
-        if (DailyFactionCardService.hasReachedLimit(player)) {
-            player.sendSystemMessage(Component.literal(
-                    "§c[职业卡] 今日使用次数已达上限，可使用突破上限卡增加 1 次"));
+        if (!canActivateFactionCard(player, type)) {
             return;
         }
         if (BackpackManager.getCardCount(player, type) < 1) {
-            player.sendSystemMessage(Component.literal("§c[职业卡] 该角色卡数量不足"));
-            return;
-        }
-        if (SelfSelectForces.has(player.getUUID()) || ActiveCardForces.get(player.getUUID()) != null || RoleForceApi.instance().isQueued(player.getUUID())) {
-            player.sendSystemMessage(Component.literal("§c[职业卡] 已有生效的职业卡，本局不能再使用"));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.card.insufficient"));
             return;
         }
         boolean ok = BackpackManager.activateCard(player, type);
         if (!ok) {
-            player.sendSystemMessage(Component.literal("§c[职业卡] 使用失败"));
-        } else {
-            com.habitrain.lottery.daily.config.DailyTaskTracker.onCardUsed(player,
-                    type.name().toLowerCase(java.util.Locale.ROOT));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.card.use_failed"));
         }
-        // Success path (record/daily-use/persist) is handled by BackpackManagerMixin.
+        // Success path (record/daily-use/persist) is handled by BackpackManagerMixin;
+        // DailyTaskTracker.onCardUsed fires at match confirmation / draft offer (N-07).
+    }
+
+    /** Shared GUI/command entry: durably reserve quota and debit before publishing the force. */
+    public static boolean activateFactionCard(ServerPlayer player, FactionCardType type) {
+        if (!canActivateFactionCard(player, type) || !LocalBackpackStore.prepareOnline(player)) return false;
+        UUID uid = player.getUUID();
+        UUID activation = CardActivationJournal.activate(uid, type.questKey.toLowerCase(java.util.Locale.ROOT), null);
+        if (activation == null) return false;
+        long day = PlayerLotteryStore.get().getOrLoad(uid).lastFactionCardUseEpochDay;
+        int roleType = FactionCardRoleTypes.roleTypeId(type);
+        ActiveCardForces.restore(uid, roleType, activation, day);
+        org.agmas.harpymodloader.modded_murder.PlayerRoleWeightManager.ForcePlayerTeam.put(uid, roleType);
+        LocalBackpackStore.syncCommitted(player);
+        Component message = Component.translatable("message.sre.progression.faction_card_activated",
+                Component.translatable(type.displayName));
+        player.sendSystemMessage(message);
+        player.displayClientMessage(message, true);
+        return true;
     }
 
     /** Consume one independent self-select card only after validating the exact role. */
     private static void doSelfSelect(ServerPlayer player, String roleId) {
         UUID uuid = player.getUUID();
         if (DailySelfSelectService.remaining(uuid) <= 0) {
-            player.sendSystemMessage(Component.literal("§c[自选卡] 今日自选次数已用完"));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.self_select.daily_limit_reached"));
             return;
         }
-        if (SelfSelectForces.has(uuid) || ActiveCardForces.get(uuid) != null || RoleForceApi.instance().isQueued(uuid)) {
-            player.sendSystemMessage(Component.literal("§c[自选卡] 下局已有生效的卡牌"));
+        if (SelfSelectForces.has(uuid) || ActiveCardForces.get(uuid) != null || isRoleForceQueued(uuid)) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.self_select.already_active"));
             return;
         }
         ResourceLocation requestedRole = ResourceLocation.tryParse(roleId);
@@ -186,32 +240,29 @@ public final class CardUseService {
         }
         SRERole role = resolveCandidate(FactionCardType.NONE, roleId);
         if (role == null || SelfSelectForces.isRoleTaken(role.identifier())) {
-            player.sendSystemMessage(Component.literal("§c[自选卡] 角色无效或已被其他玩家自选"));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.self_select.role_unavailable"));
             return;
         }
         if (!consumeSelfSelect(uuid, role.identifier())) {
-            player.sendSystemMessage(Component.literal("§c[自选卡] 卡牌或次数不足，或存档写入失败，未激活；存档异常请联系管理员"));
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.self_select.consume_failed"));
             return;
         }
-        com.habitrain.lottery.daily.config.DailyTaskTracker.onCardUsed(player, SELF_SELECT_KEY);
-        player.sendSystemMessage(Component.literal("§a[自选卡] 已自选 " + role.getName().getString()
-                + "，消耗 1 张自选卡；下局名额不足时退还"));
+        player.sendSystemMessage(Component.translatable(
+                "message.habitrain_lottery.self_select.selected", role.getName()));
     }
 
     /** Called only after the server has resolved and validated the chosen role. */
     static boolean consumeSelfSelect(UUID uuid, ResourceLocation roleId) {
         if (uuid == null || roleId == null || SelfSelectForces.has(uuid)
-                || ActiveCardForces.get(uuid) != null || SelfSelectForces.isRoleTaken(roleId)
+                || ActiveCardForces.get(uuid) != null || isRoleForceQueued(uuid)
+                || CardActivationJournal.hasPending(uuid)
+                || SelfSelectForces.isRoleTaken(roleId)
                 || !SelfSelectRoleConfigService.isAllowed(roleId)
                 || DailySelfSelectService.remaining(uuid) <= 0) return false;
-        if (!LocalBackpackStore.addSelfSelectCards(uuid, -SELF_SELECT_COST)) return false;
-        if (!DailySelfSelectService.recordSuccessfulUse(uuid)) {
-            if (!LocalBackpackStore.addSelfSelectCards(uuid, SELF_SELECT_COST)) {
-                HabiLotteryMod.LOGGER.error("Self-select debit rollback failed for {}", uuid);
-            }
-            return false;
-        }
-        SelfSelectForces.record(uuid, roleId);
+        UUID activation = CardActivationJournal.activate(uuid, SELF_SELECT_KEY, roleId.toString());
+        if (activation == null) return false;
+        SelfSelectForces.restore(uuid, roleId, activation,
+                PlayerLotteryStore.get().getOrLoad(uuid).lastSelfSelectUseEpochDay);
         return true;
     }
 
@@ -319,19 +370,52 @@ public final class CardUseService {
      */
     public static boolean refundSelfSelect(UUID uuid, FactionCardType type) {
         if (uuid == null) return false;
-        SelfSelectForces.markRefundPending(uuid);
-        if (!REFUNDED_SELF_BALANCES.contains(uuid)) {
-            if (!LocalBackpackStore.addSelfSelectCards(uuid, SELF_SELECT_COST)) {
+        UUID refundId = SelfSelectForces.refundId(uuid);
+        if (CardActivationJournal.contains(uuid, refundId)) {
+            SelfSelectForces.markRefundPending(uuid);
+            if (!CardActivationJournal.refund(uuid, refundId)) return false;
+            SelfSelectForces.remove(uuid);
+            ServerPlayer online = findOnline(uuid);
+            if (online != null) LocalBackpackStore.syncCommitted(online);
+            return true;
+        }
+        if (refundId != null) {
+            long activationDay = SelfSelectForces.activationEpochDay(uuid);
+            String receipt = "self-select-refund:" + refundId;
+            SelfSelectForces.markRefundPending(uuid);
+            if (!LocalBackpackStore.applyOnce(uuid, receipt, next ->
+                    next.selfSelectCards = Math.addExact(Math.max(0, next.selfSelectCards), SELF_SELECT_COST))) {
                 HabiLotteryMod.LOGGER.error("Self-select refund failed to persist for {}", uuid);
                 return false;
             }
-            REFUNDED_SELF_BALANCES.add(uuid);
+            boolean quotaOk = PlayerLotteryStore.get().applyToPlayerWithRollback(uuid, data -> {
+                if (data.rewardReceipts.contains(receipt)) {
+                    return;
+                }
+                if (data.lastSelfSelectUseEpochDay == activationDay) {
+                    data.selfSelectUsesToday = Math.max(0, data.selfSelectUsesToday - 1);
+                }
+                data.rewardReceipts.add(receipt);
+            });
+            if (!quotaOk) {
+                return false;
+            }
+            SelfSelectForces.remove(uuid);
+        } else {
+            SelfSelectForces.markRefundPending(uuid);
+            if (!REFUNDED_SELF_BALANCES.contains(uuid)) {
+                if (!LocalBackpackStore.addSelfSelectCards(uuid, SELF_SELECT_COST)) {
+                    HabiLotteryMod.LOGGER.error("Self-select refund failed to persist for {}", uuid);
+                    return false;
+                }
+                REFUNDED_SELF_BALANCES.add(uuid);
+            }
+            if (!DailySelfSelectService.refundSuccessfulUse(uuid)) return false;
+            REFUNDED_SELF_BALANCES.remove(uuid);
         }
-        if (!DailySelfSelectService.refundSuccessfulUse(uuid)) return false;
-        REFUNDED_SELF_BALANCES.remove(uuid);
         ServerPlayer online = findOnline(uuid);
         if (online != null) {
-            online.sendSystemMessage(Component.literal("§e[自选卡] 自选未能生效，已退还 1 张自选卡及自选次数"));
+            online.sendSystemMessage(Component.translatable("message.habitrain_lottery.self_select.refunded"));
         }
         return true;
     }
@@ -349,12 +433,15 @@ public final class CardUseService {
         if (type == FactionCardType.NONE) return false;
         ActiveCardForces.markRefundPending(uuid);
         ServerPlayer online = findOnline(uuid);
-        if (!FactionCardRefunds.refund(uuid, type, online)) return false;
+        UUID activation = ActiveCardForces.refundId(uuid);
+        if (CardActivationJournal.contains(uuid, activation)) {
+            if (!CardActivationJournal.refund(uuid, activation)) return false;
+            if (online != null) LocalBackpackStore.syncCommitted(online);
+        } else if (!FactionCardRefunds.refund(uuid, type, online)) return false;
         ActiveCardForces.remove(uuid);
         if (online != null) {
-            online.sendSystemMessage(Component.literal("§e[职业卡] 阵营卡未兑现，已退还 1 张")
-                    .append(Component.translatable(type.displayName))
-                    .append(Component.literal("及 1 次使用次数")));
+            online.sendSystemMessage(Component.translatable(
+                    "message.habitrain_lottery.card.refunded", Component.translatable(type.displayName)));
         }
         HabiLotteryMod.LOGGER.info("Faction card refunded once for {}: {}", uuid, type.questKey);
         return true;
@@ -383,49 +470,22 @@ public final class CardUseService {
      * Shared Request/Confirm gate: running game, spectator, or rest-area.
      * Never falls back to {@code doDirectUse}.
      */
-    private static boolean rejectIfNotLobby(ServerPlayer player) {
-        boolean spectator = false;
-        try {
-            spectator = player.isSpectator();
-        } catch (Throwable ignored) {
+    public static boolean rejectIfNotLobby(ServerPlayer player) {
+        if (player == null) {
+            return true;
         }
-        boolean resting = com.habitrain.lottery.bridge.RestAreaStateBridge.isResting(player);
-        boolean dead = false;
-        try {
-            dead = !player.isAlive();
-        } catch (Throwable ignored) {
-        }
-        if (CardUseGates.shouldReject(spectator, resting, dead, isGameRunning(player))) {
-            player.sendSystemMessage(Component.literal(CardUseGates.REJECT_MESSAGE));
+        if (PlayerStateGate.spectatorRestOrDead(player) || isGameRunning(player)) {
+            player.sendSystemMessage(CardUseGates.rejectComponent());
             return true;
         }
         return false;
     }
 
     /**
-     * 游戏是否已经离开大厅状态。与客户端 {@code CardGuiGameState} 一致：只要
-     * {@code gameStatus != INACTIVE}（含 STARTING 开场过渡）即拒绝，避免在开局
-     * 瞬间提交的选择生效。
+     * 游戏是否已经离开大厅状态。统一委托给多维度的 {@link ServerMatchGate}（{@code B-13}）。
      */
-    private static boolean isGameRunning(ServerPlayer player) {
-        try {
-            MinecraftServer server = player == null ? null : player.getServer();
-            if (server == null) {
-                boolean notInactive = MatchStateApi.hasLeftLobby(player == null ? null : player.level());
-                return CardUseGates.gameNotInactive(false, notInactive);
-            }
-            java.util.ArrayList<Boolean> flags = new java.util.ArrayList<>();
-            for (ServerLevel level : server.getAllLevels()) {
-                flags.add(MatchStateApi.hasLeftLobby(level));
-            }
-            boolean[] perLevel = new boolean[flags.size()];
-            for (int i = 0; i < flags.size(); i++) {
-                perLevel[i] = Boolean.TRUE.equals(flags.get(i));
-            }
-            return CardUseGates.gameNotInactive(false, CardUseGates.anyLevelNotInactive(perLevel));
-        } catch (Throwable t) {
-            return CardUseGates.gameNotInactive(true, false);
-        }
+    public static boolean isGameRunning(ServerPlayer player) {
+        return ServerMatchGate.hasActiveMatch(player);
     }
 
     /**

@@ -10,12 +10,18 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
-/** OP editor channel for {@code daily_tasks.json}; the server validates and owns every save. */
+import java.util.List;
+import java.util.UUID;
+
+/** OP editor channel for {@code daily_tasks.json}; the server validates and owns every save ({@code B-10}). */
 public final class DailyTaskAdminNetwork {
     public static final String NO_PERMISSION = "no_permission";
     public static final String SAVED = "saved";
+    public static final int C2S_SAVE_MAX_CHARS = ChunkedJsonTransfer.C2S_CHUNK_CHARS;
+    public static final int S2C_JSON_MAX_CHARS = ChunkedJsonTransfer.S2C_CHUNK_CHARS;
 
-    private DailyTaskAdminNetwork() { }
+    private DailyTaskAdminNetwork() {
+    }
 
     private static ResourceLocation id(String path) {
         return ResourceLocation.fromNamespaceAndPath(HabiLotteryMod.MOD_ID, path);
@@ -28,19 +34,65 @@ public final class DailyTaskAdminNetwork {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record SaveC2S(String json) implements CustomPacketPayload {
-        public static final Type<SaveC2S> TYPE = new Type<>(id("daily_admin_save_v1"));
+    public record SaveC2S(String json, UUID transferId, int chunkIndex, int chunkCount)
+            implements CustomPacketPayload {
+        public static final Type<SaveC2S> TYPE = new Type<>(id("daily_admin_save_v2"));
         public static final StreamCodec<RegistryFriendlyByteBuf, SaveC2S> CODEC = StreamCodec.of(
-                (b, p) -> b.writeUtf(p.json == null ? "" : p.json, 512_000), b -> new SaveC2S(b.readUtf(512_000)));
+                (b, p) -> {
+                    b.writeUtf(p.json == null ? "" : p.json, C2S_SAVE_MAX_CHARS);
+                    b.writeUUID(p.transferId == null ? ChunkedJsonTransfer.LOGICAL_TRANSFER : p.transferId);
+                    b.writeVarInt(p.chunkIndex);
+                    b.writeVarInt(p.chunkCount);
+                },
+                b -> new SaveC2S(
+                        b.readUtf(C2S_SAVE_MAX_CHARS),
+                        b.readUUID(),
+                        b.readVarInt(),
+                        b.readVarInt()));
+
+        public SaveC2S(String json) {
+            this(json, ChunkedJsonTransfer.LOGICAL_TRANSFER, 0, 1);
+        }
+
+        public List<SaveC2S> toWireChunks() {
+            return ChunkedJsonTransfer.splitC2S(
+                    json == null ? "" : json,
+                    SaveC2S::new);
+        }
+
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
     /** {@code message}: empty, {@link #SAVED}, {@link #NO_PERMISSION} or a validation code. */
-    public record ConfigS2C(String json, String message) implements CustomPacketPayload {
-        public static final Type<ConfigS2C> TYPE = new Type<>(id("daily_admin_config"));
+    public record ConfigS2C(String json, String message, UUID transferId, int chunkIndex, int chunkCount)
+            implements CustomPacketPayload {
+        public static final Type<ConfigS2C> TYPE = new Type<>(id("daily_admin_config_v2"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ConfigS2C> CODEC = StreamCodec.of(
-                (b, p) -> { b.writeUtf(p.json == null ? "{}" : p.json, 1_000_000); b.writeUtf(p.message == null ? "" : p.message, 512); },
-                b -> new ConfigS2C(b.readUtf(1_000_000), b.readUtf(512)));
+                (b, p) -> {
+                    b.writeUtf(p.json == null ? "{}" : p.json, S2C_JSON_MAX_CHARS);
+                    b.writeUtf(p.message == null ? "" : p.message, 512);
+                    b.writeUUID(p.transferId == null ? ChunkedJsonTransfer.LOGICAL_TRANSFER : p.transferId);
+                    b.writeVarInt(p.chunkIndex);
+                    b.writeVarInt(p.chunkCount);
+                },
+                b -> new ConfigS2C(
+                        b.readUtf(S2C_JSON_MAX_CHARS),
+                        b.readUtf(512),
+                        b.readUUID(),
+                        b.readVarInt(),
+                        b.readVarInt()));
+
+        public ConfigS2C(String json, String message) {
+            this(json, message, ChunkedJsonTransfer.LOGICAL_TRANSFER, 0, 1);
+        }
+
+        public List<ConfigS2C> toWireChunks() {
+            String safeMessage = message == null ? "" : message;
+            return ChunkedJsonTransfer.splitS2C(
+                    json == null ? "{}" : json,
+                    (piece, tid, idx, total) -> new ConfigS2C(piece, safeMessage, tid, idx, total));
+        }
+
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
@@ -51,24 +103,42 @@ public final class DailyTaskAdminNetwork {
 
         ServerPlayNetworking.registerGlobalReceiver(RequestC2S.TYPE, (payload, ctx) -> ctx.server().execute(() -> {
             ServerPlayer player = ctx.player();
-            if (player == null || LotteryNetwork.rateLimited(player, "daily_admin_request", 300)) return;
-            send(player, canManage(player) ? DailyTaskConfigService.snapshotJson() : "{}",
-                    canManage(player) ? "" : NO_PERMISSION);
+            if (player == null || player.hasDisconnected()
+                    || LotteryNetwork.rateLimited(player, "daily_admin_request", 300)) return;
+            boolean ok = canManage(player);
+            send(player, ok ? DailyTaskConfigService.snapshotJson() : "{}", ok ? "" : NO_PERMISSION);
         }));
         ServerPlayNetworking.registerGlobalReceiver(SaveC2S.TYPE, (payload, ctx) -> ctx.server().execute(() -> {
             ServerPlayer player = ctx.player();
-            if (player == null) return;
-            if (!canManage(player)) {
-                send(player, "{}", NO_PERMISSION);
+            if (player == null || player.hasDisconnected()) return;
+            boolean authorized = canManage(player);
+            ChunkedJsonTransfer.GateResult<String> gate = ChunkedJsonTransfer.acceptAuthorizedC2S(
+                    player.getUUID(),
+                    "daily_admin_save",
+                    authorized,
+                    () -> LotteryNetwork.rateLimited(player, "daily_admin_save", 500),
+                    payload.json(),
+                    payload.transferId(),
+                    payload.chunkIndex(),
+                    payload.chunkCount(),
+                    "");
+            if (gate.status() == ChunkedJsonTransfer.GateStatus.UNAUTHORIZED) {
+                if (!LotteryNetwork.rateLimited(player, "daily_admin_save_unauth", 500)) {
+                    send(player, "{}", NO_PERMISSION);
+                }
                 return;
             }
-            if (LotteryNetwork.rateLimited(player, "daily_admin_save", 500)) return;
-            boolean ok = DailyTaskConfigService.apply(payload.json());
-            send(player, DailyTaskConfigService.snapshotJson(), ok ? SAVED : DailyTaskConfigService.lastError());
+            if (gate.status() != ChunkedJsonTransfer.GateStatus.COMPLETED) {
+                return;
+            }
+            boolean ok = DailyTaskConfigService.apply(gate.json());
+            String snapshot = DailyTaskConfigService.snapshotJson();
+            send(player, snapshot, ok ? SAVED : DailyTaskConfigService.lastError());
             if (!ok) return;
             HabiLotteryMod.LOGGER.info("{} saved the daily task configuration", player.getGameProfile().getName());
             for (ServerPlayer online : ctx.server().getPlayerList().getPlayers()) {
-                if (online != player && canManage(online)) send(online, DailyTaskConfigService.snapshotJson(), "");
+                if (online == null || online.hasDisconnected()) continue;
+                if (online != player && canManage(online)) send(online, snapshot, "");
                 // Boards refresh immediately so players see new / changed tasks without reopening.
                 LotteryNetwork.sendDailyTaskSnapshot(online, false);
             }
@@ -77,12 +147,10 @@ public final class DailyTaskAdminNetwork {
 
     /** Same rule as the crate editor: OP, or the owner of a singleplayer world; never gate-blocked. */
     public static boolean canManage(ServerPlayer player) {
-        return player != null && (LotteryNetwork.isOp(player)
-                || player.server.isSingleplayerOwner(player.getGameProfile())) && !LotteryNetwork.gateBlocked(player);
+        return AdminAuth.isAuthorizedOp(player);
     }
 
     private static void send(ServerPlayer player, String json, String message) {
-        ConfigS2C payload = new ConfigS2C(json, message);
-        if (ServerPlayNetworking.canSend(player, payload.type())) ServerPlayNetworking.send(player, payload);
+        LotteryNetwork.sendIfSupported(player, new ConfigS2C(json, message));
     }
 }

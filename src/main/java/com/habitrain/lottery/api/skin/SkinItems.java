@@ -9,20 +9,25 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /** Item bindings use registry ids or data-pack tags, never upstream Java item classes. */
 public final class SkinItems {
-    private static final java.util.List<String> TYPES = SkinDefinition.SUPPORTED_TYPES.stream().sorted().toList();
+    private static final List<String> TYPES = SkinDefinition.SUPPORTED_TYPES.stream().sorted().toList();
     /**
      * The {@code habitrain_lottery:skin_items/<type>} tags, created once. They were
      * rebuilt per inventory slot per tick by the server-side skin mirror, i.e. 5
      * {@link TagKey#create} calls per slot per player per tick.
      */
     private static final Map<String, TagKey<Item>> TYPE_TAGS = buildTypeTags();
-    private static final Map<ResourceLocation, String> BINDINGS = new LinkedHashMap<>();
+    /** Copy-on-write immutable snapshot so render/tick lookups in {@link #typeOf} are lock-free. */
+    private static volatile Map<ResourceLocation, String> BINDINGS = Map.of();
+    private static final Map<ResourceLocation, String> BINDING_PROVIDERS = new LinkedHashMap<>();
     /**
      * Vanilla stand-ins used when the data-pack tag lists no installed item, so a preview
      * never degrades to a blank paper icon. The tag stays authoritative whenever it resolves.
@@ -45,12 +50,90 @@ public final class SkinItems {
         return Map.copyOf(tags);
     }
 
-    public static synchronized void bindItem(ResourceLocation item, String type) {
+    public static void bindItem(ResourceLocation item, String type) {
         String canonical = SkinDefinition.normalizeType(type);
-        String previous = BINDINGS.putIfAbsent(java.util.Objects.requireNonNull(item), canonical);
-        if (previous != null && !previous.equals(canonical)) throw new IllegalStateException("Conflicting skin item: " + item);
-        if (previous == null) SkinRegistrationTransaction.changed(BINDINGS, item, null, canonical);
+        Objects.requireNonNull(item, "item");
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            String provider = HabiSkinApi.currentProvider();
+            String previous = BINDINGS.get(item);
+            if (previous != null && !previous.equals(canonical)) {
+                throw new IllegalStateException("Conflicting skin item: " + item);
+            }
+            if (previous == null) {
+                Map<ResourceLocation, String> next = new LinkedHashMap<>(BINDINGS);
+                next.put(item, canonical);
+                BINDINGS = Collections.unmodifiableMap(next);
+                String prevProvider = provider == null
+                        ? BINDING_PROVIDERS.remove(item)
+                        : BINDING_PROVIDERS.put(item, provider);
+                SkinRegistrationTransaction.recordUndo(() -> {
+                    if (canonical.equals(BINDINGS.get(item))) {
+                        Map<ResourceLocation, String> restored = new LinkedHashMap<>(BINDINGS);
+                        restored.remove(item);
+                        BINDINGS = Collections.unmodifiableMap(restored);
+                    }
+                    if (prevProvider == null) {
+                        BINDING_PROVIDERS.remove(item);
+                    } else {
+                        BINDING_PROVIDERS.put(item, prevProvider);
+                    }
+                });
+            } else if (provider != null && !BINDING_PROVIDERS.containsKey(item)) {
+                BINDING_PROVIDERS.put(item, provider);
+                SkinRegistrationTransaction.recordUndo(() -> BINDING_PROVIDERS.remove(item));
+            }
+        }
     }
+
+    static void removeProvider(String providerId) {
+        if (providerId == null) {
+            return;
+        }
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            List<ResourceLocation> owned = new java.util.ArrayList<>();
+            for (Map.Entry<ResourceLocation, String> entry : BINDING_PROVIDERS.entrySet()) {
+                if (providerId.equals(entry.getValue())) {
+                    owned.add(entry.getKey());
+                }
+            }
+            if (owned.isEmpty()) {
+                return;
+            }
+            Map<ResourceLocation, String> next = new LinkedHashMap<>(BINDINGS);
+            for (ResourceLocation item : owned) {
+                String prevType = next.remove(item);
+                String prevProvider = BINDING_PROVIDERS.remove(item);
+                if (prevType != null) {
+                    SkinRegistrationTransaction.recordUndo(() -> {
+                        Map<ResourceLocation, String> restored = new LinkedHashMap<>(BINDINGS);
+                        restored.put(item, prevType);
+                        BINDINGS = Collections.unmodifiableMap(restored);
+                        if (prevProvider != null) {
+                            BINDING_PROVIDERS.put(item, prevProvider);
+                        }
+                    });
+                }
+            }
+            BINDINGS = Collections.unmodifiableMap(next);
+        }
+    }
+
+    static void clearForTest() {
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            BINDINGS = Map.of();
+            BINDING_PROVIDERS.clear();
+        }
+    }
+
+    /** Immutable snapshot of explicitly registered item-to-skin-type bindings in registration order. */
+    public static Map<ResourceLocation, String> bindings() {
+        return BINDINGS;
+    }
+
+    static String boundType(ResourceLocation item) {
+        return item == null ? null : BINDINGS.get(item);
+    }
+
     public static String typeOf(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return null;
         String bound = BINDINGS.get(BuiltInRegistries.ITEM.getKey(stack.getItem()));
@@ -74,6 +157,7 @@ public final class SkinItems {
     public static String entryOf(ItemStack stack) {
         return stack == null || stack.isEmpty() ? null : stack.get(SkinComponents.SKIN);
     }
+
     public static ItemStack preview(String entry) {
         var definition = HabiSkinApi.fromEntry(entry);
         if (definition.isEmpty()) return ItemStack.EMPTY;
@@ -118,7 +202,7 @@ public final class SkinItems {
      * {@code null} when the type has no usable binding. Bindings are kept in
      * registration order so the first extension to bind an item owns the preview base.
      */
-    private static synchronized Item firstBoundItem(String canonicalType) {
+    private static Item firstBoundItem(String canonicalType) {
         for (Map.Entry<ResourceLocation, String> binding : BINDINGS.entrySet()) {
             if (!canonicalType.equals(binding.getValue())) continue;
             Item item = BuiltInRegistries.ITEM.get(binding.getKey());

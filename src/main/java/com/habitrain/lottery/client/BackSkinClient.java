@@ -3,6 +3,7 @@ package com.habitrain.lottery.client;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
 import com.habitrain.lottery.api.skin.client.SkinPreviewContext;
+import com.habitrain.lottery.bridge.DisguiseIdentityBridge;
 import com.habitrain.lottery.client.render.BackSkinLayer;
 import com.habitrain.lottery.skin.BackSkinNetwork;
 import net.fabricmc.api.EnvType;
@@ -41,6 +42,11 @@ public final class BackSkinClient {
             // back/default intentionally resolves to empty, suppressing the worn cosmetic.
             return HabiSkinApi.fromEntry(preview.entry());
         }
-        return HabiSkinApi.find("back", EQUIPPED.get(player.getUUID()));
+        DisguiseIdentityBridge.Resolution identity = DisguiseIdentityBridge.Client.resolve(player);
+        return switch (identity.kind()) {
+            case HIDDEN_ANONYMOUS -> Optional.empty();
+            case DISGUISED_AS -> HabiSkinApi.find("back", EQUIPPED.get(identity.targetUuid()));
+            case SELF -> HabiSkinApi.find("back", EQUIPPED.get(player.getUUID()));
+        };
     }
 }

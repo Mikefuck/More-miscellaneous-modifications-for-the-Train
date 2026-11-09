@@ -2,6 +2,7 @@ package com.habitrain.lottery.crate;
 
 import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
+import com.habitrain.lottery.PlayerStateGate;
 import com.habitrain.lottery.api.player.HabiSystemItemApi;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
@@ -9,20 +10,21 @@ import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
 import com.habitrain.lottery.backpack.PlayerCardAdminModels.CardStoreStatus;
 import com.habitrain.lottery.backpack.PlayerCardAdminService;
+import com.habitrain.lottery.card.ServerMatchGate;
 import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.time.LotteryDayClock;
 import com.habitrain.lottery.warehouse.SystemItemBalances;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -115,6 +117,8 @@ public final class CrateService {
     public static final class PendingOpen {
         /** 0 = legacy balance inference; 1 = backpack rewards and receipt committed together. */
         public int rewardProtocol;
+        /** True once crate and key have been pre-debited in PlayerLotteryStore (B-04). */
+        public boolean debited;
         public String openId, playerId, crateId, keyId;
         public String weekKey, monthKey, primaryQualityId;
         public List<Reward> rewards = new ArrayList<>();
@@ -199,7 +203,7 @@ public final class CrateService {
     }
 
     public static synchronized void onServerStarted() {
-        CrateCatalog.reset();
+        CrateCatalog.resetServer();
         state = new State();
         if (WorldLotteryPaths.ready()) {
             var load = AtomicJsonFiles.readJson(WorldLotteryPaths.configFile(STATE_FILE), State.class, GSON);
@@ -215,7 +219,7 @@ public final class CrateService {
         } catch (RuntimeException error) {
             ready = false;
             state = new State();
-            CrateCatalog.reset();
+            CrateCatalog.resetServer();
             refreshDefinitions();
             HabiLotteryMod.LOGGER.error("Invalid crate config; opening is disabled to preserve the saved file", error);
             return;
@@ -236,7 +240,7 @@ public final class CrateService {
         if (ready) saveState();
         ready = false;
         state = new State();
-        CrateCatalog.reset();
+        CrateCatalog.resetServer();
         refreshDefinitions();
     }
 
@@ -244,7 +248,7 @@ public final class CrateService {
         if (state == null) state = new State();
         boolean migrateRewards = state.schemaVersion < 4;
         boolean migrateOutput = state.schemaVersion < 5;
-        CrateOutputQuota.resetWindows(state, LocalDate.now(ZoneOffset.UTC));
+        CrateOutputQuota.resetWindows(state, LotteryDayClock.today());
         if (state.weeklyCaps == null) state.weeklyCaps = new LinkedHashMap<>();
         if (state.monthlyCaps == null) state.monthlyCaps = new LinkedHashMap<>();
         if (state.weeklyUsed == null) state.weeklyUsed = new LinkedHashMap<>();
@@ -354,7 +358,7 @@ public final class CrateService {
                             quality, builtin != null && builtin.prism()), pool)));
         });
         else entries.addAll(CrateCatalog.builtins());
-        CrateCatalog.replaceEntries(entries);
+        CrateCatalog.replaceServerEntries(entries);
         DEFINITIONS.clear();
         Map<String, HabiSystemItemApi.Definition> items = new LinkedHashMap<>();
         for (CrateCatalog.Entry entry : entries) {
@@ -422,11 +426,13 @@ public final class CrateService {
     public static synchronized void acceptCatalogJson(String json) {
         CrateCatalog.Entry[] entries = GSON.fromJson(json, CrateCatalog.Entry[].class);
         if (entries == null) return;
-        CrateCatalog.replaceEntries(List.of(entries));
-        DEFINITIONS.clear();
-        for (CrateCatalog.Entry entry : CrateCatalog.entries()) DEFINITIONS.put(entry.id(),
-                new Definition(entry.id(), entry.nameKey(), entry.keyId(), entry.icon(),
-                        entry.color(), entry.primary(), entry.prism()));
+        CrateCatalog.replaceClientEntries(List.of(entries));
+        if (!ready && !WorldLotteryPaths.ready()) {
+            DEFINITIONS.clear();
+            for (CrateCatalog.Entry entry : CrateCatalog.entries()) DEFINITIONS.put(entry.id(),
+                    new Definition(entry.id(), entry.nameKey(), entry.keyId(), entry.icon(),
+                            entry.color(), entry.primary(), entry.prism()));
+        }
     }
 
     public static synchronized boolean applyConfigJson(String json) {
@@ -519,9 +525,22 @@ public final class CrateService {
         ResourceLocation crateIcon = ResourceLocation.parse(pool.icon);
         ResourceLocation keyIcon = ResourceLocation.parse(pool.keyIcon);
         if (!pool.icon.contains(":") || !pool.keyIcon.contains(":")
-                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(crateIcon)
-                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(keyIcon))
+                || !isRegisteredItemOrUnbootstrapped(crateIcon)
+                || !isRegisteredItemOrUnbootstrapped(keyIcon))
             throw new IllegalArgumentException("invalid icon id");
+    }
+
+    private static boolean isRegisteredItemOrUnbootstrapped(ResourceLocation id) {
+        if (id == null) return false;
+        if (HabiLotteryMod.getServer() == null) {
+            try {
+                var items = net.minecraft.core.registries.BuiltInRegistries.ITEM;
+                return items.keySet().isEmpty() || items.containsKey(id);
+            } catch (Throwable unbootstrapped) {
+                return true;
+            }
+        }
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id);
     }
 
     private static void validatePool(Definition definition, CratePool pool) {
@@ -619,35 +638,60 @@ public final class CrateService {
         String canonicalCrate = catalogEntry == null ? "" : catalogEntry.id();
         String canonicalKey = keyId == null ? "" : keyId.trim().toLowerCase(Locale.ROOT);
         if (!ready || player == null) return fail(canonicalCrate, canonicalKey, "crates.not_ready");
+        return openForAccount(player.getUUID(), player, crateId, keyId, openId);
+    }
+
+    static synchronized OpenResult openForAccount(
+            UUID uuid, ServerPlayer online, String crateId, String keyId, String openId) {
+        CrateCatalog.Entry catalogEntry = CrateCatalog.find(crateId);
+        String canonicalCrate = catalogEntry == null ? "" : catalogEntry.id();
+        String canonicalKey = keyId == null ? "" : keyId.trim().toLowerCase(Locale.ROOT);
+        if (!ready || uuid == null || !WorldLotteryPaths.ready()) {
+            return fail(canonicalCrate, canonicalKey, "crates.not_ready");
+        }
+        if (ServerMatchGate.hasActiveMatch(online)) {
+            return fail(canonicalCrate, canonicalKey, "crates.in_match");
+        }
+        if (online != null && PlayerStateGate.spectatorRestOrDead(online)) {
+            return fail(canonicalCrate, canonicalKey, "crates.unavailable");
+        }
         try { UUID.fromString(openId); }
         catch (RuntimeException error) { return fail(canonicalCrate, canonicalKey, "crates.invalid_request"); }
         PlayerLotteryStore store = PlayerLotteryStore.get();
-        PlayerLotteryData current = store.getOrLoad(player.getUUID());
-        if (store.isLoadFailed(player.getUUID())) return fail(canonicalCrate, canonicalKey, "crates.write_failed");
+        if (store.isFlushDeferred()) return fail(canonicalCrate, canonicalKey, "crates.write_failed");
+        PlayerLotteryData current = store.getOrLoad(uuid);
+        if (store.isLoadFailed(uuid)) return fail(canonicalCrate, canonicalKey, "crates.write_failed");
         String existing = current.crateReceipts.get(openId);
         if (existing != null) {
             PendingOpen receipt = GSON.fromJson(existing, PendingOpen.class);
-            if (receipt == null || !player.getUUID().toString().equals(receipt.playerId)
+            if (receipt == null || !uuid.toString().equals(receipt.playerId)
                     || !canonicalCrate.equals(receipt.crateId) || !canonicalKey.equals(receipt.keyId))
                 return fail(canonicalCrate, canonicalKey, "crates.invalid_request");
-            if (state.pendingOpens.containsKey(openId)) return finishPending(state.pendingOpens.get(openId), player);
+            if (state.pendingOpens.containsKey(openId)) return finishPending(state.pendingOpens.get(openId), online);
             return resultFor(receipt);
         }
         if (state.pendingOpens.containsKey(openId)) {
             PendingOpen pending = state.pendingOpens.get(openId);
-            if (!player.getUUID().toString().equals(pending.playerId)
+            if (!uuid.toString().equals(pending.playerId)
                     || !canonicalCrate.equals(pending.crateId) || !canonicalKey.equals(pending.keyId))
                 return fail(canonicalCrate, canonicalKey, "crates.invalid_request");
-            return finishPending(pending, player);
+            return finishPending(pending, online);
         }
         if (current.crateOpenHistory.contains(openId))
             return fail(canonicalCrate, canonicalKey, "crates.replay_expired");
         for (PendingOpen pending : List.copyOf(state.pendingOpens.values())) {
-            if (player.getUUID().toString().equals(pending.playerId)) {
-                OpenResult recovered = finishPending(pending, player);
-                return pending.crateId.equals(canonicalCrate) && pending.keyId.equals(canonicalKey)
-                        ? recovered : fail(canonicalCrate, canonicalKey,
-                        recovered.success() ? "crates.previous_recovered" : "crates.pending");
+            if (uuid.toString().equals(pending.playerId)) {
+                OpenResult recovered = finishPending(pending, online);
+                if (state.pendingOpens.containsKey(pending.openId)) {
+                    return fail(canonicalCrate, canonicalKey, "crates.pending");
+                }
+                if (recovered.success()) {
+                    return pending.crateId.equals(canonicalCrate) && pending.keyId.equals(canonicalKey)
+                            ? recovered : fail(canonicalCrate, canonicalKey, "crates.previous_recovered");
+                }
+                // Unfulfillable legacy pending open was dropped; reload current player data and continue.
+                current = store.getOrLoad(uuid);
+                if (store.isLoadFailed(uuid)) return fail(canonicalCrate, canonicalKey, "crates.write_failed");
             }
         }
         Definition definition = DEFINITIONS.get(canonicalCrate);
@@ -659,7 +703,8 @@ public final class CrateService {
         if (pool == null || !pool.enabled) return fail(canonicalCrate, canonicalKey, "crates.disabled");
         if (pool.rollCount < 1 || pool.rollCount > 10 || pool.skinDrawCount < 0 || pool.skinDrawCount > 10)
             return fail(canonicalCrate, canonicalKey, "crates.disabled");
-        int crateCount = current.systemItems.getOrDefault(crateItemId(canonicalCrate), 0);
+        String crateItem = crateItemId(canonicalCrate);
+        int crateCount = current.systemItems.getOrDefault(crateItem, 0);
         int keyCount = current.systemItems.getOrDefault(canonicalKey, 0);
         if (crateCount <= 0 || keyCount <= 0) return fail(canonicalCrate, canonicalKey, "crates.missing_items");
         List<WeightedSkin> skins = eligibleSkins(definition);
@@ -674,7 +719,7 @@ public final class CrateService {
         int guaranteed = "unified_pool".equals(pool.rewardMode) ? pool.minimumSkinCount : pool.skinDrawCount;
         if (guaranteed > 0 && skins.isEmpty()) return fail(canonicalCrate, canonicalKey, "crates.no_skins");
         for (int i = 0; i < guaranteed; i++) {
-            WeightedSkin picked = choose(skins, player, pool, stagedSkins, outputBudget, stagedOutput);
+            WeightedSkin picked = choose(skins, uuid, pool, stagedSkins, outputBudget, stagedOutput);
             if (picked == null) return fail(canonicalCrate, canonicalKey, "crates.quota_reached");
             addSkinReward(rewards, stagedSkins, stagedWeekly, stagedMonthly, picked.skin());
             stagedOutput.merge(picked.skin().quality().id(), 1L, Long::sum);
@@ -684,13 +729,12 @@ public final class CrateService {
                 WeightedSkin picked = null;
                 ExtraReward extra = null;
                 long total = 0;
-                List<WeightedSkin> available = availableSkins(skins, player, pool, stagedSkins, outputBudget, stagedOutput);
+                List<WeightedSkin> available = availableSkins(skins, uuid, pool, stagedSkins, outputBudget, stagedOutput);
                 for (WeightedSkin skin : available) total += skin.weight();
                 for (int j = 0; j < pool.extraRewards.size(); j++) {
                     ExtraReward reward = pool.extraRewards.get(j);
                     if (reward.weight > 0 && outputBudget.get(SkinQuality.WHITE).allows(stagedOutput.getOrDefault("white", 0L), reward.amount)
-                            && extraEligible(reward, stagedExtras.getOrDefault(String.valueOf(j), 0), current,
-                            player.getUUID()))
+                            && extraEligible(reward, stagedExtras.getOrDefault(String.valueOf(j), 0), current, uuid, online))
                         total += reward.weight;
                 }
                 if (total <= 0) return fail(canonicalCrate, canonicalKey, "crates.output_unavailable");
@@ -707,7 +751,7 @@ public final class CrateService {
                     ExtraReward candidate = pool.extraRewards.get(j);
                     if (candidate.weight <= 0 || !outputBudget.get(SkinQuality.WHITE).allows(stagedOutput.getOrDefault("white", 0L), candidate.amount)
                             || !extraEligible(candidate,
-                            stagedExtras.getOrDefault(String.valueOf(j), 0), current, player.getUUID())) continue;
+                            stagedExtras.getOrDefault(String.valueOf(j), 0), current, uuid, online)) continue;
                     roll -= candidate.weight;
                     if (roll < 0) { extra = candidate; stagedExtras.merge(String.valueOf(j), 1, Integer::sum); break; }
                 }
@@ -732,27 +776,30 @@ public final class CrateService {
                 if ("card".equals(reward.kind())) cardAmounts.merge(reward.id(), reward.amount(), Math::addExact);
             }
             Math.addExact(current.greenApples, apples);
-            if (!cardAmounts.isEmpty() && (PlayerCardAdminService.snapshotOnline(player).status() == CardStoreStatus.CORRUPT
-                    || LocalBackpackStore.loadResult(player.getUUID()).corrupt()))
-                return fail(canonicalCrate, canonicalKey, "crates.card_unavailable");
+            if (!cardAmounts.isEmpty()) {
+                boolean cardStoreCorrupt = (online != null
+                        && PlayerCardAdminService.snapshotOnline(online).status() == CardStoreStatus.CORRUPT)
+                        || LocalBackpackStore.loadResult(uuid).corrupt();
+                if (cardStoreCorrupt) return fail(canonicalCrate, canonicalKey, "crates.card_unavailable");
+            }
             for (Map.Entry<String, Integer> entry : cardAmounts.entrySet()) {
                 var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(entry.getKey());
-                int count = com.habitrain.lottery.api.player.HabiCardApi.get(player.getUUID(), kind);
+                int count = cardBalance(uuid, online, kind);
                 if (entry.getValue() > com.habitrain.lottery.api.player.HabiCardApi.MAX_DELTA
                         || Math.addExact(count, entry.getValue()) > com.habitrain.lottery.api.player.HabiCardApi.MAX_BALANCE)
                     return fail(canonicalCrate, canonicalKey, "crates.card_full");
             }
         } catch (ArithmeticException error) { return fail(canonicalCrate, canonicalKey, "crates.reward_overflow"); }
         Map<String, Integer> cardsBefore = new LinkedHashMap<>();
-        for (String id : cardAmounts.keySet()) cardsBefore.put(id, com.habitrain.lottery.api.player.HabiCardApi.get(
-                player.getUUID(), com.habitrain.lottery.api.player.HabiCardKind.parse(id)));
+        for (String id : cardAmounts.keySet()) cardsBefore.put(id, cardBalance(
+                uuid, online, com.habitrain.lottery.api.player.HabiCardKind.parse(id)));
         if (state.pendingOpens.size() >= 1024) return fail(canonicalCrate, canonicalKey, "crates.pending");
-        if (!cardAmounts.isEmpty() && !LocalBackpackStore.prepareOnline(player))
+        if (!cardAmounts.isEmpty() && online != null && !LocalBackpackStore.prepareOnline(online))
             return fail(canonicalCrate, canonicalKey, "crates.card_unavailable");
         PendingOpen pending = new PendingOpen();
         pending.rewardProtocol = 1;
         pending.openId = openId;
-        pending.playerId = player.getUUID().toString();
+        pending.playerId = uuid.toString();
         pending.crateId = canonicalCrate; pending.keyId = canonicalKey;
         pending.weekKey = state.weekKey; pending.monthKey = state.monthKey;
         Reward primary = rewards.stream().filter(r -> "skin".equals(r.kind())).findFirst().orElse(rewards.get(0));
@@ -765,30 +812,60 @@ public final class CrateService {
         pending.monthlyDelta = stagedMonthly;
         pending.outputDelta = stagedOutput;
         pending.apples = apples;
-        com.habitrain.lottery.daily.config.DailyTaskTracker.prepareCrateProgress(player, pending);
+        if (online != null) {
+            com.habitrain.lottery.daily.config.DailyTaskTracker.prepareCrateProgress(online, pending);
+        } else {
+            pending.taskEpochDay = LotteryDayClock.todayEpochDay();
+        }
+        // Publish the complete recovery plan BEFORE charging. A debit token alone cannot
+        // reconstruct the crate, key or rolled rewards after a process crash.
         state.pendingOpens.put(openId, pending);
         if (!saveState()) {
             state.pendingOpens.remove(openId);
             return fail(canonicalCrate, canonicalKey, "crates.write_failed");
         }
-        return finishPending(pending, player);
+        return finishPending(pending, online);
     }
 
-    private static OpenResult finishPending(PendingOpen pending, ServerPlayer online) {
+    static synchronized OpenResult finishPending(PendingOpen pending, ServerPlayer online) {
         if (pending == null || pending.openId == null || pending.rewards == null || pending.rewards.isEmpty())
             return fail("", "", "crates.invalid_request");
-        CrateOutputQuota.resetWindows(state, LocalDate.now(ZoneOffset.UTC));
+        CrateOutputQuota.resetWindows(state, LotteryDayClock.today());
         UUID uuid;
         try { uuid = UUID.fromString(pending.playerId); }
         catch (RuntimeException error) { return fail(pending.crateId, pending.keyId, "crates.invalid_request"); }
         PlayerLotteryStore store = PlayerLotteryStore.get();
         PlayerLotteryData current = store.getOrLoad(uuid);
         if (store.isLoadFailed(uuid)) return fail(pending.crateId, pending.keyId, "crates.pending");
+        boolean alreadyCommittedPlayer = current.crateOpenHistory != null
+                && current.crateOpenHistory.contains(pending.openId);
+        boolean wasPreDebited = pending.debited
+                || (current.pendingCrateDebits != null && current.pendingCrateDebits.contains(pending.openId));
+        if (!alreadyCommittedPlayer && !wasPreDebited) {
+            int haveCrate = current.systemItems == null
+                    ? 0 : current.systemItems.getOrDefault(crateItemId(pending.crateId), 0);
+            int haveKey = current.systemItems == null
+                    ? 0 : current.systemItems.getOrDefault(pending.keyId, 0);
+            if (haveCrate <= 0 || haveKey <= 0) {
+                if (state.pendingOpens.containsKey(pending.openId)) {
+                    State snapshot = copyState(state);
+                    state.pendingOpens.remove(pending.openId);
+                    if (!saveState()) {
+                        state = snapshot;
+                        return fail(pending.crateId, pending.keyId, "crates.pending");
+                    }
+                }
+                HabiLotteryMod.LOGGER.warn(
+                        "Dropped unfulfillable legacy pending crate open {} for {} (crate={}, key={}) and released reserved quota",
+                        pending.openId, uuid, haveCrate, haveKey);
+                return fail(pending.crateId, pending.keyId, "crates.missing_items");
+            }
+        }
         Map<String, Integer> amounts = new LinkedHashMap<>();
         try {
             for (Reward reward : pending.rewards) if ("card".equals(reward.kind()))
                 amounts.merge(reward.id(), reward.amount(), Math::addExact);
-            if (!current.crateOpenHistory.contains(pending.openId) && !amounts.isEmpty()) {
+            if (!alreadyCommittedPlayer && !amounts.isEmpty()) {
                 // Old in-flight operations have no durable card receipt. Current balances cannot
                 // distinguish an undelivered card from a delivered card the player already used.
                 if (pending.rewardProtocol != 1) {
@@ -796,15 +873,40 @@ public final class CrateService {
                             pending.openId, uuid);
                     return fail(pending.crateId, pending.keyId, "crates.pending");
                 }
+            }
+            // The account atomically owns both the charge and its token before any
+            // cross-file card reward. Retries use the token even if the state file
+            // still contains debited=false after a crash.
+            if (!alreadyCommittedPlayer && !wasPreDebited) {
+                if (!store.applyToPlayerWithRollback(uuid, data -> {
+                    if (data.systemItems == null) data.systemItems = new LinkedHashMap<>();
+                    if (!SystemItemBalances.change(data.systemItems, crateItemId(pending.crateId), -1)
+                            || !SystemItemBalances.change(data.systemItems, pending.keyId, -1)) {
+                        throw new IllegalStateException("missing crate/key for pre-debit");
+                    }
+                    if (data.pendingCrateDebits == null) data.pendingCrateDebits = new LinkedHashSet<>();
+                    data.pendingCrateDebits.add(pending.openId);
+                })) return fail(pending.crateId, pending.keyId, "crates.pending");
+                pending.debited = true;
+            }
+            if (!alreadyCommittedPlayer && !amounts.isEmpty()) {
                 if (!grantCardsOnce(uuid, pending.openId, amounts))
                     return fail(pending.crateId, pending.keyId, "crates.pending");
                 if (online != null) LocalBackpackStore.syncCommitted(online);
             }
-            if (!current.crateOpenHistory.contains(pending.openId)) {
+            if (!alreadyCommittedPlayer) {
                 boolean saved = store.applyToPlayerWithRollback(uuid, data -> {
-                    if (!SystemItemBalances.change(data.systemItems, crateItemId(pending.crateId), -1)
-                            || !SystemItemBalances.change(data.systemItems, pending.keyId, -1))
-                        throw new IllegalStateException("missing crate/key for pending open");
+                    boolean debitedAlready = pending.debited
+                            || (data.pendingCrateDebits != null && data.pendingCrateDebits.contains(pending.openId));
+                    if (!debitedAlready) {
+                        if (data.systemItems == null) data.systemItems = new LinkedHashMap<>();
+                        if (!SystemItemBalances.change(data.systemItems, crateItemId(pending.crateId), -1)
+                                || !SystemItemBalances.change(data.systemItems, pending.keyId, -1))
+                            throw new IllegalStateException("missing crate/key for pending open");
+                    }
+                    if (data.pendingCrateDebits != null) {
+                        data.pendingCrateDebits.remove(pending.openId);
+                    }
                     data.greenApples = Math.addExact(data.greenApples, pending.apples);
                     for (Reward reward : pending.rewards) if ("skin".equals(reward.kind())) {
                         String[] parts = reward.id().split("/", 2);
@@ -824,6 +926,13 @@ public final class CrateService {
                     return fail(pending.crateId, pending.keyId, "crates.pending");
                 }
             } else {
+                if (current.pendingCrateDebits != null && current.pendingCrateDebits.contains(pending.openId)) {
+                    store.applyToPlayerWithRollback(uuid, data -> {
+                        if (data.pendingCrateDebits != null) {
+                            data.pendingCrateDebits.remove(pending.openId);
+                        }
+                    });
+                }
                 PendingOpen receipt = GSON.fromJson(current.crateReceipts.get(pending.openId), PendingOpen.class);
                 pending.inventoryRevision = receipt == null ? current.inventoryRevision : receipt.inventoryRevision;
             }
@@ -869,7 +978,8 @@ public final class CrateService {
         return new Reward(reward.type, "card".equals(reward.type) ? reward.cardKind : "green_apples", reward.amount);
     }
 
-    private static boolean extraEligible(ExtraReward reward, int hits, PlayerLotteryData player, UUID uuid) {
+    private static boolean extraEligible(
+            ExtraReward reward, int hits, PlayerLotteryData player, UUID uuid, ServerPlayer online) {
         if (hits >= reward.maxPerOpen) return false;
         try {
             int total = Math.multiplyExact(reward.amount, hits + 1);
@@ -879,9 +989,21 @@ public final class CrateService {
             }
             var kind = com.habitrain.lottery.api.player.HabiCardKind.parse(reward.cardKind);
             return kind != null && total <= com.habitrain.lottery.api.player.HabiCardApi.MAX_DELTA
-                    && Math.addExact(com.habitrain.lottery.api.player.HabiCardApi.get(uuid, kind), total)
+                    && Math.addExact(cardBalance(uuid, online, kind), total)
                     <= com.habitrain.lottery.api.player.HabiCardApi.MAX_BALANCE;
         } catch (ArithmeticException error) { return false; }
+    }
+
+    private static int cardBalance(
+            UUID uuid, ServerPlayer online, com.habitrain.lottery.api.player.HabiCardKind kind) {
+        if (uuid == null || kind == null) return 0;
+        var snapshot = online != null
+                ? PlayerCardAdminService.snapshotOnline(online)
+                : PlayerCardAdminService.snapshotOffline(uuid);
+        if (snapshot.status() == CardStoreStatus.CORRUPT || snapshot.cards() == null) return 0;
+        Integer value = snapshot.cards().get(kind.id());
+        if (value == null) value = snapshot.cards().get(kind.id().toLowerCase(Locale.ROOT));
+        return value == null ? 0 : Math.max(0, value);
     }
 
     private static void addSkinReward(List<Reward> rewards, Map<String, Integer> stagedSkins,
@@ -948,7 +1070,7 @@ public final class CrateService {
         return exact;
     }
 
-    private static List<WeightedSkin> availableSkins(List<WeightedSkin> skins, ServerPlayer player, CratePool pool,
+    private static List<WeightedSkin> availableSkins(List<WeightedSkin> skins, UUID playerUuid, CratePool pool,
                                                      Map<String, Integer> stagedSkins,
                                                      Map<SkinQuality, CrateOutputQuota.Progress> outputBudget,
                                                      Map<String, Long> stagedOutput) {
@@ -957,19 +1079,20 @@ public final class CrateService {
             return (pool.allowSameSkinInOneOpen || stagedSkins.getOrDefault(key, 0) == 0)
                     && outputBudget.get(s.skin().quality()).allows(stagedOutput.getOrDefault(s.skin().quality().id(), 0L), 1);
         }).toList();
-        if (pool.duplicateProtection && player != null) {
+        if (pool.duplicateProtection && playerUuid != null) {
             List<WeightedSkin> fresh = available.stream()
-                    .filter(s -> !PlayerLotteryStore.get().isSkinUnlocked(player.getUUID(), s.skin().type(), s.skin().id()))
+                    .filter(s -> stagedSkins.getOrDefault(skinKey(s.skin()), 0) == 0
+                            && !PlayerLotteryStore.get().isSkinUnlocked(playerUuid, s.skin().type(), s.skin().id()))
                     .toList();
             if (!fresh.isEmpty()) available = fresh;
         }
         return available;
     }
 
-    private static WeightedSkin choose(List<WeightedSkin> skins, ServerPlayer player, CratePool pool,
+    private static WeightedSkin choose(List<WeightedSkin> skins, UUID playerUuid, CratePool pool,
                                        Map<String, Integer> stagedSkins,
                                        Map<SkinQuality, CrateOutputQuota.Progress> outputBudget, Map<String, Long> stagedOutput) {
-        List<WeightedSkin> available = availableSkins(skins, player, pool, stagedSkins, outputBudget, stagedOutput);
+        List<WeightedSkin> available = availableSkins(skins, playerUuid, pool, stagedSkins, outputBudget, stagedOutput);
         if (available.isEmpty()) return null;
         long total = available.stream().mapToLong(WeightedSkin::weight).sum();
         if (total <= 0) return null;
@@ -979,6 +1102,21 @@ public final class CrateService {
             if (pick < 0) return candidate;
         }
         return available.get(available.size() - 1);
+    }
+
+    static synchronized void configurePoolForTest(String crateId, CratePool pool) {
+        state.crates.put(crateId, copyPool(pool));
+        refreshDefinitions();
+        saveState();
+    }
+
+    static synchronized void putPendingOpenForTest(PendingOpen pending) {
+        state.pendingOpens.put(pending.openId, pending);
+        saveState();
+    }
+
+    static synchronized Map<String, PendingOpen> pendingOpensForTest() {
+        return Map.copyOf(state.pendingOpens);
     }
 
     private static State copyState(State source) {

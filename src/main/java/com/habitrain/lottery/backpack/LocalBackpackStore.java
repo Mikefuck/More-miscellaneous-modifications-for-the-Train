@@ -25,6 +25,27 @@ public final class LocalBackpackStore {
 
     public static boolean isApplyingCommitted() { return APPLYING_COMMITTED.get(); }
 
+    /**
+     * Suppresses {@code BackpackManagerMixin#habi$persistAdd} intermediate writes while
+     * replaying an already-committed or batch backpack state onto SRE memory ({@code B-06}).
+     */
+    public static void runWithApplyingCommitted(Runnable action) {
+        if (action == null) {
+            return;
+        }
+        boolean previous = Boolean.TRUE.equals(APPLYING_COMMITTED.get());
+        APPLYING_COMMITTED.set(true);
+        try {
+            action.run();
+        } finally {
+            if (previous) {
+                APPLYING_COMMITTED.set(true);
+            } else {
+                APPLYING_COMMITTED.remove();
+            }
+        }
+    }
+
     /** Seed pre-migration faction balances once, preserving any already saved rewards. */
     public static boolean prepareOnline(net.minecraft.server.level.ServerPlayer player) {
         LoadResult load = loadResult(player.getUUID());
@@ -241,11 +262,9 @@ public final class LocalBackpackStore {
         root.limitBreakCards = existing.ok() ? existing.limitBreakCards() : 0;
         root.rewardReceipts.addAll(existing.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(existing, fromSreMemory);
-        // Audit B-13: the backup flag must be passed explicitly (as
-        // PlayerLotteryStore.saveTo does). Relying on it — or disabling it — is what
-        // made the .bak fallback unable to engage: without a .bak a corrupt card file
-        // can only be quarantined, so every faction-card balance is lost for good.
-        return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), root, GSON, false, true);
+        // Audit B-13 + I-05: pass explicit backup flag, skipping backup overwrite when
+        // repairing from .bak so an un-quarantined corrupt primary cannot clobber .bak.
+        return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), root, GSON, false, !existing.usedBackup());
     }
 
 
@@ -260,7 +279,7 @@ public final class LocalBackpackStore {
         next.selfSelectCards = load.selfSelectCards();
         next.limitBreakCards = load.limitBreakCards();
         next.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
-        next.rewardReceipts.addAll(load.rewardReceipts());
+        next.rewardReceipts.addAll(BackpackReceiptRetirement.retained(uuid, load.rewardReceipts()));
         mutation.accept(next);
         next.rewardReceipts.add(receipt);
         return AtomicJsonFiles.writeJson(MetaFeaturePaths.backpackPlayer(uuid), next, GSON, true, !load.usedBackup());
@@ -270,9 +289,7 @@ public final class LocalBackpackStore {
     public static void syncCommitted(net.minecraft.server.level.ServerPlayer player) {
         LoadResult load = loadResult(player.getUUID());
         if (!load.ok()) return;
-        boolean previous = APPLYING_COMMITTED.get();
-        APPLYING_COMMITTED.set(true);
-        try {
+        runWithApplyingCommitted(() -> {
             var current = io.wifi.starrailexpress.backpack.BackpackManager.getCards(player);
             for (FactionCardType type : FactionCardType.values()) {
                 if (type == FactionCardType.NONE) continue;
@@ -281,9 +298,7 @@ public final class LocalBackpackStore {
                 if (delta != 0) io.wifi.starrailexpress.backpack.BackpackManager.addCard(player, type, delta);
             }
             io.wifi.starrailexpress.backpack.BackpackManager.resend(player);
-        } finally {
-            APPLYING_COMMITTED.set(previous);
-        }
+        });
     }
 
     public static int selfSelectCards(UUID uuid) {
@@ -319,8 +334,8 @@ public final class LocalBackpackStore {
         root.limitBreakCards = (int) target;
         root.rewardReceipts.addAll(load.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
-        // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
-        return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
+        // Audit B-13 + I-05: explicit backup flag, see save(uuid, cards, fromSreMemory).
+        return AtomicJsonFiles.writeJson(path, root, GSON, false, !load.usedBackup());
     }
 
     public static boolean addSelfSelectCards(UUID uuid, int amount) {
@@ -346,8 +361,8 @@ public final class LocalBackpackStore {
         root.limitBreakCards = load.limitBreakCards();
         root.rewardReceipts.addAll(load.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(load, false);
-        // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
-        return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
+        // Audit B-13 + I-05: explicit backup flag, see save(uuid, cards, fromSreMemory).
+        return AtomicJsonFiles.writeJson(path, root, GSON, false, !load.usedBackup());
     }
 
     public static boolean saveTo(Path path, Map<String, Integer> cards) {
@@ -362,8 +377,8 @@ public final class LocalBackpackStore {
         root.limitBreakCards = existing.limitBreakCards();
         root.rewardReceipts.addAll(existing.rewardReceipts());
         root.factionCardsPendingJoin = pendingJoinAfterWrite(existing, false);
-        // Audit B-13: explicit backup flag, see save(uuid, cards, fromSreMemory).
-        return AtomicJsonFiles.writeJson(path, root, GSON, false, true);
+        // Audit B-13 + I-05: explicit backup flag, see save(uuid, cards, fromSreMemory).
+        return AtomicJsonFiles.writeJson(path, root, GSON, false, !existing.usedBackup());
     }
 
     /**

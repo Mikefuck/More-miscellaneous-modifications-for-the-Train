@@ -2,7 +2,7 @@ package com.habitrain.lottery.client.render;
 
 import com.habitrain.lottery.block.LoginCalendarBlock;
 import com.habitrain.lottery.block.LoginCalendarGroup;
-import com.habitrain.lottery.network.LotteryNetwork;
+import com.habitrain.lottery.network.ClientLoginState;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
@@ -19,9 +19,12 @@ import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.locale.Language;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -52,13 +55,16 @@ import java.util.List;
 public final class LoginCalendarWorldRender {
     /** Approximate Minecraft font glyph height in font units. */
     private static final float FONT_PX = 9f;
-    private static final String[] WEEKDAYS = {"一", "二", "三", "四", "五", "六", "日"};
+    private static final String[] WEEKDAY_FALLBACKS = {"一", "二", "三", "四", "五", "六", "日"};
+    private static final String[] CACHED_WEEKDAYS = {"一", "二", "三", "四", "五", "六", "日"};
     private static final String[] DAY_STRINGS = new String[32];
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final List<Long> IN_RANGE = new ArrayList<>();
 
+    private static Language cachedLanguage;
     private static long clockEpochSec = Long.MIN_VALUE;
+    private static String cachedZoneLabel = "";
     private static String cachedTimeLine = "";
     private static String cachedDateTimeLine = "";
     private static int cachedDateYear = Integer.MIN_VALUE;
@@ -85,7 +91,7 @@ public final class LoginCalendarWorldRender {
      */
     private static final float PANEL_Z = 0.001f;
     private static final float DECOR_Z = 0.004f;
-    /** Extra Z for text over the panel. */
+    /** Extra Z for text over the panel (0.008f above DECOR_Z to prevent Z-fighting under POLYGON_OFFSET). */
     private static final float TEXT_Z_OFFSET = 0.012f;
 
     // Full-UV layout constants
@@ -119,6 +125,7 @@ public final class LoginCalendarWorldRender {
         if (level == null || mc.player == null || ctx.matrixStack() == null) {
             return;
         }
+        LoginCalendarIndex.syncLevel(level);
         BlockPos playerPos = mc.player.blockPosition();
         PoseStack pose = ctx.matrixStack();
         Vec3 cam = ctx.camera().getPosition();
@@ -137,14 +144,16 @@ public final class LoginCalendarWorldRender {
         int today;
         int streak;
         int mask;
-        if (LotteryNetwork.ClientLoginState.hasData) {
-            year = LotteryNetwork.ClientLoginState.year;
-            month = LotteryNetwork.ClientLoginState.month;
-            today = LotteryNetwork.ClientLoginState.dayOfMonth;
-            streak = LotteryNetwork.ClientLoginState.streak;
-            mask = LotteryNetwork.ClientLoginState.loginDaysMask;
+        if (ClientLoginState.hasData) {
+            year = ClientLoginState.year;
+            month = ClientLoginState.month;
+            today = ClientLoginState.dayOfMonth;
+            streak = ClientLoginState.streak;
+            mask = ClientLoginState.loginDaysMask;
         } else {
-            LocalDate now = LocalDate.now(ZoneOffset.UTC);
+            java.time.ZoneId zone = com.habitrain.lottery.time.LotteryDayClock.parseZoneOrUtc(
+                    ClientLoginState.resetZoneId);
+            LocalDate now = LocalDate.now(zone);
             year = now.getYear();
             month = now.getMonthValue();
             today = now.getDayOfMonth();
@@ -184,9 +193,10 @@ public final class LoginCalendarWorldRender {
                     LoginCalendarIndex.removePacked(packed);
                     continue;
                 }
-                any = true;
-                renderOne(level, cursor.immutable(), state, pose, buffer, textBuffers, cam,
-                        today, mask, daysInMonth, firstDow, font);
+                if (renderOne(level, cursor.immutable(), state, pose, buffer, textBuffers, cam,
+                        today, mask, daysInMonth, firstDow, font)) {
+                    any = true;
+                }
             }
             if (any) {
                 BufferUploader.drawWithShader(buffer.buildOrThrow());
@@ -217,12 +227,28 @@ public final class LoginCalendarWorldRender {
 
     /** Header clock uses UTC so it matches login settle / S2C day cells. */
     private static void refreshClockStrings(int year, int month, int streak) {
+        Language lang = Language.getInstance();
+        if (lang != cachedLanguage) {
+            cachedLanguage = lang;
+            for (int i = 0; i < 7; i++) {
+                CACHED_WEEKDAYS[i] = Component.translatableWithFallback(
+                        "block.habitrain_lottery.login_calendar.weekday." + (i + 1),
+                        WEEKDAY_FALLBACKS[i]).getString();
+            }
+            cachedStreak = Integer.MIN_VALUE;
+        }
         long epochSec = System.currentTimeMillis() / 1000L;
-        if (epochSec != clockEpochSec) {
+        String zoneLabel = ClientLoginState.resetZoneId == null
+                || ClientLoginState.resetZoneId.isBlank()
+                ? "UTC"
+                : ClientLoginState.resetZoneId;
+        if (epochSec != clockEpochSec || !zoneLabel.equals(cachedZoneLabel)) {
             clockEpochSec = epochSec;
-            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-            cachedTimeLine = now.format(TIME_FMT) + " UTC";
-            cachedDateTimeLine = now.format(DATE_TIME_FMT) + " UTC";
+            cachedZoneLabel = zoneLabel;
+            java.time.ZoneId zone = com.habitrain.lottery.time.LotteryDayClock.parseZoneOrUtc(zoneLabel);
+            LocalDateTime now = LocalDateTime.now(zone);
+            cachedTimeLine = now.format(TIME_FMT) + " " + zone.getId();
+            cachedDateTimeLine = now.format(DATE_TIME_FMT) + " " + zone.getId();
         }
         if (year != cachedDateYear || month != cachedDateMonth) {
             cachedDateYear = year;
@@ -231,102 +257,121 @@ public final class LoginCalendarWorldRender {
         }
         if (streak != cachedStreak) {
             cachedStreak = streak;
-            cachedStreakText = "连登" + streak;
+            cachedStreakText = Component.translatableWithFallback(
+                    "block.habitrain_lottery.login_calendar.streak",
+                    "连登%s",
+                    streak).getString();
         }
     }
 
-    private static void renderOne(
+    private static boolean renderOne(
             Level level, BlockPos pos, BlockState state,
             PoseStack pose, BufferBuilder buffer, MultiBufferSource textBuffers, Vec3 cam,
             int today, int mask, int daysInMonth, int firstDow, Font font
     ) {
-        LoginCalendarGroup group = LoginCalendarGroup.resolve(level, pos, state);
         Direction facing = state.getValue(LoginCalendarBlock.FACING);
 
+        // Backface culling: skip rendering when the camera is behind or edge-on to the display face.
+        double faceX = pos.getX() + 0.5 + facing.getStepX() * 0.5;
+        double faceY = pos.getY() + 0.5 + facing.getStepY() * 0.5;
+        double faceZ = pos.getZ() + 0.5 + facing.getStepZ() * 0.5;
+        double dot = (cam.x - faceX) * facing.getStepX()
+                + (cam.y - faceY) * facing.getStepY()
+                + (cam.z - faceZ) * facing.getStepZ();
+        if (dot <= 0.0) {
+            return false;
+        }
+
+        LoginCalendarGroup group = LoginCalendarGroup.resolve(level, pos, state);
+        int packedLight = LevelRenderer.getLightColor(level, pos.relative(facing));
+
         pose.pushPose();
-        pose.translate(pos.getX() - cam.x, pos.getY() - cam.y, pos.getZ() - cam.z);
-        pose.translate(0.5, 0.5, 0.5);
-        switch (facing) {
-            case NORTH -> pose.mulPose(Axis.YP.rotationDegrees(180));
-            case SOUTH -> {
+        try {
+            pose.translate(pos.getX() - cam.x, pos.getY() - cam.y, pos.getZ() - cam.z);
+            pose.translate(0.5, 0.5, 0.5);
+            switch (facing) {
+                case NORTH -> pose.mulPose(Axis.YP.rotationDegrees(180));
+                case SOUTH -> {
+                }
+                case WEST -> pose.mulPose(Axis.YP.rotationDegrees(90));
+                case EAST -> pose.mulPose(Axis.YP.rotationDegrees(-90));
+                default -> {
+                }
             }
-            case WEST -> pose.mulPose(Axis.YP.rotationDegrees(90));
-            case EAST -> pose.mulPose(Axis.YP.rotationDegrees(-90));
-            default -> {
+            // Push whole panel slightly off the block face.
+            pose.translate(0, 0, FACE_Z_OFFSET);
+
+            float u0 = (float) group.localU / group.sizeU;
+            float v0 = (float) group.localV / group.sizeV;
+            float u1 = (float) (group.localU + 1) / group.sizeU;
+            float v1 = (float) (group.localV + 1) / group.sizeV;
+
+            Matrix4f m = pose.last().pose();
+
+            // Full-tile dark panel. Use full face extent so motion doesn't expose coplanar
+            // block-face edges that cause the gray decorations to flash.
+            quad(buffer, m, -0.5f, -0.5f, 0.5f, 0.5f, 0xFF0A0A0A, PANEL_Z);
+
+            // Header band background — raised above the dark panel to avoid z-fighting.
+            fillUv(buffer, m, 0.02f, 0.015f, 0.98f, 0.155f, 0xFF161616, u0, v0, u1, v1, DECOR_Z);
+
+            // Line 1: full date-time (left) — this is the "current time" display
+            drawTextUv(pose, textBuffers, font, cachedDateTimeLine,
+                    0.05f, HEADER_Y1, 0.042f, false,
+                    group, u0, v0, u1, v1, 0xFFFFFF, packedLight);
+            // Line 2: month label left-ish, streak right
+            drawTextUv(pose, textBuffers, font, cachedDateLine,
+                    0.05f, HEADER_Y2, 0.034f, false,
+                    group, u0, v0, u1, v1, 0xAAAAAA, packedLight);
+            drawTextUv(pose, textBuffers, font, cachedStreakText,
+                    0.95f, HEADER_Y2, 0.034f, true,
+                    group, u0, v0, u1, v1, 0xFFD700, packedLight);
+            // Also put big clock on the right of line 1 for multi-tile walls
+            drawTextUv(pose, textBuffers, font, cachedTimeLine,
+                    0.95f, HEADER_Y1, 0.042f, true,
+                    group, u0, v0, u1, v1, 0x7CFF7C, packedLight);
+
+            // Weekday labels
+            float cellW = (GRID_RIGHT - GRID_LEFT) / 7f;
+            for (int col = 0; col < 7; col++) {
+                float cx = GRID_LEFT + col * cellW + cellW * 0.5f;
+                int color = (col == 5 || col == 6) ? 0xFF8888 : 0xCCCCCC; // weekend tint
+                drawTextUv(pose, textBuffers, font, CACHED_WEEKDAYS[col],
+                        cx, WEEKDAY_Y, 0.030f, false,
+                        group, u0, v0, u1, v1, color, packedLight);
             }
-        }
-        // Push whole panel slightly off the block face.
-        pose.translate(0, 0, FACE_Z_OFFSET);
 
-        float u0 = (float) group.localU / group.sizeU;
-        float v0 = (float) group.localV / group.sizeV;
-        float u1 = (float) (group.localU + 1) / group.sizeU;
-        float v1 = (float) (group.localV + 1) / group.sizeV;
+            // Date grid
+            float cellH = (GRID_BOTTOM - GRID_TOP) / 6f;
+            for (int d = 1; d <= daysInMonth; d++) {
+                int idx = firstDow + (d - 1);
+                int col = idx % 7;
+                int row = idx / 7;
+                if (row >= 6) {
+                    continue;
+                }
+                float cx0 = GRID_LEFT + col * cellW;
+                float cy0 = GRID_TOP + row * cellH;
+                float cx1 = cx0 + cellW * 0.92f;
+                float cy1 = cy0 + cellH * 0.88f;
+                boolean logged = (mask & (1 << (d - 1))) != 0;
+                boolean isToday = d == today;
+                int bg = isToday ? 0xFF245C24 : (logged ? 0xFF1A3C66 : 0xFF202020);
+                // Cell fills sit on DECOR_Z so they never coplanar-fight the dark panel.
+                fillUv(buffer, m, cx0, cy0, cx1, cy1, bg, u0, v0, u1, v1, DECOR_Z);
 
-        Matrix4f m = pose.last().pose();
-
-        // Full-tile dark panel. Use full face extent so motion doesn't expose coplanar
-        // block-face edges that cause the gray decorations to flash.
-        quad(buffer, m, -0.5f, -0.5f, 0.5f, 0.5f, 0xFF0A0A0A, PANEL_Z);
-
-        // Header band background — raised above the dark panel to avoid z-fighting.
-        fillUv(buffer, m, 0.02f, 0.015f, 0.98f, 0.155f, 0xFF161616, u0, v0, u1, v1, DECOR_Z);
-
-        // Line 1: full date-time (left) — this is the "current time" display
-        drawTextUv(pose, textBuffers, font, cachedDateTimeLine,
-                0.05f, HEADER_Y1, 0.042f, false,
-                group, u0, v0, u1, v1, 0xFFFFFF);
-        // Line 2: month label left-ish, streak right
-        drawTextUv(pose, textBuffers, font, cachedDateLine,
-                0.05f, HEADER_Y2, 0.034f, false,
-                group, u0, v0, u1, v1, 0xAAAAAA);
-        drawTextUv(pose, textBuffers, font, cachedStreakText,
-                0.95f, HEADER_Y2, 0.034f, true,
-                group, u0, v0, u1, v1, 0xFFD700);
-        // Also put big clock on the right of line 1 for multi-tile walls
-        drawTextUv(pose, textBuffers, font, cachedTimeLine,
-                0.95f, HEADER_Y1, 0.042f, true,
-                group, u0, v0, u1, v1, 0x7CFF7C);
-
-        // Weekday labels
-        float cellW = (GRID_RIGHT - GRID_LEFT) / 7f;
-        for (int col = 0; col < 7; col++) {
-            float cx = GRID_LEFT + col * cellW + cellW * 0.5f;
-            int color = (col == 5 || col == 6) ? 0xFF8888 : 0xCCCCCC; // weekend tint
-            drawTextUv(pose, textBuffers, font, WEEKDAYS[col],
-                    cx, WEEKDAY_Y, 0.030f, false,
-                    group, u0, v0, u1, v1, color);
-        }
-
-        // Date grid
-        float cellH = (GRID_BOTTOM - GRID_TOP) / 6f;
-        for (int d = 1; d <= daysInMonth; d++) {
-            int idx = firstDow + (d - 1);
-            int col = idx % 7;
-            int row = idx / 7;
-            if (row >= 6) {
-                continue;
+                // Center the day number in the cell
+                float cx = (cx0 + cx1) * 0.5f;
+                float cy = cy0 + cellH * 0.18f;
+                drawTextUv(pose, textBuffers, font, DAY_STRINGS[d],
+                        cx, cy, 0.038f, false,
+                        group, u0, v0, u1, v1,
+                        isToday ? 0x90FF90 : 0xEEEEEE, packedLight);
             }
-            float cx0 = GRID_LEFT + col * cellW;
-            float cy0 = GRID_TOP + row * cellH;
-            float cx1 = cx0 + cellW * 0.92f;
-            float cy1 = cy0 + cellH * 0.88f;
-            boolean logged = (mask & (1 << (d - 1))) != 0;
-            boolean isToday = d == today;
-            int bg = isToday ? 0xFF245C24 : (logged ? 0xFF1A3C66 : 0xFF202020);
-            // Cell fills sit on DECOR_Z so they never coplanar-fight the dark panel.
-            fillUv(buffer, m, cx0, cy0, cx1, cy1, bg, u0, v0, u1, v1, DECOR_Z);
-
-            // Center the day number in the cell
-            float cx = (cx0 + cx1) * 0.5f;
-            float cy = cy0 + cellH * 0.18f;
-            drawTextUv(pose, textBuffers, font, DAY_STRINGS[d],
-                    cx, cy, 0.038f, false,
-                    group, u0, v0, u1, v1,
-                    isToday ? 0x90FF90 : 0xEEEEEE);
+        } finally {
+            pose.popPose();
         }
-
-        pose.popPose();
+        return true;
     }
 
     private static void quad(BufferBuilder buffer, Matrix4f m, float x0, float y0, float x1, float y1, int argb, float z) {
@@ -375,7 +420,7 @@ public final class LoginCalendarWorldRender {
             PoseStack pose, MultiBufferSource buffers, Font font, String s,
             float cx, float cy, float fullUvHeight, boolean rightAlign,
             LoginCalendarGroup group, float u0, float v0, float u1, float v1,
-            int color
+            int color, int packedLight
     ) {
         // Skip if the text anchor is clearly outside this tile (with small margin)
         float margin = fullUvHeight;
@@ -395,21 +440,24 @@ public final class LoginCalendarWorldRender {
         }
 
         pose.pushPose();
-        pose.translate(lx, ly, TEXT_Z_OFFSET);
-        // Flip Y only so text is upright; do NOT flip X (that was shifting Saturday leftward).
-        pose.scale(scaleX, -scaleY, scaleX);
+        try {
+            pose.translate(lx, ly, TEXT_Z_OFFSET);
+            // Flip Y only so text is upright; do NOT flip X (that was shifting Saturday leftward).
+            pose.scale(scaleX, -scaleY, scaleX);
 
-        float x = 0f;
-        if (rightAlign) {
-            x = -font.width(s);
-        } else {
-            // Center short labels (day numbers / weekday chars)
-            if (s.length() <= 2) {
-                x = -font.width(s) * 0.5f;
+            float x = 0f;
+            if (rightAlign) {
+                x = -font.width(s);
+            } else {
+                // Center short labels (day numbers / weekday chars)
+                if (s.length() <= 2) {
+                    x = -font.width(s) * 0.5f;
+                }
             }
+            font.drawInBatch(s, x, 0, color, false, pose.last().pose(), buffers,
+                    Font.DisplayMode.POLYGON_OFFSET, 0, packedLight);
+        } finally {
+            pose.popPose();
         }
-        font.drawInBatch(s, x, 0, color, false, pose.last().pose(), buffers,
-                Font.DisplayMode.SEE_THROUGH, 0, 0xF000F0);
-        pose.popPose();
     }
 }

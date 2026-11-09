@@ -14,13 +14,15 @@ public final class SkinSounds {
 
     /** Register after the skin definition, from the same skin registrar. Replays are idempotent. */
     public static void register(String type, String id) {
-        var skin = HabiSkinApi.find(type, id).orElseThrow(() ->
-                new IllegalArgumentException("Custom sounds require a registered skin: " + type + "/" + id));
-        String key = skin.type() + "/" + skin.id();
-        String provider = HabiSkinApi.currentProvider();
-        String value = provider == null ? "" : provider;
-        String previous = PROVIDERS.putIfAbsent(key, value);
-        if (previous == null) SkinRegistrationTransaction.changed(PROVIDERS, key, null, value);
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            var skin = HabiSkinApi.find(type, id).orElseThrow(() ->
+                    new IllegalArgumentException("Custom sounds require a registered skin: " + type + "/" + id));
+            String key = skin.type() + "/" + skin.id();
+            String provider = HabiSkinApi.currentProvider();
+            String value = provider == null ? "" : provider;
+            String previous = PROVIDERS.putIfAbsent(key, value);
+            if (previous == null) SkinRegistrationTransaction.changed(PROVIDERS, key, null, value);
+        }
     }
 
     public static boolean supports(String type, String id) {
@@ -46,8 +48,29 @@ public final class SkinSounds {
     /** Rolls back sound declarations from a failed registrar alongside its skin definitions. */
     public static int removeProvider(String provider) {
         if (provider == null) return 0;
-        return SkinRegistrationTransaction.removeIf(PROVIDERS, provider::equals);
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            return SkinRegistrationTransaction.removeIf(PROVIDERS, provider::equals);
+        }
     }
 
-    static void removeEntry(String entry) { SkinRegistrationTransaction.remove(PROVIDERS, entry); }
+    static void removeEntry(String entry) {
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            SkinRegistrationTransaction.remove(PROVIDERS, entry);
+        }
+    }
+
+    static void removeEntryIfOwnedOrUnowned(String entry, String provider) {
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            String owner = PROVIDERS.get(entry);
+            if (owner != null && (owner.isEmpty() || owner.equals(provider))) {
+                SkinRegistrationTransaction.remove(PROVIDERS, entry);
+            }
+        }
+    }
+
+    static void clearForTest() {
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            PROVIDERS.clear();
+        }
+    }
 }

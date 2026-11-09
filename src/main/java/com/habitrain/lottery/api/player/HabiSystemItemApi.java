@@ -5,14 +5,17 @@ import com.habitrain.lottery.storage.WorldLotteryPaths;
 import com.habitrain.lottery.warehouse.SystemItemBalances;
 import net.minecraft.resources.ResourceLocation;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /** Server-thread API for persistent virtual rewards. No physical items are created. */
 public final class HabiSystemItemApi {
     public static final int API_VERSION = 1;
-    private static final Map<String, Definition> DEFINITIONS = new LinkedHashMap<>();
+    private static final Object LOCK = new Object();
+    private static volatile Map<String, Definition> DEFINITIONS = Map.of();
     private HabiSystemItemApi() {}
 
     /** Name/description accept either translation keys or literal text; icon is an item registry id. */
@@ -26,21 +29,52 @@ public final class HabiSystemItemApi {
 
     /** Register display metadata once during mod initialization. Duplicate ids are rejected. */
     public static void register(Definition definition) {
-        if (DEFINITIONS.putIfAbsent(definition.id().toString(), definition) != null)
-            throw new IllegalArgumentException("Duplicate system item: " + definition.id());
+        Objects.requireNonNull(definition, "definition");
+        synchronized (LOCK) {
+            String key = definition.id().toString();
+            if (DEFINITIONS.containsKey(key)) {
+                throw new IllegalArgumentException("Duplicate system item: " + definition.id());
+            }
+            Map<String, Definition> next = new LinkedHashMap<>(DEFINITIONS);
+            next.put(key, definition);
+            DEFINITIONS = Collections.unmodifiableMap(next);
+        }
     }
 
     /** World-owned definitions may change after initialization; balances keep their stable ids. */
-    public static synchronized void replaceWorldDefinitions(Map<String, Definition> definitions) {
-        DEFINITIONS.keySet().removeIf(id -> id.startsWith("habitrain_lottery:crate_")
-                || id.startsWith("habitrain_lottery:key_"));
-        if (definitions != null) DEFINITIONS.putAll(definitions);
+    public static void replaceWorldDefinitions(Map<String, Definition> definitions) {
+        synchronized (LOCK) {
+            Map<String, Definition> next = new LinkedHashMap<>(DEFINITIONS);
+            next.keySet().removeIf(id -> id.startsWith("habitrain_lottery:crate_")
+                    || id.startsWith("habitrain_lottery:key_"));
+            if (definitions != null) {
+                for (Map.Entry<String, Definition> entry : definitions.entrySet()) {
+                    if (entry.getKey() != null && entry.getValue() != null) {
+                        next.put(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+            DEFINITIONS = Collections.unmodifiableMap(next);
+        }
     }
 
-    public static Definition definition(String id) { return DEFINITIONS.get(id); }
+    public static Definition definition(String id) {
+        return id == null ? null : DEFINITIONS.get(id);
+    }
+
+    /** Immutable snapshot of registered system item definitions in registration order. */
+    public static Map<String, Definition> definitions() {
+        return DEFINITIONS;
+    }
+
+    public static void clearForTest() {
+        synchronized (LOCK) {
+            DEFINITIONS = Map.of();
+        }
+    }
 
     public static Map<String, Integer> balances(UUID uuid) {
-        if (uuid == null || !WorldLotteryPaths.ready()) return Map.of();
+        if (uuid == null || !ApiGuards.isOnServerThread() || !WorldLotteryPaths.ready()) return Map.of();
         var store = PlayerLotteryStore.get();
         var data = store.getOrLoad(uuid);
         return store.isLoadFailed(uuid) ? Map.of() : Map.copyOf(data.systemItems);
@@ -62,12 +96,10 @@ public final class HabiSystemItemApi {
     private static HabiAssetResult change(UUID uuid, ResourceLocation id, int delta) {
         if (uuid == null) return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         if (id == null || id.toString().length() > 128) return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
-        if (!WorldLotteryPaths.ready() || !PlayerLotteryStore.get().isTakeoverActive())
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
-        var server = HabiLotteryApi.server();
-        if (server != null && !server.isSameThread()) return HabiAssetResult.fail(HabiFailure.INVALID_OPERATION);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) return HabiAssetResult.fail(guard);
         var store = PlayerLotteryStore.get();
-        if (store.isFlushDeferred()) return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        if (!store.isTakeoverActive()) return HabiAssetResult.fail(HabiFailure.NOT_READY);
         var data = store.getOrLoad(uuid);
         if (store.isLoadFailed(uuid)) return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
         var next = new LinkedHashMap<>(data.systemItems);

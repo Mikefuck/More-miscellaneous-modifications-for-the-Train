@@ -1,7 +1,9 @@
 package com.habitrain.lottery.api.skin;
 
+import com.habitrain.lottery.testutil.TestRegistryResetExtension;
 import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Optional;
 
@@ -16,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Registration/normalisation semantics of the skin effects API. Dispatch itself needs a
  * live level, so it is covered by the in-game checklist in {@code docs/skin-effects-api.md}.
  */
+@ExtendWith(TestRegistryResetExtension.class)
 class SkinEffectsTest {
 
     @Test

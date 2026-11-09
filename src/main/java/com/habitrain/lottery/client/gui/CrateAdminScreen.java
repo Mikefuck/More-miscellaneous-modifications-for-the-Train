@@ -11,7 +11,7 @@ import com.habitrain.lottery.api.skin.SkinItems;
 import com.habitrain.lottery.client.CrateClientNetwork;
 import com.habitrain.lottery.client.MenuAccessBridge;
 import com.habitrain.lottery.crate.CrateService;
-import com.habitrain.lottery.network.LotteryNetwork;
+import com.habitrain.lottery.network.ClientLotteryState;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -448,7 +448,7 @@ public final class CrateAdminScreen extends Screen {
     private void saveConfig() {
         if (!persistVisibleWeights()) return;
         if (!CrateClientNetwork.connected()) { status = "screen.habitrain_lottery.crate_admin.offline"; return; }
-        if (!LotteryNetwork.ClientLotteryState.op) { status = "crates.no_permission"; return; }
+        if (!ClientLotteryState.op) { status = "crates.no_permission"; return; }
         JsonObject root = new JsonObject();
         JsonObject weekly = new JsonObject();
         JsonObject monthly = new JsonObject();
@@ -517,7 +517,7 @@ public final class CrateAdminScreen extends Screen {
         customPoolButton.setTooltip(Tooltip.create(customPoolButton.getMessage()));
         duplicateButton.setTooltip(Tooltip.create(duplicateButton.getMessage()));
         boolean editable = draftLoaded && !savePending && CrateClientNetwork.connected() && CrateClientNetwork.canEdit()
-                && LotteryNetwork.ClientLotteryState.op
+                && ClientLotteryState.op
                 && !MenuAccessBridge.isLocked();
         enabledButton.visible = customPoolButton.visible = duplicateButton.visible = !quotaPage;
         skinFilterBox.visible = qualityFilterButton.visible = !quotaPage;
@@ -579,7 +579,7 @@ public final class CrateAdminScreen extends Screen {
             if (total > 4_000_000_000L || (pool.enabled && total == 0 && requiresSkin(definition.id()))) valid = false;
         }
         saveButton.active = valid && dirty && draftLoaded && !savePending
-                && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && LotteryNetwork.ClientLotteryState.op
+                && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && ClientLotteryState.op
                 && !MenuAccessBridge.isLocked();
     }
 
@@ -634,7 +634,7 @@ public final class CrateAdminScreen extends Screen {
                 rowWeights[slot].visible = !quotaPage;
                 rowCaps[slot].visible = !quotaPage;
                 rowButtons[slot].active = draftLoaded && !savePending
-                        && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && LotteryNetwork.ClientLotteryState.op
+                        && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && ClientLotteryState.op
                         && !MenuAccessBridge.isLocked();
                 rowWeights[slot].active = rowButtons[slot].active && pool.customPool
                         && HabiSkinApi.fromEntry(skinKey).isPresent();
@@ -771,7 +771,7 @@ public final class CrateAdminScreen extends Screen {
             Component summary = pool.customPool && pool.enabled && total == 0
                     ? Component.translatable("screen.habitrain_lottery.crate_admin.empty_pool")
                     : Component.translatable("screen.habitrain_lottery.crate_admin.pool_summary", active, total);
-            if (status.isBlank() && CrateClientNetwork.canEdit() && LotteryNetwork.ClientLotteryState.op)
+            if (status.isBlank() && CrateClientNetwork.canEdit() && ClientLotteryState.op)
                 g.drawString(font, font.plainSubstrByWidth(summary.getString(), editorW), editorX, footerY - 14, 0xFFD4A55A, false);
         } else if (quotaPage) {
             int headerY = compactLayout ? 94 : 96;
@@ -793,7 +793,7 @@ public final class CrateAdminScreen extends Screen {
             g.drawCenteredString(font, font.plainSubstrByWidth(text.getString(), editorW), width / 2, footerY - 14, 0xFFD4A55A);
         } else if (!CrateClientNetwork.canEdit()) {
             g.drawCenteredString(font, Component.translatable("crates.client_outdated"), width / 2, footerY - 14, 0xFFFF6B6B);
-        } else if (!LotteryNetwork.ClientLotteryState.op) {
+        } else if (!ClientLotteryState.op) {
             g.drawCenteredString(font, Component.translatable("screen.habitrain_lottery.crate_admin.readonly"), width / 2, footerY - 14, 0xFFFF6B6B);
         }
         if (!quotaPage) for (int slot = 0; slot < visibleRows; slot++) {

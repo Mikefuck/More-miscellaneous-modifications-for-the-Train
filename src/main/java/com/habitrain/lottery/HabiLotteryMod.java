@@ -36,7 +36,7 @@ public final class HabiLotteryMod implements ModInitializer {
     public static final String MOD_ID = "habitrain_lottery";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-    private static MinecraftServer server;
+    private static volatile MinecraftServer server;
 
     @Override
     public void onInitialize() {
@@ -66,6 +66,7 @@ public final class HabiLotteryMod implements ModInitializer {
             server = s;
             try {
                 WorldLotteryPaths.init(s);
+                com.habitrain.lottery.time.LotteryDayClock.loadWorldConfig(WorldLotteryPaths.configFile("clock.json"));
                 com.habitrain.lottery.card.SelfSelectRoleConfigService.load();
                 try {
                     MetaFeaturePaths.ensureDirs();
@@ -79,7 +80,9 @@ public final class HabiLotteryMod implements ModInitializer {
                     return;
                 }
                 PlayerLotteryStore.get().onServerStarted(s);
+                com.habitrain.lottery.card.CardActivationJournal.recoverAll();
                 com.habitrain.lottery.card.FactionCardRefunds.recover();
+                com.habitrain.lottery.card.ActiveForcesStore.recoverOnServerStarted();
                 if (!LocalMatchRecordStore.repairIndex(WorldLotteryPaths.root()))
                     LOGGER.error("Match record index recovery failed; original files retained");
                 CrateService.onServerStarted();
@@ -99,6 +102,9 @@ public final class HabiLotteryMod implements ModInitializer {
         // 使「一个步骤失败」不会连带跳过同一次停服里的其它收尾步骤。
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> {
             try {
+                // Drain in-flight OP mail dispatch batches before stores/world paths shut down (B-07).
+                runQuietly("MailDispatchExecutor.shutdownAndAwait",
+                        () -> com.habitrain.lottery.network.MailDispatchExecutor.shutdownAndAwait());
                 runQuietly("SkinStateCoordinator.clearPending", () -> SkinStateCoordinator.clearPending(s));
                 // Reservations live in memory; return unused self-select cards before clearing stores.
                 runQuietly("SelfSelectRoleHook.finishSelections",
@@ -127,10 +133,16 @@ public final class HabiLotteryMod implements ModInitializer {
                 // 清理动作本身也要保证执行完，且不影响其它模组的停服收尾。
                 runQuietly("shutdown reset", () -> {
                     LocalTitleStore.get().reset();
+                    com.habitrain.lottery.mail.MailService.onServerStopping();
+                    LotteryNetwork.onServerStopping();
+                    SkinStateCoordinator.forgetAll();
+                    com.habitrain.lottery.daily.config.DailyTaskTracker.reset();
+                    com.habitrain.lottery.card.SelfSelectRoleConfigService.reset();
                     ActiveCardForces.clear();
                     SelfSelectForces.clear();
                     com.habitrain.lottery.card.CardUseService.clearRefundState();
                     LoginRewardService.resetObservedDayUtc();
+                    com.habitrain.lottery.time.LotteryDayClock.resetAll();
                     WorldLotteryPaths.reset();
                     server = null;
                 });
@@ -146,8 +158,10 @@ public final class HabiLotteryMod implements ModInitializer {
             UUID id = handler.player.getUUID();
             s.execute(() -> {
                 ServerPlayer p = s.getPlayerList().getPlayer(id);
-                if (p != null) {
+                if (p != null && !p.hasDisconnected()) {
                     BackpackJoinService.apply(p);
+                    com.habitrain.lottery.card.CardActivationJournal.recover(p.getUUID());
+                    com.habitrain.lottery.backpack.LocalBackpackStore.syncCommitted(p);
                     com.habitrain.lottery.card.FactionCardRefunds.recoverPending(p);
                     com.habitrain.lottery.mail.RewardDelivery.recoverPending(p);
                 }
@@ -156,6 +170,7 @@ public final class HabiLotteryMod implements ModInitializer {
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
             PlayerLotteryStore.get().onPlayerQuit(handler.player);
+            LocalTitleStore.get().onPlayerQuit(handler.player);
             // 审核 B-05：限流器按 玩家×频道 记账，旧实现在本模组里从不 clear，
             // 内存随时间无限增长。核心的对应实现是在 DISCONNECT 里清理的。
             if (handler.player != null) {
@@ -235,6 +250,9 @@ public final class HabiLotteryMod implements ModInitializer {
     /** Clears takeover and world paths so JOIN / MySQL mixins cannot run half-initialized. */
     private static void abortPlayerStoreStartup() {
         PlayerLotteryStore.get().reset();
+        com.habitrain.lottery.card.SelfSelectRoleConfigService.reset();
+        com.habitrain.lottery.time.LotteryDayClock.resetAll();
         WorldLotteryPaths.reset();
+        server = null;
     }
 }

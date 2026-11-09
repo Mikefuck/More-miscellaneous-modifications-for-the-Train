@@ -332,6 +332,13 @@ public final class DailyTaskTracker {
         SURVIVAL_BUFFER.remove(player);
     }
 
+    /** Clears all in-memory match and survival buffers on server shutdown ({@code I-17}). */
+    public static void reset() {
+        resetMatch();
+        SURVIVAL_BUFFER.clear();
+        tickCounter = 0;
+    }
+
     private static void safe(String label, Runnable action) {
         try {
             action.run();

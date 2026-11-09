@@ -28,6 +28,7 @@ import java.util.Set;
 public final class CrateManageScreen extends Screen {
     private static final Gson GSON = new Gson();
     private static final String KEY = "screen.habitrain_lottery.crate_manage.";
+    private static final int TAB_PROFILE = 0, TAB_REWARDS = 1, TAB_LIMITS = 2;
     private static final String[] TABS = {"profile", "rewards", "limits"};
     private final Screen parent;
     private CrateService.State draft;
@@ -36,13 +37,14 @@ public final class CrateManageScreen extends Screen {
     private final Set<String> createdIds = new HashSet<>();
     private List<String> ids = List.of();
     private int selected, tab, scroll, seenVersion, x, w, contentTop, footerY, visibleRows;
-    private boolean dirty, pending;
+    private boolean dirty, pending, wasLocked;
     private int pendingTicks;
     private boolean suppressNestedBackground;
     private String status = "";
     private List<Row> rows = List.of();
     private final List<EditBox> activeBoxes = new ArrayList<>();
     private int quotaRefreshTicks;
+    private Button backButton;
     private Button saveButton;
     private final CrateRewardEditor rewardEditor = new CrateRewardEditor(this);
     private final CrateQuotaEditor quotaEditor = new CrateQuotaEditor(this);
@@ -70,8 +72,13 @@ public final class CrateManageScreen extends Screen {
     }
 
     @Override protected void init() {
-        if (!dirty && !pending) CrateClientNetwork.requestConfig();
+        if (!MenuAccessBridge.isLocked() && !dirty && !pending) CrateClientNetwork.requestConfig();
         rebuild();
+    }
+
+    private boolean editable() {
+        return CrateClientNetwork.connected() && CrateClientNetwork.canEdit()
+                && CrateClientNetwork.STATE.configEditable && !MenuAccessBridge.isLocked();
     }
 
     private String id() { return ids.isEmpty() ? "" : ids.get(Mth.clamp(selected, 0, ids.size() - 1)); }
@@ -115,7 +122,7 @@ public final class CrateManageScreen extends Screen {
         if (p == null) return List.of();
         List<Row> result = new ArrayList<>();
         switch (tab) {
-            case 0 -> {
+            case TAB_PROFILE -> {
                 result.add(row("id", id(), 48));
                 result.add(row("name", p.name, 64));
                 // Built-in descriptions are stored as translation keys. Show the actual
@@ -134,11 +141,20 @@ public final class CrateManageScreen extends Screen {
 
     private void rebuild() {
         clearWidgets(); activeBoxes.clear();
-        boolean compact = height < 180 || (tab == 1 && height < 300) || (tab == 2 && height < 240);
+        backButton = null; saveButton = null;
+        wasLocked = MenuAccessBridge.isLocked();
+        boolean compact = height < 180 || (tab == TAB_REWARDS && height < 300) || (tab == TAB_LIMITS && height < 240);
         x = width < 420 ? 8 : 16; w = width - x * 2;
-        contentTop = tab == 1 ? (compact ? 88 : 108) : (compact ? 64 : 84);
+        contentTop = tab == TAB_REWARDS ? (compact ? 88 : 108) : (compact ? 64 : 84);
         footerY = height - 24;
-        visibleRows = Math.max(1, (footerY - contentTop - (tab == 1 ? 20 : 6)) / 25);
+        visibleRows = Math.max(1, (footerY - contentTop - (tab == TAB_REWARDS ? 20 : 6)) / 25);
+        if (wasLocked) {
+            rows = List.of();
+            int backW = Math.min(140, Math.max(64, w));
+            backButton = addRenderableWidget(Button.builder(Component.translatable("gui.back"), b -> onClose())
+                    .bounds((width - backW) / 2, footerY, backW, 20).build());
+            return;
+        }
         int tabW = (w - (TABS.length - 1) * 2) / TABS.length;
         int tabY = compact ? 18 : 30;
         int navY = compact ? 40 : 56;
@@ -176,9 +192,9 @@ public final class CrateManageScreen extends Screen {
                 .bounds(right - newW * 2 - 2, navY, newW, 20).build()).active = draft != null;
         addRenderableWidget(Button.builder(Component.translatable(KEY + "copy"), b -> create(true))
                 .bounds(right - newW, navY, newW, 20).build()).active = pool() != null;
-        rows = tab == 1 ? List.of() : buildRows();
-        if (tab == 1 && pool() != null) rewardEditor.build(x, navY + 24, w, footerY - 18);
-        if (tab == 2 && pool() != null) quotaEditor.build(x, navY + 24, w, footerY - 18);
+        rows = tab == TAB_PROFILE ? buildRows() : List.of();
+        if (tab == TAB_REWARDS && pool() != null) rewardEditor.build(x, navY + 24, w, footerY - 18);
+        if (tab == TAB_LIMITS && pool() != null) quotaEditor.build(x, navY + 24, w, footerY - 18);
         scroll = Mth.clamp(scroll, 0, Math.max(0, rows.size() - visibleRows));
         int labelW = labelWidth();
         for (int i = scroll; i < rows.size() && i < scroll + visibleRows; i++) {
@@ -217,7 +233,7 @@ public final class CrateManageScreen extends Screen {
             addRenderableWidget(box); activeBoxes.add(box);
         }
         int footerW = (w - 8) / 3;
-        addRenderableWidget(Button.builder(Component.translatable("gui.back"), b -> onClose())
+        backButton = addRenderableWidget(Button.builder(Component.translatable("gui.back"), b -> onClose())
                 .bounds(x, footerY, footerW, 20).build());
         addRenderableWidget(Button.builder(Component.translatable(KEY + ("conflict".equals(status) ? "reload" : "reset_current")),
                         b -> { if ("conflict".equals(status)) reloadAfterConflict(); else resetCurrent(); })
@@ -228,7 +244,7 @@ public final class CrateManageScreen extends Screen {
     }
 
     private int labelWidth() {
-        return tab >= 2 ? Math.max(80, w - 110) : Mth.clamp(w / 3, 52, 132);
+        return tab >= TAB_LIMITS ? Math.max(80, w - 110) : Mth.clamp(w / 3, 52, 132);
     }
 
     // The visual reward editor shares this screen's draft, validation and server save lifecycle.
@@ -333,7 +349,7 @@ public final class CrateManageScreen extends Screen {
         draft.crates.put(candidate, next);
         createdIds.add(candidate);
         ids = new ArrayList<>(draft.crates.keySet()); selected = ids.indexOf(candidate);
-        dirty = true; status = ""; tab = 0; scroll = 0; rebuild();
+        dirty = true; status = ""; tab = TAB_PROFILE; scroll = 0; rebuild();
     }
 
     private static boolean booleanValue(String value) {
@@ -413,7 +429,7 @@ public final class CrateManageScreen extends Screen {
     }
 
     private void save() {
-        if (draft == null || pending || !dirty) return;
+        if (!editable() || draft == null || pending || !dirty) return;
         try {
             CrateService.State proposed = GSON.fromJson(GSON.toJson(draft), CrateService.State.class);
             applyFields(proposed);
@@ -424,9 +440,8 @@ public final class CrateManageScreen extends Screen {
 
     private void updateSave() {
         if (saveButton != null) saveButton.active = draft != null && dirty && !pending && !"conflict".equals(status)
-                && CrateClientNetwork.connected() && CrateClientNetwork.canEdit() && CrateClientNetwork.STATE.configEditable
-                && !MenuAccessBridge.isLocked() && validDraftInput();
-        if (pending) for (var child : children()) if (child instanceof net.minecraft.client.gui.components.AbstractWidget widget)
+                && editable() && validDraftInput();
+        if (pending) for (var child : children()) if (child instanceof net.minecraft.client.gui.components.AbstractWidget widget && widget != backButton)
             widget.active = false;
     }
 
@@ -490,7 +505,7 @@ public final class CrateManageScreen extends Screen {
             }
         } else if (!dirty) {
             // Usage-only responses must not steal keyboard focus or an in-progress selection.
-            if (tab == 3 && draft != null && !serverRevisionChanged()) return;
+            if (tab == TAB_LIMITS && draft != null && !serverRevisionChanged()) return;
             readServerConfig(); rebuild();
         }
         else if (serverRevisionChanged()) { status = "conflict"; rebuild(); }
@@ -504,18 +519,30 @@ public final class CrateManageScreen extends Screen {
     }
 
     @Override public void tick() {
-        super.tick(); refreshFromState();
+        super.tick();
+        if (MenuAccessBridge.isLocked() != wasLocked) {
+            rebuild();
+        }
+        refreshFromState();
         if (pending && ++pendingTicks > 200) { pending = false; status = "crates.config_failed"; rebuild(); }
-        if (tab == 3 && !pending && ++quotaRefreshTicks >= 100) {
+        if (!MenuAccessBridge.isLocked() && tab == TAB_LIMITS && !pending && ++quotaRefreshTicks >= 100) {
             quotaRefreshTicks = 0;
             CrateClientNetwork.requestConfig();
         }
         updateSave();
     }
 
+    @Override public boolean mouseClicked(double mx, double my, int button) {
+        if (MenuAccessBridge.isLocked()) {
+            return backButton != null && backButton.mouseClicked(mx, my, button);
+        }
+        return super.mouseClicked(mx, my, button);
+    }
+
     @Override public boolean mouseScrolled(double mx, double my, double horizontal, double vertical) {
-        if (tab == 2 && rewardEditor.mouseScrolled(mx, my, horizontal, vertical)) return true;
-        if (tab == 3 && quotaEditor.mouseScrolled(mx, my, vertical)) return true;
+        if (MenuAccessBridge.isLocked()) return false;
+        if (tab == TAB_REWARDS && rewardEditor.mouseScrolled(mx, my, horizontal, vertical)) return true;
+        if (tab == TAB_LIMITS && quotaEditor.mouseScrolled(mx, my, vertical)) return true;
         if (my >= contentTop && my < footerY) {
             scroll = Mth.clamp(scroll + (vertical < 0 ? 1 : -1), 0, Math.max(0, rows.size() - visibleRows));
             rebuild(); return true;
@@ -523,13 +550,32 @@ public final class CrateManageScreen extends Screen {
         return super.mouseScrolled(mx, my, horizontal, vertical);
     }
 
+    @Override public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (MenuAccessBridge.isLocked()) {
+            return AdminLockGuard.handleLockedKeyPressed(this, backButton, keyCode);
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override public boolean charTyped(char codePoint, int modifiers) {
+        if (MenuAccessBridge.isLocked()) return false;
+        return super.charTyped(codePoint, modifiers);
+    }
+
     @Override public void render(GuiGraphics g, int mx, int my, float delta) {
         renderBackground(g, mx, my, delta);
         g.fill(x - 4, 4, width - x + 4, footerY - 2, 0xE51B242C);
         g.fill(x - 4, 4, width - x + 4, 7, 0xFF57C6D6);
-        g.drawCenteredString(font, getTitle(), width / 2, (height < 180 || (tab == 2 && height < 300) || (tab == 3 && height < 240)) ? 4 : 9, 0xFFFFFFFF);
-        if (tab == 2 && pool() != null) rewardEditor.render(g, mx, my);
-        if (tab == 3 && pool() != null) quotaEditor.render(g);
+        g.drawCenteredString(font, getTitle(), width / 2, (height < 180 || (tab == TAB_REWARDS && height < 300) || (tab == TAB_LIMITS && height < 240)) ? 4 : 9, 0xFFFFFFFF);
+        if (MenuAccessBridge.isLocked()) {
+            g.drawCenteredString(font, Component.translatable("crates.no_permission"), width / 2, Math.max(24, height / 2 - 6), 0xFFFF6B6B);
+            suppressNestedBackground = true;
+            try { super.render(g, mx, my, delta); }
+            finally { suppressNestedBackground = false; }
+            return;
+        }
+        if (tab == TAB_REWARDS && pool() != null) rewardEditor.render(g, mx, my);
+        if (tab == TAB_LIMITS && pool() != null) quotaEditor.render(g);
         int labelW = labelWidth();
         for (int i = scroll; i < rows.size() && i < scroll + visibleRows; i++) {
             Row row = rows.get(i);
@@ -537,7 +583,7 @@ public final class CrateManageScreen extends Screen {
             g.drawString(font, font.plainSubstrByWidth(label, labelW - 3), x, contentTop + (i - scroll) * 25 + 6,
                     0xFFC9D2D1, false);
         }
-        if (height >= 180 && !(tab == 1 && height < 300) && !(tab == 2 && height < 240)) {
+        if (height >= 180 && !(tab == TAB_REWARDS && height < 300) && !(tab == TAB_LIMITS && height < 240)) {
             if (!CrateClientNetwork.connected()) g.drawCenteredString(font, Component.translatable("screen.habitrain_lottery.crate_admin.offline"),
                     width / 2, 20, 0xFFFFD18A);
             else if (!CrateClientNetwork.canEdit()) g.drawCenteredString(font, Component.translatable("crates.client_outdated"),
@@ -546,7 +592,7 @@ public final class CrateManageScreen extends Screen {
                     Component.translatable(status.startsWith("crates.") || status.startsWith("screen.") ? status : KEY + status), width / 2,
                     20, 0xFFFFD18A);
         }
-        if ((tab == 1 || tab == 2) && pool() != null) {
+        if ((tab == TAB_REWARDS || tab == TAB_LIMITS) && pool() != null) {
             Component ruleError = rewardEditor.validationError();
             Component feedback = !CrateClientNetwork.connected() ? Component.translatable("screen.habitrain_lottery.crate_admin.offline")
                     : !CrateClientNetwork.canEdit() ? Component.translatable("crates.client_outdated")

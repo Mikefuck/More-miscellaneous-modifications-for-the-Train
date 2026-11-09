@@ -1,5 +1,7 @@
 package com.habitrain.lottery.api.player;
 
+import net.minecraft.network.chat.Component;
+
 /**
  * Outcome of one player-asset mutation.
  *
@@ -39,5 +41,10 @@ public record HabiAssetResult(boolean ok, HabiFailure failure, int newValue) {
     /** Convenience: the failure description, or {@code ""} when {@link #ok()}. */
     public String message() {
         return failure.message();
+    }
+
+    /** Convenience: translatable failure component for player/command feedback. */
+    public Component failureComponent() {
+        return failure.toComponent();
     }
 }

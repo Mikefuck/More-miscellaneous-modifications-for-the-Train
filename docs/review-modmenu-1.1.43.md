@@ -43,7 +43,7 @@
 
 ## 验证
 
-- 执行 `gradlew build`，使用工作区内的 Gradle 缓存。
+- 执行 `.\gradlew.bat build --no-daemon`，使用工作区内的 Gradle 缓存。
 - 305 项自动测试通过，0 失败、0 错误、0 跳过。
 - 新增回归测试：离线玩家卸下称号后，重新从磁盘读取仍保留两个已拥有称号，佩戴状态为空。
 - `git diff --check` 通过。

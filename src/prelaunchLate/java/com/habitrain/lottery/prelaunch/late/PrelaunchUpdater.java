@@ -99,10 +99,34 @@ final class PrelaunchUpdater {
                 }
             }
         } catch (Throwable t) {
+            rethrowIfFatalJvmError(t);
             PrelaunchLog.error("Prelaunch picker failed", t);
             if (!actionStarted) {
-                runDefault(updateOnLaunch);
+                try {
+                    runDefault(updateOnLaunch);
+                } catch (Throwable defaultFailure) {
+                    rethrowIfFatalJvmError(defaultFailure);
+                    PrelaunchLog.error("Fallback default modpack run failed", defaultFailure);
+                    loadSelectedSafely();
+                }
+            } else {
+                loadSelectedSafely();
             }
+        }
+    }
+
+    static void rethrowIfFatalJvmError(Throwable t) {
+        if (t instanceof OutOfMemoryError || t instanceof InternalError || t instanceof UnknownError) {
+            throw (Error) t;
+        }
+    }
+
+    private static void loadSelectedSafely() {
+        try {
+            loadSelected();
+        } catch (Throwable loadFailure) {
+            rethrowIfFatalJvmError(loadFailure);
+            PrelaunchLog.error("Fallback loadSelected failed", loadFailure);
         }
     }
 
@@ -171,10 +195,16 @@ final class PrelaunchUpdater {
         Jsons.ModpackContentFields latest = ConfigTools.loadModpackContent(
                 selected.dir.resolve(GlobalVariables.hostModpackContentFile.getFileName()));
         if (selected.secret != null) {
-            Optional<Jsons.ModpackContentFields> fetched =
-                    ModpackUtils.requestServerModpackContent(selected.addresses, selected.secret, false);
-            if (fetched.isPresent()) {
-                latest = fetched.get();
+            try {
+                Optional<Jsons.ModpackContentFields> fetched =
+                        ModpackUtils.requestServerModpackContent(selected.addresses, selected.secret, false);
+                if (fetched.isPresent()) {
+                    latest = fetched.get();
+                }
+            } catch (Throwable fetchError) {
+                rethrowIfFatalJvmError(fetchError);
+                PrelaunchLog.warn("Could not refresh server modpack content (%s); falling back to cached manifest",
+                        fetchError.getClass().getSimpleName());
             }
         }
         ClientCacheUtils.deleteDummyFiles();
@@ -203,25 +233,34 @@ final class PrelaunchUpdater {
             }
             if (target == null) {
                 progress.status("正在登录服务器以获取整合包下载凭证…");
-                target = Target.login(option.address());
+                target = Target.login(option.address(), progress);
                 viaLogin = true;
+            }
+            if (progress.isCancelled()) {
+                return false;
             }
 
             progress.status("正在校验整合包服务器证书…");
-            if (!ensureTrusted(target.addresses, progress)) {
+            if (!ensureTrusted(target.addresses, progress) || progress.isCancelled()) {
                 return false;
             }
             progress.status("正在获取整合包文件清单…");
             Optional<Jsons.ModpackContentFields> content =
                     ModpackUtils.requestServerModpackContent(target.addresses, target.secret, false);
+            if (progress.isCancelled()) {
+                return false;
+            }
             if (content.isEmpty() && !viaLogin) {
                 // The stored secret may have been revoked or the server uses a shorter lifetime.
                 progress.status("下载凭证已失效，正在重新登录服务器…");
-                target = Target.login(option.address());
-                if (!ensureTrusted(target.addresses, progress)) {
+                target = Target.login(option.address(), progress);
+                if (progress.isCancelled() || !ensureTrusted(target.addresses, progress) || progress.isCancelled()) {
                     return false;
                 }
                 content = ModpackUtils.requestServerModpackContent(target.addresses, target.secret, false);
+            }
+            if (progress.isCancelled()) {
+                return false;
             }
             if (content.isEmpty()) {
                 progress.close();
@@ -233,6 +272,9 @@ final class PrelaunchUpdater {
 
             progress.status("正在比对本地文件…");
             ModpackUtils.UpdateCheckResult result = ModpackFileAudit.check(serverContent, target.dir);
+            if (progress.isCancelled()) {
+                return false;
+            }
             if (result.requiresUpdate()) {
                 progress.hide();
                 if (!confirmDownload(option, serverContent, result.filesToUpdate())) {
@@ -262,16 +304,22 @@ final class PrelaunchUpdater {
             updater.startUpdate(result.filesToUpdate());
             progress.close();
             return updater.successful();
-        } catch (McLoginClient.LoginException e) {
-            PrelaunchLog.error("Prelaunch login failed", e);
+        } catch (Throwable t) {
+            rethrowIfFatalJvmError(t);
+            if (progress.isCancelled()) {
+                PrelaunchLog.info("Prelaunch update cancelled by player; loading installed modpack");
+                return false;
+            }
+            if (t instanceof McLoginClient.LoginException e) {
+                PrelaunchLog.error("Prelaunch login failed", e);
+                progress.close();
+                Ui.error("登录服务器获取下载凭证失败：<br>" + Ui.escape(e.getMessage())
+                        + "<br><br>游戏将使用当前已安装的整合包继续启动；也可以进入游戏后直接加入该服务器下载。");
+                return false;
+            }
+            PrelaunchLog.error("Prelaunch update failed", t);
             progress.close();
-            Ui.error("登录服务器获取下载凭证失败：<br>" + Ui.escape(e.getMessage())
-                    + "<br><br>游戏将使用当前已安装的整合包继续启动；也可以进入游戏后直接加入该服务器下载。");
-            return false;
-        } catch (Exception e) {
-            PrelaunchLog.error("Prelaunch update failed", e);
-            progress.close();
-            Ui.error("启动前更新失败：" + Ui.escape(String.valueOf(e.getMessage()))
+            Ui.error("启动前更新失败：" + Ui.escape(String.valueOf(t.getMessage()))
                     + "<br>游戏将使用当前已安装的整合包继续启动。");
             return false;
         } finally {
@@ -348,8 +396,10 @@ final class PrelaunchUpdater {
         };
         try (DownloadClient client = DownloadClient.tryCreate(addresses, null, 1, callback)) {
             if (client == null) {
-                Ui.error("无法建立与整合包服务器 " + Ui.escape(host) + " 的安全连接（证书未被信任或服务器无响应）。<br>"
-                        + "游戏将使用当前已安装的整合包继续启动。");
+                if (!progress.isCancelled()) {
+                    Ui.error("无法建立与整合包服务器 " + Ui.escape(host) + " 的安全连接（证书未被信任或服务器无响应）。<br>"
+                            + "游戏将使用当前已安装的整合包继续启动。");
+                }
                 return false;
             }
             return true;
@@ -387,14 +437,14 @@ final class PrelaunchUpdater {
         }
 
         /** Mirrors AutoModpack's {@code DataC2SPacket} handling of a fresh join. */
-        static Target login(String typedAddress) throws Exception {
+        static Target login(String typedAddress, ProgressWindow progress) throws Exception {
             ServerAddressParser.HostPort typed = ServerAddressParser.parse(typedAddress);
             ServerAddressParser.HostPort connect = typed.explicitPort()
                     ? typed : SrvResolver.resolve(typed.host()).orElse(typed);
             McLoginClient client = new McLoginClient(account(), sessionHost(),
                     serverVersion -> AutoModpackProtocol.getHandshakeVersion(serverVersion, GlobalVariables.AM_VERSION),
                     GlobalVariables.MC_VERSION);
-            McLoginClient.AutoModpackData data = client.fetch(connect.host(), connect.port());
+            McLoginClient.AutoModpackData data = client.fetch(connect.host(), connect.port(), progress);
 
             String effectiveHost = data.address().isBlank() ? connect.host() : data.address();
             int effectivePort = data.port() == -1 ? connect.port() : data.port();

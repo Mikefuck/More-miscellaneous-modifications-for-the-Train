@@ -20,12 +20,18 @@ import net.minecraft.world.item.Items;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /** Visual reward strip and a focused editor; persistence remains owned by CrateManageScreen. */
 final class CrateRewardEditor {
     private static final String KEY = "screen.habitrain_lottery.reward_editor.";
     private static final String[] EXTRAS = {"green_apples", "civilian", "neutral", "neutral_for_killer", "killer", "self_select", "limit_break"};
+    private static final ItemStack BARRIER_ICON = new ItemStack(Items.BARRIER);
+    private static final ResourceLocation GREEN_APPLE_TEXTURE =
+            ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/green_apple.png");
+    private static final Map<String, ResourceLocation> EXTRA_TEXTURE_CACHE = new ConcurrentHashMap<>();
     private static final int PANEL = 0xFF243442, INK = 0xFFE6EDF2, MUTED = 0xFFB1C4D0, ACCENT = 0xFF72CFD7;
     private final CrateManageScreen host;
     private final Font font = Minecraft.getInstance().font;
@@ -35,6 +41,8 @@ final class CrateRewardEditor {
     private int x, y, w, bottom, stripY, stripH, toolbarY, bodyY, page, stripOffset, bodyOffset, pageSize, visibleRows;
     private int filter, quality = -1;
     private boolean replacing;
+    private double cachedTotalWeight;
+    private boolean totalWeightValid;
     private record Label(Component text, int x, int y, int width) {}
 
     CrateRewardEditor(CrateManageScreen host) { this.host = host; }
@@ -79,11 +87,13 @@ final class CrateRewardEditor {
         // Freeze the visible legacy pool on the first edit, so later providers cannot silently add rewards.
         if (!custom()) host.rewardValue("custom_pool", "true");
     }
+    private void invalidateTotalWeight() { totalWeightValid = false; }
     private void collectRewards() {
         List<String> keys = new ArrayList<>();
         pool().skinWeights.forEach((key, weight) -> keys.add("skin." + key));
         for (var e : pool().extraRewards) keys.add("extra." + extraKind(e));
         rewards = keys;
+        invalidateTotalWeight();
         if (!rewards.contains(selected)) selected = rewards.isEmpty() ? "" : rewards.getFirst();
     }
 
@@ -149,7 +159,7 @@ final class CrateRewardEditor {
         validate.accept(box.getValue());
         box.setResponder(raw -> {
             if (raw.equals(value(key, initial))) return;
-            manualPool(); host.rewardValue(key, raw); validate.accept(raw);
+            manualPool(); host.rewardValue(key, raw); invalidateTotalWeight(); validate.accept(raw);
         });
         host.rewardWidget(box);
     }
@@ -285,14 +295,25 @@ final class CrateRewardEditor {
         host.forgetRewardFields(skin(selected) ? selected : selected + ".");
         selected = ""; bodyOffset = 0; host.rewardChanged();
     }
+    private double totalWeight() {
+        if (!totalWeightValid) {
+            double total = 0;
+            boolean isUnified = unified();
+            for (String k : rewards) {
+                if (!missing(k) && (isUnified || skin(k))) total += Math.max(0, weight(k));
+            }
+            cachedTotalWeight = total;
+            totalWeightValid = true;
+        }
+        return cachedTotalWeight;
+    }
     private String probability(String key) {
         if (missing(key)) return tr("missing").getString();
         if (!skin(key) && !unified()) {
             var e = extra(key); return format(e == null ? 0 : decimal(key + ".chance", e.chance * 100));
         }
         if (skin(key) && !unified() && number("skin_draw_count", pool().skinDrawCount) == 0) return tr("inactive").getString();
-        double total = 0;
-        for (String k : rewards) if (!missing(k) && (unified() || skin(k))) total += Math.max(0, weight(k));
+        double total = totalWeight();
         return format(total > 0 ? Math.max(0, weight(key)) * 100D / total : 0);
     }
     private String format(double chance) { return String.format(Locale.ROOT, "%.2f%%", chance); }
@@ -335,17 +356,30 @@ final class CrateRewardEditor {
         host.rewardChanged();
     }
     private void icon(GuiGraphics g, String key, int x, int y, float scale) {
-        g.pose().pushPose(); g.pose().translate(x, y, 0); g.pose().scale(scale, scale, 1);
-        if (skin(key)) {
-            ItemStack stack = SkinItems.preview(key.substring(5));
-            g.renderItem(stack.isEmpty() ? new ItemStack(Items.BARRIER) : stack, 0, 0);
-        } else {
-            String kind = key.substring(6);
-            ResourceLocation texture = ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "textures/gui/"
-                    + (kind.equals("green_apples") ? "green_apple" : "cards/" + kind) + ".png");
-            g.blit(texture, 0, 0, 0, 0, 16, 16, 16, 16);
+        g.pose().pushPose();
+        try {
+            g.pose().translate(x, y, 0); g.pose().scale(scale, scale, 1);
+            if (skin(key)) {
+                ItemStack stack = SkinItems.preview(key.substring(5));
+                g.renderItem(stack.isEmpty() ? BARRIER_ICON : stack, 0, 0);
+            } else {
+                String kind = key.substring(6);
+                ResourceLocation texture = extraTexture(kind);
+                g.blit(texture, 0, 0, 0, 0, 16, 16, 16, 16);
+            }
+        } finally {
+            g.pose().popPose();
         }
-        g.pose().popPose();
+    }
+
+    private static ResourceLocation extraTexture(String kind) {
+        if (kind == null || kind.equals("green_apples")) {
+            return GREEN_APPLE_TEXTURE;
+        }
+        return EXTRA_TEXTURE_CACHE.computeIfAbsent(kind, k -> {
+            ResourceLocation loc = ResourceLocation.tryBuild("habitrain_lottery", "textures/gui/cards/" + k + ".png");
+            return loc != null ? loc : GREEN_APPLE_TEXTURE;
+        });
     }
     void render(GuiGraphics g, int mx, int my) {
         g.drawString(font, tr("strip", rewards.size()), x, y, INK, false);

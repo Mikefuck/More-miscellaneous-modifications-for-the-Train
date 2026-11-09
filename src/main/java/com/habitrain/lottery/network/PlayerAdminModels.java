@@ -35,5 +35,8 @@ public final class PlayerAdminModels {
     public static final class PlayerListSnapshot {
         public List<PlayerRow> players = new ArrayList<>();
         public long serverTime;
+        public int page;
+        public int totalPages = 1;
+        public int totalMatched;
     }
 }

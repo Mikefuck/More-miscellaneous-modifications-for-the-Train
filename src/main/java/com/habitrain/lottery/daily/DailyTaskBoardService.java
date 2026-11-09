@@ -22,8 +22,9 @@ public final class DailyTaskBoardService {
 
     /** {@code shopReceipt}: the shop item whose purchase request this board answers. */
     public static DailyTaskSnapshot snapshot(ServerPlayer player, String shopReceipt) {
-        long day = LoginRewardService.todayEpochDayUtc();
         var store = PlayerLotteryStore.get();
+        long day = com.habitrain.lottery.time.LotteryDayClock.monotonicEpochDay(
+                store.getOrLoad(player).dailyTaskEpochDay);
         Map<String, Integer> cards = HabiCardApi.all(player.getUUID());
         int total = cards.values().stream().mapToInt(Integer::intValue).sum();
         List<DailyTaskSnapshot.TaskRow> tasks = new ArrayList<>();
@@ -34,6 +35,8 @@ public final class DailyTaskBoardService {
                     DailyTaskConfigService.isRandomPick(task.id())));
         }
         return new DailyTaskSnapshot(day, store.getGreenApples(player.getUUID()),
-                cards, total, tasks, DailyShopService.open(), DailyShopService.rows(player), shopReceipt);
+                cards, total, tasks, DailyShopService.open(), DailyShopService.rows(player), shopReceipt,
+                com.habitrain.lottery.time.LotteryDayClock.nextResetEpochSecond(day),
+                com.habitrain.lottery.time.LotteryDayClock.zone().getId());
     }
 }

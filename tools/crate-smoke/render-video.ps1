@@ -15,6 +15,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$Out = [System.IO.Path]::GetFullPath((Join-Path $PWD.ProviderPath $Out))
 $run = (Resolve-Path $RunDir).Path
 $frames = Join-Path $run $FrameFolder
 $csv = Join-Path $frames 'timing.csv'

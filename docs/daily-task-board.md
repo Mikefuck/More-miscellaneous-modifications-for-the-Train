@@ -44,8 +44,8 @@ HabiDailyTaskApi.register(new HabiDailyTaskApi.Task(
 
 v2 保留 v1 的任务注册、单任务推进与领取入口，并增加按玩家筛选世界配置任务及批量推进：
 
-- `tasks()` 返回静态注册任务和全部世界配置任务；同 ID 时世界配置优先。
-- `tasksFor(player)` 返回该玩家当天实际可见的任务，包含随机池筛选结果。
+- `tasks()` 返回静态注册任务和全部世界配置任务的只读快照；同 ID 时世界配置优先。
+- `tasksFor(playerUuid)`（兼容重载 `tasksFor(player)`）返回该玩家当天实际可见的任务只读列表，包含随机池筛选结果。
 - `advanceAll(player, amounts)` 一次持久化多个任务的进度，跳过未知、未激活及非正增量。
 - `setConfiguredTasks(tasks, active)` 由本模组的世界配置服务使用，会整体替换配置任务；普通扩展仍使用 `register`。
 
@@ -57,10 +57,10 @@ v2 保留 v1 的任务注册、单任务推进与领取入口，并增加按玩�
 - `advance` 会把进度限制在目标值以内，并在写入失败时回滚。
 - 玩家点击领取后，服务端先写入待处理标记，再运行 `ClaimAction`；成功后写入已领取标记。
 - 回调抛异常或返回 `false` 时会清除待处理标记，任务可重试。
-- 每日状态以 UTC 00:00 切换，`progress` 和 `claimed` 只返回当前 UTC 日的数据。
+- 每日状态默认以 UTC 00:00 切换（可通过世界配置 `habitrain_lottery/config/clock.json` 自定义时区，由 `LotteryDayClock` 统一提供），`progress` 和 `claimed` 只返回当前逻辑日的数据。
 - `HabiDailyTaskApi.open(player)` 可以在不放置方块时打开任务页面。
 
-扩展回调应使用稳定的去重原因。`grantGreenApples(..., true)` 的去重集合只保留最近 64 个不同键，按插入顺序淘汰，适合有限重试窗口；需要长期防重复的扩展应保存长期事务记录。跨多个独立存档不能保证单事务原子性，不能直接把“奖励已发出”与另一个文件中的完成标记当成一次提交。
+扩展回调应使用稳定的去重原因。`grantGreenApples(..., true)` 的去重集合保留最近 64 个不同键，按插入顺序淘汰，适合有限重试窗口；需要长期防重复的扩展应保存长期事务记录。跨多个独立存档不能保证单事务原子性，不能直接把“奖励已发出”与另一个文件中的完成标记当成一次提交。
 
 ## 页面与快照
 

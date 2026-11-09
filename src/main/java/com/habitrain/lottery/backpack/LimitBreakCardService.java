@@ -19,8 +19,9 @@ public final class LimitBreakCardService {
             }
             return false;
         }
-        player.sendSystemMessage(Component.literal("§a[突破上限卡] 今日角色卡可用次数 +1，当前剩余 "
-                + DailyFactionCardService.remaining(player) + " 次"));
+        player.sendSystemMessage(Component.translatable(
+                "message.habitrain_lottery.limit_break.used",
+                DailyFactionCardService.remaining(player)));
         return true;
     }
 }

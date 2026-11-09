@@ -4,16 +4,30 @@ import com.habitrain.lottery.backpack.PlayerCardAdminModels.CardOperation;
 import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.time.LotteryDayClock;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SelfSelectCardStoreTest {
     @TempDir Path temp;
-    @BeforeEach void setup() { PlayerLotteryStore.get().reset(); WorldLotteryPaths.initForTests(temp); }
-    @AfterEach void cleanup() { PlayerLotteryStore.get().reset(); WorldLotteryPaths.clear(); }
+
+    @BeforeEach void setup() {
+        LotteryDayClock.setTestClock(Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneOffset.UTC));
+        PlayerLotteryStore.get().reset();
+        WorldLotteryPaths.initForTests(temp);
+    }
+
+    @AfterEach void cleanup() {
+        PlayerLotteryStore.get().reset();
+        WorldLotteryPaths.clear();
+        LotteryDayClock.resetAll();
+    }
 
     @Test void independentBalancesSurviveBothWritePathsAndReload() {
         UUID id = UUID.randomUUID();

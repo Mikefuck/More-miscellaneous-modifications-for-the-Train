@@ -112,10 +112,13 @@ static void textScaled(GuiGraphics g, Font font, String value, int x, int y, flo
             return;
         }
         g.pose().pushPose();
-        g.pose().translate(x, y, 0.0F);
-        g.pose().scale(scale, scale, 1.0F);
-        g.drawString(font, value, 0, 0, color, false);
-        g.pose().popPose();
+        try {
+            g.pose().translate(x, y, 0.0F);
+            g.pose().scale(scale, scale, 1.0F);
+            g.drawString(font, value, 0, 0, color, false);
+        } finally {
+            g.pose().popPose();
+        }
     }
 
 static String fit(Font font, String value, int maxWidth) {

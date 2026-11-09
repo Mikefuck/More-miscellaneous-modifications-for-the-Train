@@ -38,7 +38,7 @@ public final class HabiLotteryApi {
 
     /** Returns 0 before the world is ready, without caching a missing account. */
     public static int getGreenApples(UUID uuid) {
-        return uuid == null ? 0 : PlayerLotteryStore.get().getGreenApples(uuid);
+        return uuid == null || !ApiGuards.isOnServerThread() ? 0 : PlayerLotteryStore.get().getGreenApples(uuid);
     }
 
     public static int getGreenApples(ServerPlayer player) {
@@ -66,7 +66,8 @@ public final class HabiLotteryApi {
         if (uuid == null) return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         if (!HabiAssetPolicy.isValidCurrencyOperation(HabiAssetOperation.ADD, amount))
             return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
-        if (!isReady()) return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) return HabiAssetResult.fail(guard);
         PlayerLotteryStore store = PlayerLotteryStore.get();
         if (store.isLoadFailed(uuid)) return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
         PlayerLotteryData before = store.getOrLoad(uuid).copy();
@@ -85,11 +86,13 @@ public final class HabiLotteryApi {
     }
 
     public static int addGreenApplesToOnline(int delta) {
+        if (!ApiGuards.isServerThreadAndReady()) return 0;
         MinecraftServer current = server();
         return current == null ? 0 : PlayerLotteryStore.get().addGreenApplesToOnline(current, delta);
     }
 
     public static int setGreenApplesToOnline(int amount) {
+        if (!ApiGuards.isServerThreadAndReady()) return 0;
         MinecraftServer current = server();
         return current == null ? 0 : PlayerLotteryStore.get().setGreenApplesToOnline(current, amount);
     }
@@ -100,7 +103,7 @@ public final class HabiLotteryApi {
 
     /** Complete per-player asset snapshot. Never {@code null}. */
     public static HabiPlayerAssets snapshot(UUID uuid) {
-        if (uuid == null) return HabiPlayerAssets.empty(null);
+        if (uuid == null || !ApiGuards.isOnServerThread()) return HabiPlayerAssets.empty(uuid);
         ServerPlayer online = online(uuid);
         String name = online == null ? "" : online.getGameProfile().getName();
         if (!isReady()) {
@@ -123,7 +126,7 @@ public final class HabiLotteryApi {
     }
 
     static ServerPlayer online(UUID uuid) {
-        if (uuid == null) return null;
+        if (uuid == null || !ApiGuards.isOnServerThread()) return null;
         try {
             MinecraftServer current = server();
             return current == null ? null : current.getPlayerList().getPlayer(uuid);
@@ -137,7 +140,8 @@ public final class HabiLotteryApi {
         if (operation == null) return HabiAssetResult.fail(HabiFailure.INVALID_OPERATION);
         if (!HabiAssetPolicy.isValidCurrencyOperation(operation, value))
             return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
-        if (!isReady()) return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) return HabiAssetResult.fail(guard);
         PlayerLotteryStore store = PlayerLotteryStore.get();
         if (store.isLoadFailed(uuid)) return HabiAssetResult.fail(HabiFailure.CORRUPT_STORAGE);
         PlayerLotteryData before = store.getOrLoad(uuid).copy();

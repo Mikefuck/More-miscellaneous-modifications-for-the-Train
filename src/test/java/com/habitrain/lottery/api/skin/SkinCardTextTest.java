@@ -1,13 +1,16 @@
 package com.habitrain.lottery.api.skin;
 
+import com.habitrain.lottery.testutil.TestRegistryResetExtension;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ExtendWith(TestRegistryResetExtension.class)
 class SkinCardTextTest {
     private static final String ID = "card_text_test";
 

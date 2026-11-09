@@ -2,12 +2,15 @@ package com.habitrain.lottery.client;
 
 import com.habitrain.lottery.api.skin.SkinEffects;
 import com.habitrain.lottery.api.skin.SkinItems;
+import com.habitrain.lottery.bridge.DisguiseIdentityBridge;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.ItemSupplier;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 
@@ -53,6 +56,12 @@ public final class SkinTrailTicker {
             String entry = SkinItems.entryOf(stack);
             if (entry == null || SkinEffects.trailByEntry(entry) == null) {
                 continue;
+            }
+            if (entity instanceof Projectile shot && shot.getOwner() instanceof LivingEntity owner) {
+                if (DisguiseIdentityBridge.Client.resolve(owner).kind()
+                        != DisguiseIdentityBridge.Kind.SELF) {
+                    continue;
+                }
             }
             Vec3 position = new Vec3(
                     Mth.lerp(partialTick, entity.xo, entity.getX()),

@@ -16,5 +16,13 @@
         "fabricloader": ">=0.18.1",
         "java": ">=21",
         "a_habitrain_prelaunch": "*"
+    },
+    "custom": {
+        "modmenu": {
+            "parent": "habitrain_lottery",
+            "badges": [
+                "library"
+            ]
+        }
     }
 }

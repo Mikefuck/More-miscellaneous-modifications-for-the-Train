@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.backpack.ActiveCardForces;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
-import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
@@ -48,7 +47,7 @@ public final class FactionCardRefunds {
                 intent = new Intent();
                 intent.receipt = expectedReceipt;
                 intent.type = requestedType.questKey;
-                intent.day = LoginRewardService.todayEpochDayUtc();
+                intent.day = ActiveCardForces.activationEpochDay(uuid);
                 if (!AtomicJsonFiles.writeJson(file, intent, GSON, true, !load.usedBackup())) return false;
             }
             if (intent == null || intent.receipt == null || intent.receipt.isBlank()

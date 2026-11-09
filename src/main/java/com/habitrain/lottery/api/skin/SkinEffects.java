@@ -97,13 +97,17 @@ public final class SkinEffects {
     public static void registerImpact(String type, String id, SkinImpactHandler handler) {
         Objects.requireNonNull(handler, "handler");
         String key = key(type, id);
-        SkinImpactHandler previous = IMPACTS.put(key, handler);
-        SkinRegistrationTransaction.changed(IMPACTS, key, previous, handler);
-        attribute("impact:" + key);
-        if (previous != null && previous != handler) {
-            LOGGER.info("Skin impact handler for {} replaced ({})", key, providerName());
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            SkinImpactHandler previous = IMPACTS.put(key, handler);
+            SkinRegistrationTransaction.changed(IMPACTS, key, previous, handler);
+            attribute("impact:" + key);
+            REPORTED_FAILURES.remove(key);
+            REPORTED_FAILURES.remove(key + "#impact");
+            if (previous != null && previous != handler) {
+                LOGGER.info("Skin impact handler for {} replaced ({})", key, providerName());
+            }
+            warnIfSkinUnknown(key);
         }
-        warnIfSkinUnknown(key);
     }
 
     /**
@@ -115,13 +119,17 @@ public final class SkinEffects {
     public static void registerTrail(String type, String id, SkinTrailHandler handler) {
         Objects.requireNonNull(handler, "handler");
         String key = key(type, id);
-        SkinTrailHandler previous = TRAILS.put(key, handler);
-        SkinRegistrationTransaction.changed(TRAILS, key, previous, handler);
-        attribute("trail:" + key);
-        if (previous != null && previous != handler) {
-            LOGGER.info("Skin trail handler for {} replaced ({})", key, providerName());
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            SkinTrailHandler previous = TRAILS.put(key, handler);
+            SkinRegistrationTransaction.changed(TRAILS, key, previous, handler);
+            attribute("trail:" + key);
+            REPORTED_FAILURES.remove(key);
+            REPORTED_FAILURES.remove(key + "#trail");
+            if (previous != null && previous != handler) {
+                LOGGER.info("Skin trail handler for {} replaced ({})", key, providerName());
+            }
+            warnIfSkinUnknown(key);
         }
-        warnIfSkinUnknown(key);
     }
 
     /**
@@ -132,16 +140,20 @@ public final class SkinEffects {
     public static void registerAnimation(String type, String id, SkinAnimation animation) {
         Objects.requireNonNull(animation, "animation");
         String key = key(type, id);
-        SkinAnimation previous = ANIMATIONS.put(key, animation);
-        SkinRegistrationTransaction.changed(ANIMATIONS, key, previous, animation);
-        attribute("animation:" + key);
-        if (previous != null && !previous.equals(animation)) {
-            LOGGER.info("Skin animation for {} replaced ({})", key, providerName());
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            SkinAnimation previous = ANIMATIONS.put(key, animation);
+            SkinRegistrationTransaction.changed(ANIMATIONS, key, previous, animation);
+            attribute("animation:" + key);
+            REPORTED_FAILURES.remove(key);
+            REPORTED_FAILURES.remove(key + "#animation");
+            if (previous != null && !previous.equals(animation)) {
+                LOGGER.info("Skin animation for {} replaced ({})", key, providerName());
+            }
+            if (!animation.isAnimated()) {
+                LOGGER.debug("Skin animation for {} is inert (all amplitudes are zero)", key);
+            }
+            warnIfSkinUnknown(key);
         }
-        if (!animation.isAnimated()) {
-            LOGGER.debug("Skin animation for {} is inert (all amplitudes are zero)", key);
-        }
-        warnIfSkinUnknown(key);
     }
 
     /**
@@ -159,21 +171,72 @@ public final class SkinEffects {
      */
     public static void restrictToItems(String type, String id, ResourceLocation... items) {
         String key = key(type, id);
-        if (items == null || items.length == 0) {
-            var previous = ITEM_FILTERS.remove(key);
-            SkinRegistrationTransaction.changed(ITEM_FILTERS, key, previous, null);
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            if (items == null || items.length == 0) {
+                var previous = ITEM_FILTERS.remove(key);
+                SkinRegistrationTransaction.changed(ITEM_FILTERS, key, previous, null);
+                attribute("filter:" + key);
+                return;
+            }
+            Set<ResourceLocation> allowed = new LinkedHashSet<>(Arrays.asList(items));
+            if (allowed.contains(null)) {
+                throw new IllegalArgumentException("Item restriction must not contain null");
+            }
+            Set<ResourceLocation> next = Collections.unmodifiableSet(allowed);
+            var previous = ITEM_FILTERS.put(key, next);
+            SkinRegistrationTransaction.changed(ITEM_FILTERS, key, previous, next);
             attribute("filter:" + key);
+            LOGGER.debug("Skin {} restricted to {} item(s)", key, allowed.size());
+        }
+    }
+
+    /**
+     * Removes every effect hook, item restriction, provider attribution and cached failure
+     * record associated with {@code key} ({@code type/id}).
+     */
+    public static void removeEntry(String key) {
+        String canonical = normalizeEntryOrRaw(key);
+        if (canonical == null) {
             return;
         }
-        Set<ResourceLocation> allowed = new LinkedHashSet<>(Arrays.asList(items));
-        if (allowed.contains(null)) {
-            throw new IllegalArgumentException("Item restriction must not contain null");
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            SkinRegistrationTransaction.remove(IMPACTS, canonical);
+            SkinRegistrationTransaction.remove(TRAILS, canonical);
+            SkinRegistrationTransaction.remove(ANIMATIONS, canonical);
+            SkinRegistrationTransaction.remove(ITEM_FILTERS, canonical);
+            SkinRegistrationTransaction.remove(PROVIDERS, "impact:" + canonical);
+            SkinRegistrationTransaction.remove(PROVIDERS, "trail:" + canonical);
+            SkinRegistrationTransaction.remove(PROVIDERS, "animation:" + canonical);
+            SkinRegistrationTransaction.remove(PROVIDERS, "filter:" + canonical);
+            WARNED_UNKNOWN_SKINS.remove(canonical);
+            clearReportedFailures(canonical);
         }
-        Set<ResourceLocation> next = Collections.unmodifiableSet(allowed);
-        var previous = ITEM_FILTERS.put(key, next);
-        SkinRegistrationTransaction.changed(ITEM_FILTERS, key, previous, next);
-        attribute("filter:" + key);
-        LOGGER.debug("Skin {} restricted to {} item(s)", key, allowed.size());
+    }
+
+    static void removeEntryIfOwnedOrUnowned(String key, String providerId) {
+        if (key == null) {
+            return;
+        }
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            removeHookIfOwnedOrUnowned(IMPACTS, "impact", key, providerId);
+            removeHookIfOwnedOrUnowned(TRAILS, "trail", key, providerId);
+            removeHookIfOwnedOrUnowned(ANIMATIONS, "animation", key, providerId);
+            removeHookIfOwnedOrUnowned(ITEM_FILTERS, "filter", key, providerId);
+            WARNED_UNKNOWN_SKINS.remove(key);
+        }
+    }
+
+    private static <V> void removeHookIfOwnedOrUnowned(Map<String, V> map, String hook, String key, String providerId) {
+        String providerKey = hook + ":" + key;
+        String owner = PROVIDERS.get(providerKey);
+        if (owner == null || owner.equals(providerId)) {
+            SkinRegistrationTransaction.remove(map, key);
+            if (owner != null) {
+                SkinRegistrationTransaction.remove(PROVIDERS, providerKey);
+            }
+            REPORTED_FAILURES.remove(key);
+            REPORTED_FAILURES.remove(key + "#" + hook);
+        }
     }
 
     /**
@@ -183,25 +246,47 @@ public final class SkinEffects {
      *
      * @return the number of removed entries
      */
-    public static synchronized int removeProvider(String providerId) {
+    public static int removeProvider(String providerId) {
         if (providerId == null) return 0;
-        int removed = 0;
-        for (var entry : new LinkedHashMap<>(PROVIDERS).entrySet()) {
-            if (!providerId.equals(entry.getValue())) continue;
-            String key = entry.getKey();
-            int colon = key.indexOf(':');
-            String id = key.substring(colon + 1);
-            Object old = switch (key.substring(0, colon)) {
-                case "impact" -> SkinRegistrationTransaction.remove(IMPACTS, id);
-                case "trail" -> SkinRegistrationTransaction.remove(TRAILS, id);
-                case "animation" -> SkinRegistrationTransaction.remove(ANIMATIONS, id);
-                case "filter" -> SkinRegistrationTransaction.remove(ITEM_FILTERS, id);
-                default -> null;
-            };
-            if (old != null) removed++;
-            SkinRegistrationTransaction.remove(PROVIDERS, key);
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            int removed = 0;
+            for (var entry : new LinkedHashMap<>(PROVIDERS).entrySet()) {
+                if (!providerId.equals(entry.getValue())) continue;
+                String key = entry.getKey();
+                int colon = key.indexOf(':');
+                String hook = key.substring(0, colon);
+                String id = key.substring(colon + 1);
+                Object old = switch (hook) {
+                    case "impact" -> SkinRegistrationTransaction.remove(IMPACTS, id);
+                    case "trail" -> SkinRegistrationTransaction.remove(TRAILS, id);
+                    case "animation" -> SkinRegistrationTransaction.remove(ANIMATIONS, id);
+                    case "filter" -> SkinRegistrationTransaction.remove(ITEM_FILTERS, id);
+                    default -> null;
+                };
+                if (old != null) removed++;
+                SkinRegistrationTransaction.remove(PROVIDERS, key);
+                WARNED_UNKNOWN_SKINS.remove(id);
+                REPORTED_FAILURES.remove(id);
+                REPORTED_FAILURES.remove(id + "#" + hook);
+            }
+            return removed;
         }
-        return removed;
+    }
+
+    static void clearForTest() {
+        synchronized (HabiSkinApi.REGISTRY_LOCK) {
+            IMPACTS.clear();
+            TRAILS.clear();
+            ANIMATIONS.clear();
+            ITEM_FILTERS.clear();
+            PROVIDERS.clear();
+            WARNED_UNKNOWN_SKINS.clear();
+            REPORTED_FAILURES.clear();
+        }
+    }
+
+    static boolean hasReportedFailure(String entry, String hook) {
+        return entry != null && hook != null && REPORTED_FAILURES.contains(entry + "#" + hook);
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -388,11 +473,32 @@ public final class SkinEffects {
         }
     }
 
-    private static void reportFailure(String entry, String hook, Throwable t) {
+    static void reportFailure(String entry, String hook, Throwable t) {
         if (REPORTED_FAILURES.add(entry + "#" + hook)) {
             LOGGER.error("Skin {} handler for {} threw; further failures of this handler are not logged",
                     hook, entry, t);
         }
+    }
+
+    private static void clearReportedFailures(String key) {
+        REPORTED_FAILURES.remove(key);
+        REPORTED_FAILURES.remove(key + "#impact");
+        REPORTED_FAILURES.remove(key + "#trail");
+        REPORTED_FAILURES.remove(key + "#animation");
+    }
+
+    private static String normalizeEntryOrRaw(String entry) {
+        if (entry == null || entry.isBlank()) {
+            return null;
+        }
+        int slash = entry.indexOf('/');
+        if (slash > 0 && entry.indexOf('/', slash + 1) < 0) {
+            String canonical = keyOrNull(entry.substring(0, slash), entry.substring(slash + 1));
+            if (canonical != null) {
+                return canonical;
+            }
+        }
+        return entry.trim();
     }
 
     private static String key(String type, String id) {

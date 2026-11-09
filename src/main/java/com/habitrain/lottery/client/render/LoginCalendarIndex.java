@@ -10,6 +10,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -19,15 +20,17 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.phys.Vec3;
 
+import java.lang.ref.WeakReference;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
  * Client-only index of placed login-calendar tiles.
- * Filled from chunk load and client block place/remove; never cube-scans every frame.
+ * Filled from chunk load and client block updates; automatically resets on dimension/level switch.
  */
 @Environment(EnvType.CLIENT)
 public final class LoginCalendarIndex {
@@ -39,6 +42,9 @@ public final class LoginCalendarIndex {
 
     private static final Set<Long> POSITIONS = new HashSet<>();
     private static final Map<Long, Set<Long>> BY_CHUNK = new HashMap<>();
+
+    private static WeakReference<ClientLevel> trackedLevel = new WeakReference<>(null);
+    private static ResourceKey<Level> trackedDimension;
 
     private static long lastFallbackMs;
     private static double lastCamX = Double.NaN;
@@ -56,9 +62,29 @@ public final class LoginCalendarIndex {
                 client.execute(() -> rescanLoadedChunks(client)));
     }
 
+    /**
+     * Ensures the index is bound to the active {@link ClientLevel} and dimension.
+     * Whenever the level instance or dimension key changes (e.g. lobby &lt;-&gt; train teleport),
+     * clears stale coordinates from the previous dimension so discovery can run cleanly.
+     */
+    public static void syncLevel(Level level) {
+        if (!(level instanceof ClientLevel clientLevel)) {
+            return;
+        }
+        ClientLevel previous = trackedLevel.get();
+        ResourceKey<Level> dimension = clientLevel.dimension();
+        if (previous != clientLevel || !Objects.equals(trackedDimension, dimension)) {
+            clear();
+            trackedLevel = new WeakReference<>(clientLevel);
+            trackedDimension = dimension;
+        }
+    }
+
     public static void clear() {
         POSITIONS.clear();
         BY_CHUNK.clear();
+        trackedLevel = new WeakReference<>(null);
+        trackedDimension = null;
         lastFallbackMs = 0L;
         lastCamX = Double.NaN;
         LoginCalendarGroup.invalidateCache();
@@ -133,6 +159,7 @@ public final class LoginCalendarIndex {
      * at 1 Hz or when the camera moved more than 2 blocks. Never a per-frame cube.
      */
     public static void maybeDiscoverNearby(Level level, Vec3 cam, BlockPos playerPos) {
+        syncLevel(level);
         if (!POSITIONS.isEmpty()) {
             return;
         }
@@ -177,10 +204,15 @@ public final class LoginCalendarIndex {
     }
 
     static void onChunkLoad(ClientLevel world, LevelChunk chunk) {
+        syncLevel(world);
         scanChunk(chunk);
     }
 
     static void onChunkUnload(ClientLevel world, LevelChunk chunk) {
+        ClientLevel current = trackedLevel.get();
+        if (current != null && current != world) {
+            return;
+        }
         long key = chunk.getPos().toLong();
         Set<Long> inChunk = BY_CHUNK.remove(key);
         if (inChunk == null || inChunk.isEmpty()) {
@@ -196,6 +228,7 @@ public final class LoginCalendarIndex {
         if (level == null || client.player == null) {
             return;
         }
+        syncLevel(level);
         int view = Math.max(2, client.options.getEffectiveRenderDistance());
         ChunkPos center = client.player.chunkPosition();
         for (int cx = center.x - view; cx <= center.x + view; cx++) {

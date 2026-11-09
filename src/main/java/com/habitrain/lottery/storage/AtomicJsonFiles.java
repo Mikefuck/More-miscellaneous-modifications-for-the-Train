@@ -135,6 +135,13 @@ public final class AtomicJsonFiles {
             Path quarantined = quarantine(target);
             T fromBak = tryParse(bak, type, gson);
             if (fromBak != null) {
+                if (!Files.exists(target)) {
+                    if (writeJson(target, fromBak, gson, true, false)) {
+                        LOGGER.info("Healed primary {} from .bak after quarantining corrupt file", target);
+                    } else {
+                        LOGGER.warn("Restored {} from .bak in memory, but healing primary failed", target);
+                    }
+                }
                 return JsonLoad.fromBackup(fromBak, quarantined);
             }
             return JsonLoad.corrupt(quarantined);
@@ -143,6 +150,13 @@ public final class AtomicJsonFiles {
         T fromBak = tryParse(bak, type, gson);
         if (fromBak != null) {
             LOGGER.warn("Primary {} missing; restored from .bak", target);
+            if (!Files.exists(target)) {
+                if (writeJson(target, fromBak, gson, true, false)) {
+                    LOGGER.info("Healed missing primary {} from .bak", target);
+                } else {
+                    LOGGER.warn("Restored {} from .bak in memory, but recreating primary failed", target);
+                }
+            }
             return JsonLoad.fromBackup(fromBak, null);
         }
         if (backupExists || Files.exists(target) || hasQuarantine(target)) {
@@ -225,14 +239,40 @@ public final class AtomicJsonFiles {
             }
             if (backup && Files.isRegularFile(target)) {
                 Path bak = bakPath(target);
+                Path bakTmp = null;
+                boolean bakMoved = false;
                 try {
                     if (Files.exists(bak) && !Files.isRegularFile(bak)) {
                         throw new IOException(".bak is not a regular file: " + bak);
                     }
-                    Files.copy(target, bak, StandardCopyOption.REPLACE_EXISTING);
+                    bakTmp = createUniqueTemp(bak);
+                    try (InputStream in = Files.newInputStream(target);
+                         OutputStream bakOut = Files.newOutputStream(bakTmp,
+                                 StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                        in.transferTo(bakOut);
+                        bakOut.flush();
+                    }
+                    if (fsync) {
+                        try (FileChannel bakChannel = FileChannel.open(bakTmp, StandardOpenOption.WRITE)) {
+                            bakChannel.force(true);
+                        }
+                    }
+                    try {
+                        Files.move(bakTmp, bak, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (AtomicMoveNotSupportedException e) {
+                        Files.move(bakTmp, bak, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    bakMoved = true;
                 } catch (Exception e) {
-                    LOGGER.error("Refusing to replace {} because .bak copy failed", target, e);
+                    LOGGER.error("Refusing to replace {} because atomic .bak update failed", target, e);
                     return false;
+                } finally {
+                    if (!bakMoved && bakTmp != null) {
+                        try {
+                            Files.deleteIfExists(bakTmp);
+                        } catch (IOException ignored) {
+                        }
+                    }
                 }
             }
             try {

@@ -54,18 +54,18 @@ class MailboxPagesTest {
     }
 
     @Test void disconnectResetClearsPrivateCachesAndAdvancesVersions() {
-        LotteryNetwork.ClientLotteryState.op = true;
-        LotteryNetwork.ClientLotteryState.mailboxJson = "old server mail";
-        LotteryNetwork.ClientLotteryState.mailboxNext = 50;
-        LotteryNetwork.ClientLotteryState.greenApples = 160;
-        LotteryNetwork.ClientLoginState.hasData = true;
-        int version = LotteryNetwork.ClientLotteryState.mailboxVersion;
+        ClientLotteryState.op = true;
+        ClientLotteryState.mailboxJson = "old server mail";
+        ClientLotteryState.mailboxNext = 50;
+        ClientLotteryState.greenApples = 160;
+        ClientLoginState.hasData = true;
+        int version = ClientLotteryState.mailboxVersion;
         LotteryNetwork.resetClientState();
-        assertFalse(LotteryNetwork.ClientLotteryState.op);
-        assertEquals("", LotteryNetwork.ClientLotteryState.mailboxJson);
-        assertEquals(-1, LotteryNetwork.ClientLotteryState.mailboxNext);
-        assertEquals(0, LotteryNetwork.ClientLotteryState.greenApples);
-        assertFalse(LotteryNetwork.ClientLoginState.hasData);
-        assertTrue(LotteryNetwork.ClientLotteryState.mailboxVersion > version);
+        assertFalse(ClientLotteryState.op);
+        assertEquals("", ClientLotteryState.mailboxJson);
+        assertEquals(-1, ClientLotteryState.mailboxNext);
+        assertEquals(0, ClientLotteryState.greenApples);
+        assertFalse(ClientLoginState.hasData);
+        assertTrue(ClientLotteryState.mailboxVersion > version);
     }
 }

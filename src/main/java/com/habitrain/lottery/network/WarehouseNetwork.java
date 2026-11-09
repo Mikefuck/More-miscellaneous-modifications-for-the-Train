@@ -68,14 +68,17 @@ public final class WarehouseNetwork {
         PayloadTypeRegistry.playC2S().register(Request.TYPE, Request.CODEC);
         PayloadTypeRegistry.playS2C().register(Snapshot.TYPE, Snapshot.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(Request.TYPE, (p, ctx) -> ctx.server().execute(() -> {
-            if (LotteryNetwork.rateLimited(ctx.player(), "warehouse", 750)) return;
-            send(ctx.player(), p.requestId());
+            ServerPlayer player = ctx.player();
+            if (player == null || player.hasDisconnected()) return;
+            if (LotteryNetwork.rateLimited(player, "warehouse", 750)) return;
+            send(player, p.requestId());
         }));
     }
     private static void fail(ServerPlayer player, int request, String reason) {
-        ServerPlayNetworking.send(player, new Snapshot(request, 0, 0, reason, List.of()));
+        LotteryNetwork.sendIfSupported(player, new Snapshot(request, 0, 0, reason, List.of()));
     }
     private static void send(ServerPlayer player, int request) {
+        if (player == null || player.hasDisconnected()) return;
         var store = PlayerLotteryStore.get();
         if (!WorldLotteryPaths.ready() || !store.isTakeoverActive()) { fail(player, request, "unavailable"); return; }
         try {
@@ -120,11 +123,11 @@ public final class WarehouseNetwork {
             }
             if (rows.size() > MAX_ENTRIES) { fail(player, request, "too_many"); return; }
             if (rows.isEmpty()) {
-                ServerPlayNetworking.send(player, new Snapshot(request, 0, 0, "", List.of(), data.inventoryRevision));
+                LotteryNetwork.sendIfSupported(player, new Snapshot(request, 0, 0, "", List.of(), data.inventoryRevision));
                 return;
             }
             for (int offset = 0; offset < rows.size(); offset += CHUNK_SIZE)
-                ServerPlayNetworking.send(player, new Snapshot(request, offset, rows.size(), "",
+                LotteryNetwork.sendIfSupported(player, new Snapshot(request, offset, rows.size(), "",
                         List.copyOf(rows.subList(offset, Math.min(rows.size(), offset + CHUNK_SIZE))),
                         data.inventoryRevision));
         } catch (RuntimeException ex) {

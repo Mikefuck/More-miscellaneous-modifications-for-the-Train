@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Same-facing connected calendar tiles form a group; each tile knows its local U/V in the AABB.
+ * Same-facing coplanar connected calendar tiles form a group; each tile knows its local U/V in the AABB.
  * U = right along display face, V = up (world +Y). localV=0 is top row.
  */
 public final class LoginCalendarGroup {
@@ -60,20 +60,20 @@ public final class LoginCalendarGroup {
     }
 
     /**
-     * BFS the connected wall once, then every member reuses the cached group until TTL or invalidate.
+     * BFS the connected coplanar wall once, then every member reuses the cached group until TTL or invalidate.
      */
     public static LoginCalendarGroup resolve(BlockPos origin, Direction facing, SameFacingPredicate sameFacing) {
         long now = System.currentTimeMillis();
         long key = origin.asLong();
         if (now < cacheExpireAtMs) {
             LoginCalendarGroup hit = CACHE.get(key);
-            if (hit != null) {
+            if (hit != null && hit.facing == facing) {
                 return hit;
             }
         } else if (!CACHE.isEmpty()) {
             CACHE.clear();
         }
-        List<BlockPos> members = flood(origin, sameFacing);
+        List<BlockPos> members = flood(origin, facing, sameFacing);
         Map<Long, LoginCalendarGroup> wall = layoutWall(members, facing);
         CACHE.putAll(wall);
         cacheExpireAtMs = now + CACHE_TTL_MS;
@@ -109,6 +109,16 @@ public final class LoginCalendarGroup {
     }
 
     static List<BlockPos> flood(BlockPos origin, SameFacingPredicate sameFacing) {
+        return flood(origin, Direction.SOUTH, sameFacing);
+    }
+
+    /**
+     * Floods strictly within the 4 coplanar directions orthogonal to {@code facing}
+     * ({@code UP}, {@code DOWN}, {@code facing.getClockWise()}, {@code facing.getCounterClockWise()}),
+     * never stepping along {@code facing} or {@code facing.getOpposite()}.
+     */
+    static List<BlockPos> flood(BlockPos origin, Direction facing, SameFacingPredicate sameFacing) {
+        Direction[] dirs = coplanarDirections(facing);
         ArrayDeque<BlockPos> q = new ArrayDeque<>();
         Set<Long> seen = new HashSet<>();
         List<BlockPos> members = new ArrayList<>();
@@ -117,7 +127,7 @@ public final class LoginCalendarGroup {
         while (!q.isEmpty()) {
             BlockPos p = q.removeFirst();
             members.add(p);
-            for (Direction d : Direction.values()) {
+            for (Direction d : dirs) {
                 BlockPos n = p.relative(d);
                 if (!seen.add(n.asLong())) {
                     continue;
@@ -128,6 +138,18 @@ public final class LoginCalendarGroup {
             }
         }
         return members;
+    }
+
+    private static Direction[] coplanarDirections(Direction facing) {
+        if (facing == null || facing.getAxis().isVertical()) {
+            return new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST};
+        }
+        return new Direction[]{
+                Direction.UP,
+                Direction.DOWN,
+                facing.getClockWise(),
+                facing.getCounterClockWise()
+        };
     }
 
     public static Direction rightOf(Direction facing) {

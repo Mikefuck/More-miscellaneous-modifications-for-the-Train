@@ -38,6 +38,7 @@ public final class WarehouseHoldKey {
     /** 按住多久打开仓库。 */
     static final long HOLD_MS = 2000L;
     private static final long FADE_IN_MS = 150L, CANCEL_MS = 320L;
+    private static final ItemStack ENDER_CHEST_ICON = new ItemStack(Items.ENDER_CHEST);
 
     /** 本次按下的时刻；−1 表示没有在蓄力。 */
     private static long pressedAt = -1;
@@ -159,10 +160,13 @@ public final class WarehouseHoldKey {
 
         // 中心：末影箱图标，一眼区别于原版背包
         g.pose().pushPose();
-        g.pose().translate(cx, cy, 0);
-        g.pose().scale(scale * 0.75F, scale * 0.75F, 1);
-        g.renderItem(new ItemStack(Items.ENDER_CHEST), -8, -8);
-        g.pose().popPose();
+        try {
+            g.pose().translate(cx, cy, 0);
+            g.pose().scale(scale * 0.75F, scale * 0.75F, 1);
+            g.renderItem(ENDER_CHEST_ICON, -8, -8);
+        } finally {
+            g.pose().popPose();
+        }
 
         // 标签：标题 + 操作说明
         int textAlpha = Math.max(5, (int) (alpha * 255)) << 24;
@@ -174,10 +178,13 @@ public final class WarehouseHoldKey {
             Component hint = Component.translatable("hud.habitrain_lottery.warehouse_hold.hint",
                     mc.options.keyInventory.getTranslatedKeyMessage());
             g.pose().pushPose();
-            g.pose().translate(cx, cy + r + 17, 0);
-            g.pose().scale(0.75F, 0.75F, 1);
-            g.drawCenteredString(mc.font, hint, 0, 0, textAlpha | (WarehouseTheme.TEXT_DIM & 0xFFFFFF));
-            g.pose().popPose();
+            try {
+                g.pose().translate(cx, cy + r + 17, 0);
+                g.pose().scale(0.75F, 0.75F, 1);
+                g.drawCenteredString(mc.font, hint, 0, 0, textAlpha | (WarehouseTheme.TEXT_DIM & 0xFFFFFF));
+            } finally {
+                g.pose().popPose();
+            }
         }
     }
 }

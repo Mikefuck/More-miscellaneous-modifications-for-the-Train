@@ -8,7 +8,7 @@ import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.crate.CrateService;
 import com.habitrain.lottery.network.CardUseMenuS2C;
 import com.habitrain.lottery.network.CardUseRequestC2S;
-import com.habitrain.lottery.network.LotteryNetwork.ClientLotteryState;
+import com.habitrain.lottery.network.ClientLotteryState;
 import com.habitrain.lottery.network.WarehouseNetwork;
 import com.habitrain.lottery.api.skin.SkinItems;
 import com.habitrain.lottery.api.skin.SkinQuality;
@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 账户奖励仓库：与开箱终端同一套视觉语汇。
@@ -56,6 +57,17 @@ public final class WarehouseScreen extends Screen {
     private static final String KEY = "screen.habitrain_lottery.warehouse.";
     /** 分类标签，顺序即显示顺序。 */
     private static final String[] CATEGORIES = {"all", "crates", "cards", "items", "appearance"};
+    private static final ConcurrentHashMap<ResourceLocation, Boolean> ART_EXISTS_CACHE = new ConcurrentHashMap<>();
+    private static final ItemStack FALLBACK_CHEST = new ItemStack(Items.CHEST);
+
+    public static void clearArtCache() {
+        ART_EXISTS_CACHE.clear();
+    }
+
+    private boolean hasArtResource(ResourceLocation id) {
+        if (id == null || minecraft == null) return false;
+        return ART_EXISTS_CACHE.computeIfAbsent(id, key -> minecraft.getResourceManager().getResource(key).isPresent());
+    }
 
     /** 仓库本体；职业自选只在使用自选卡后进入，不作为常驻入口。 */
     private enum Page { WAREHOUSE, ROLES }
@@ -583,7 +595,7 @@ public final class WarehouseScreen extends Screen {
             } else if (e.kind().equals("role")) {
                 detailAction.setMessage(text(busy() ? "pending" : "confirm_role"));
                 detailAction.active = !busy() && !detail.role.taken && cardsKnown && !CardGuiGameState.gameActiveOrStarting()
-                        && ClientLotteryState.cardBalances.getOrDefault("self_select", 0) > 0 && ClientLotteryState.cardUseRemainingUses > 0;
+                        && ClientLotteryState.cardBalances.getOrDefault("self_select", 0) > 0 && ClientLotteryState.cardUseRemainingSelfUses > 0;
             } else {
                 boolean crate = isCrate(e);
                 detailAction.setMessage(text(crate ? "open_crate" : "wardrobe"));
@@ -629,9 +641,13 @@ public final class WarehouseScreen extends Screen {
         // 详情按钮画在面板自己的平移层里；控件通道只画标签、搜索与底栏按钮。
         boolean backShown = detailBack.visible, actionShown = detailAction.visible;
         detailBack.visible = detailAction.visible = false;
-        if (search != null) drawSearchField(g, a);
-        super.render(g, detail == null ? mx : -1, detail == null ? my : -1, partialTick);
-        detailBack.visible = backShown; detailAction.visible = actionShown;
+        try {
+            if (search != null) drawSearchField(g, a);
+            super.render(g, detail == null ? mx : -1, detail == null ? my : -1, partialTick);
+        } finally {
+            detailBack.visible = backShown;
+            detailAction.visible = actionShown;
+        }
 
         if (detail != null) drawDetail(g, mx, my, partialTick);
         else if (!transitioning() && layout.contains(mx, my)) {
@@ -649,9 +665,12 @@ public final class WarehouseScreen extends Screen {
             float bridge = ScreenSwap.bridge(time, crateDepartAt, -1L);
             if (bridge > 0.005F) {
                 g.pose().pushPose();
-                g.pose().translate(0, 0, 600);
-                CrateArt.bridge(g, width, height, ScreenSwap.BRIDGE_COLOR, bridge);
-                g.pose().popPose();
+                try {
+                    g.pose().translate(0, 0, 600);
+                    CrateArt.bridge(g, width, height, ScreenSwap.BRIDGE_COLOR, bridge);
+                } finally {
+                    g.pose().popPose();
+                }
             }
             if (ScreenSwap.departed(time, crateDepartAt)) finishCrateDepart();
         }
@@ -669,9 +688,12 @@ public final class WarehouseScreen extends Screen {
         }
         motes.tick(delta);
         g.pose().pushPose();
-        g.pose().scale(unit, unit, 1);
-        motes.render(g, .8F * a, false);
-        g.pose().popPose();
+        try {
+            g.pose().scale(unit, unit, 1);
+            motes.render(g, .8F * a, false);
+        } finally {
+            g.pose().popPose();
+        }
     }
 
     /** 居中眉题 + 大标题 + 资产标签，构图与开箱终端的 header 一致。 */
@@ -732,7 +754,7 @@ public final class WarehouseScreen extends Screen {
     private ItemStack itemOf(String id) {
         ResourceLocation item = ResourceLocation.tryParse(id);
         ItemStack stack = item == null ? ItemStack.EMPTY : new ItemStack(BuiltInRegistries.ITEM.get(item));
-        return stack.isEmpty() ? new ItemStack(Items.CHEST) : stack;
+        return stack.isEmpty() ? FALLBACK_CHEST : stack;
     }
 
     /** 头部标签：暗色斜切底 + 左侧图标（或品质菱形）+ 文字。 */
@@ -744,7 +766,7 @@ public final class WarehouseScreen extends Screen {
 
         Chip(String label, int accent, ItemStack icon, ResourceLocation art) {
             this.label = label; this.accent = accent; this.icon = icon;
-            this.art = art != null && minecraft.getResourceManager().getResource(art).isPresent() ? art : null;
+            this.art = hasArtResource(art) ? art : null;
         }
 
         float width() { return font.width(label) + 28; }
@@ -755,18 +777,25 @@ public final class WarehouseScreen extends Screen {
             float iy = y + h / 2F;
             if (art != null) {
                 g.setColor(1, 1, 1, a);
-                int s = h - 4;
-                g.blit(art, Math.round(x + 11 - s / 2F), Math.round(iy - s / 2F), s, s, 0, 0, 32, 32, 32, 32);
-                g.setColor(1, 1, 1, 1);
+                try {
+                    int s = h - 4;
+                    g.blit(art, Math.round(x + 11 - s / 2F), Math.round(iy - s / 2F), s, s, 0, 0, 32, 32, 32, 32);
+                } finally {
+                    g.setColor(1, 1, 1, 1);
+                }
             } else if (!icon.isEmpty()) {
                 CrateArt.item(g, icon, x + 11, iy, (h - 3) / 16F, 0, 0, 1, a);
             } else {
                 CrateFx.diamond(g, x + 11, iy, 3, 3, GuiFx.fade(accent, a), false);
                 CrateFx.glow(g, x + 11, iy, 8, accent, .4F * a);
             }
-            g.pose().pushPose(); g.pose().translate(0, 0, 200);
-            WarehouseScreen.this.draw(g, label, x + 21, Math.round(iy - 4), 1, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, a), false);
-            g.pose().popPose();
+            g.pose().pushPose();
+            try {
+                g.pose().translate(0, 0, 200);
+                WarehouseScreen.this.draw(g, label, x + 21, Math.round(iy - 4), 1, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, a), false);
+            } finally {
+                g.pose().popPose();
+            }
         }
     }
 
@@ -801,27 +830,33 @@ public final class WarehouseScreen extends Screen {
         float progress = switching ? WarehouseMotion.progress(time, changed, WarehouseMotion.SWITCH_MS) : 1;
         // 留出悬停上浮与外发光的空间，但不压到分类行。
         g.enableScissor(layout.panelX0() + 1, layout.top() - 3, layout.panelX1() - 1, layout.bottom());
-        g.pose().pushPose();
-        boolean interactive = detail == null && !transitioning();
-        if (switching && progress < .5F) {
-            float p = WarehouseMotion.ease(progress * 2);
-            g.pose().translate(-switchDirection * 24 * p, 0, 0);
-            for (Tile t : outgoing) t.paint(g, -1, -1, (1 - p) * sceneAlpha, 0);
-        } else {
-            float p = switching ? WarehouseMotion.ease((progress - .5F) * 2) : 1;
-            g.pose().translate(switchDirection * 24 * (1 - p), 0, 0);
-            int firstRow = Math.max(0, (int) scroll / layout.rowHeight());
-            for (Tile t : tiles) if (t.visible) {
-                float enter = WarehouseMotion.reveal(time, Math.max(opened, enteredAt) + 120,
-                        Math.max(0, t.index - firstRow * layout.columns()));
-                t.paint(g, interactive ? mx : -1, interactive ? my : -1, p * enter * sceneAlpha,
-                        Math.round((1 - enter) * 10));
+        try {
+            g.pose().pushPose();
+            try {
+                boolean interactive = detail == null && !transitioning();
+                if (switching && progress < .5F) {
+                    float p = WarehouseMotion.ease(progress * 2);
+                    g.pose().translate(-switchDirection * 24 * p, 0, 0);
+                    for (Tile t : outgoing) t.paint(g, -1, -1, (1 - p) * sceneAlpha, 0);
+                } else {
+                    float p = switching ? WarehouseMotion.ease((progress - .5F) * 2) : 1;
+                    g.pose().translate(switchDirection * 24 * (1 - p), 0, 0);
+                    int firstRow = Math.max(0, (int) scroll / layout.rowHeight());
+                    for (Tile t : tiles) if (t.visible) {
+                        float enter = WarehouseMotion.reveal(time, Math.max(opened, enteredAt) + 120,
+                                Math.max(0, t.index - firstRow * layout.columns()));
+                        t.paint(g, interactive ? mx : -1, interactive ? my : -1, p * enter * sceneAlpha,
+                                Math.round((1 - enter) * 10));
+                    }
+                }
+            } finally {
+                g.pose().popPose();
             }
+            if (!known && loading) drawSkeleton(g, time, sceneAlpha);
+            else if (tiles.isEmpty() && (known || page == Page.ROLES)) drawEmpty(g, sceneAlpha);
+        } finally {
+            g.disableScissor();
         }
-        g.pose().popPose();
-        if (!known && loading) drawSkeleton(g, time, sceneAlpha);
-        else if (tiles.isEmpty() && (known || page == Page.ROLES)) drawEmpty(g, sceneAlpha);
-        g.disableScissor();
         drawScrollbar(g, sceneAlpha);
     }
 
@@ -956,17 +991,20 @@ public final class WarehouseScreen extends Screen {
                 (y2 - y1 - 16) / (2 * fit.radius));
         int sx = Math.round(slide);
         g.enableScissor(x1 + sx, y1 - detailScroll, x2 + sx, y2 - detailScroll);
-        g.pose().pushPose();
         try {
-            g.pose().translate((x1 + x2) / 2.0F, (y1 + y2) / 2.0F, 150);
-            g.pose().mulPose(new Quaternionf().rotateY(previewYaw).rotateX(previewPitch));
-            g.pose().scale(size, -size, size);
-            g.pose().translate(-fit.center.x, -fit.center.y, -fit.center.z);
-            minecraft.getItemRenderer().render(skin, ItemDisplayContext.FIXED, false, g.pose(),
-                    g.bufferSource(), 0xF000F0, OverlayTexture.NO_OVERLAY, model);
-            g.flush();
+            g.pose().pushPose();
+            try {
+                g.pose().translate((x1 + x2) / 2.0F, (y1 + y2) / 2.0F, 150);
+                g.pose().mulPose(new Quaternionf().rotateY(previewYaw).rotateX(previewPitch));
+                g.pose().scale(size, -size, size);
+                g.pose().translate(-fit.center.x, -fit.center.y, -fit.center.z);
+                minecraft.getItemRenderer().render(skin, ItemDisplayContext.FIXED, false, g.pose(),
+                        g.bufferSource(), 0xF000F0, OverlayTexture.NO_OVERLAY, model);
+                g.flush();
+            } finally {
+                g.pose().popPose();
+            }
         } finally {
-            g.pose().popPose();
             g.disableScissor();
         }
     }
@@ -982,106 +1020,126 @@ public final class WarehouseScreen extends Screen {
         int x0 = drawerX0(), y0 = drawerY0(), x1 = drawerX1(), y1 = drawerY1(), w = x1 - x0;
         int accent = detail.accent;
         // Item rendering adds 150/200 to Z: both the scrim and panel must cover those items.
-        g.pose().pushPose(); g.pose().translate(0, 0, 350);
-        g.fill(0, 0, width, height, GuiFx.fade(0x70000000, p));
-        CrateFx.hGradient(g, width * .4F, 0, width, height, 0x00000000, GuiFx.fade(0x60000000, p), false);
-        g.pose().popPose();
-        float slide = (1 - p) * (w + drawerInset());
-        g.pose().pushPose(); g.pose().translate(slide, 0, 400);
-        final float alpha = p;
-        ref(g, x0, y0, x1, y1, (rw, rh) -> {
-            CrateFx.rectGlow(g, 0, 0, rw, rh, 60, accent, .16F * alpha);
-            // 玻璃面板本身半透明；先垫一层实底，身后的卡片与文字不会透出来干扰阅读。
-            CrateFx.bevelPanel(g, 0, 0, rw, rh, 14, GuiFx.fade(0xFF161B1D, alpha), GuiFx.fade(0xFF0B0E10, alpha));
-            CrateArt.glassPanel(g, 0, 0, rw, rh, 14, accent, alpha);
-        });
-
-        int artTop = artTop(), artH = artHeight();
-        int contentBottom = buttonRowY() - 16;
-        g.enableScissor(x0 + 2 + Math.round(slide), artTop - 6, x1 - 2 + Math.round(slide), contentBottom);
-        g.pose().pushPose(); g.pose().translate(0, -detailScroll, 0);
-        float cx = (x0 + x1) / 2F, cy = artTop + artH / 2F - 3;
-        float pedY = artTop + artH - 6, pedR = w * .30F;
-        CrateFx.glow(g, cx, cy, w * .44F, artH * .56F, accent, .30F * p, true);
-        CrateFx.glow(g, cx, pedY, pedR, 7, 0xFF000000, .55F * p, false);
-        CrateFx.dashRing(g, cx, pedY, pedR, 7, 30, .55F, time / 1400F, 1.4F, accent, .55F * p);
-        CrateFx.ring(g, cx, pedY, pedR * 1.04F, 2, 7 / pedR, accent, .25F * p);
-        if (detail.entry.kind().equals("skin") && !detail.icon.isEmpty()) {
-            drawSkinModel(g, detail.icon, x0 + 8, artTop, x1 - 8, artTop + artH - 4, slide);
-        } else {
-            float bob = (float) Math.sin(time / 520.0) * 1.5F;
-            detail.drawIcon(g, cx, cy + bob, artH - 22, p);
-        }
-
-        int tx = x0 + 14, tw = w - 28;
-        float y = artTop + artH + 8;
-        // 品质 / 种类标签 + 数量标签
-        String kind = detail.kindLabel().getString();
-        float kw = font.width(kind) + 24;
-        chip(g, tx, y, tx + kw, y + 14, accent, p);
-        CrateFx.diamond(g, tx + 8, y + 7, 2.5F, 2.5F, GuiFx.fade(accent, p), false);
-        CrateFx.glow(g, tx + 8, y + 7, 7, accent, .5F * p);
-        draw(g, kind, tx + 15, y + 3, 1, GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_BRIGHT, accent, .4F), p), false);
-        if (detail.role == null) {
-            String count = text("quantity", detail.entry.count()).getString();
-            float qx = tx + kw + 5, qw = font.width(count) + 14;
-            chip(g, qx, y, qx + qw, y + 14, 0xFF8A9490, p);
-            draw(g, count, qx + 7, y + 3, 1, GuiFx.fade(WarehouseTheme.TEXT_BODY, p), false);
-        }
-        y += 20;
-
-        // 名称一行放得下时用大标题的清晰倍率，否则回到 1 倍换行。
-        float nameScale = font.width(detail.getMessage()) * layout.titleScale() <= tw ? layout.titleScale() : 1F;
-        List<FormattedCharSequence> name = font.split(detail.getMessage(), Math.max(20, (int) (tw / nameScale)));
-        for (int i = 0; i < Math.min(2, name.size()); i++) {
-            g.pose().pushPose(); g.pose().translate(tx, y, 0); g.pose().scale(nameScale, nameScale, 1);
-            g.drawString(font, name.get(i), 0, 0, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, p), true);
+        g.pose().pushPose();
+        try {
+            g.pose().translate(0, 0, 350);
+            g.fill(0, 0, width, height, GuiFx.fade(0x70000000, p));
+            CrateFx.hGradient(g, width * .4F, 0, width, height, 0x00000000, GuiFx.fade(0x60000000, p), false);
+        } finally {
             g.pose().popPose();
-            y += 10 * nameScale + 1;
         }
-        y += 4;
-        final float ruleAlpha = p;
-        ref(g, tx, y, tx + tw, y + 1, (rw, rh) -> CrateArt.rarityRule(g, 0, 0, Math.round(rw), accent, ruleAlpha));
-        y += 8;
+        float slide = (1 - p) * (w + drawerInset());
+        g.pose().pushPose();
+        try {
+            g.pose().translate(slide, 0, 400);
+            final float alpha = p;
+            ref(g, x0, y0, x1, y1, (rw, rh) -> {
+                CrateFx.rectGlow(g, 0, 0, rw, rh, 60, accent, .16F * alpha);
+                // 玻璃面板本身半透明；先垫一层实底，身后的卡片与文字不会透出来干扰阅读。
+                CrateFx.bevelPanel(g, 0, 0, rw, rh, 14, GuiFx.fade(0xFF161B1D, alpha), GuiFx.fade(0xFF0B0E10, alpha));
+                CrateArt.glassPanel(g, 0, 0, rw, rh, 14, accent, alpha);
+            });
 
-        String description = translated(detail.entry.description()).getString();
-        if (detail.role != null && detail.role.taken) description += "\n" + text("taken").getString();
-        for (FormattedCharSequence line : font.split(Component.literal(description), tw)) {
-            g.drawString(font, line, tx, Math.round(y), GuiFx.fade(WarehouseTheme.TEXT_BODY, p), false);
-            y += 11;
-        }
-        Component state = detailState();
-        if (state != null) {
-            y += 3;
-            boolean ok = detailAction.active;
-            for (FormattedCharSequence line : font.split(state, tw)) {
-                g.drawString(font, line, tx, Math.round(y), GuiFx.fade(ok ? WarehouseTheme.TEXT_GOLD : WarehouseTheme.DANGER, p), false);
-                y += 11;
+            int artTop = artTop(), artH = artHeight();
+            int contentBottom = buttonRowY() - 16;
+            g.enableScissor(x0 + 2 + Math.round(slide), artTop - 6, x1 - 2 + Math.round(slide), contentBottom);
+            try {
+                g.pose().pushPose();
+                try {
+                    g.pose().translate(0, -detailScroll, 0);
+                    float cx = (x0 + x1) / 2F, cy = artTop + artH / 2F - 3;
+                    float pedY = artTop + artH - 6, pedR = w * .30F;
+                    CrateFx.glow(g, cx, cy, w * .44F, artH * .56F, accent, .30F * p, true);
+                    CrateFx.glow(g, cx, pedY, pedR, 7, 0xFF000000, .55F * p, false);
+                    CrateFx.dashRing(g, cx, pedY, pedR, 7, 30, .55F, time / 1400F, 1.4F, accent, .55F * p);
+                    CrateFx.ring(g, cx, pedY, pedR * 1.04F, 2, 7 / pedR, accent, .25F * p);
+                    if (detail.entry.kind().equals("skin") && !detail.icon.isEmpty()) {
+                        drawSkinModel(g, detail.icon, x0 + 8, artTop, x1 - 8, artTop + artH - 4, slide);
+                    } else {
+                        float bob = (float) Math.sin(time / 520.0) * 1.5F;
+                        detail.drawIcon(g, cx, cy + bob, artH - 22, p);
+                    }
+
+                    int tx = x0 + 14, tw = w - 28;
+                    float y = artTop + artH + 8;
+                    // 品质 / 种类标签 + 数量标签
+                    String kind = detail.kindLabel().getString();
+                    float kw = font.width(kind) + 24;
+                    chip(g, tx, y, tx + kw, y + 14, accent, p);
+                    CrateFx.diamond(g, tx + 8, y + 7, 2.5F, 2.5F, GuiFx.fade(accent, p), false);
+                    CrateFx.glow(g, tx + 8, y + 7, 7, accent, .5F * p);
+                    draw(g, kind, tx + 15, y + 3, 1, GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_BRIGHT, accent, .4F), p), false);
+                    if (detail.role == null) {
+                        String count = text("quantity", detail.entry.count()).getString();
+                        float qx = tx + kw + 5, qw = font.width(count) + 14;
+                        chip(g, qx, y, qx + qw, y + 14, 0xFF8A9490, p);
+                        draw(g, count, qx + 7, y + 3, 1, GuiFx.fade(WarehouseTheme.TEXT_BODY, p), false);
+                    }
+                    y += 20;
+
+                    // 名称一行放得下时用大标题的清晰倍率，否则回到 1 倍换行。
+                    float nameScale = font.width(detail.getMessage()) * layout.titleScale() <= tw ? layout.titleScale() : 1F;
+                    List<FormattedCharSequence> name = font.split(detail.getMessage(), Math.max(20, (int) (tw / nameScale)));
+                    for (int i = 0; i < Math.min(2, name.size()); i++) {
+                        g.pose().pushPose();
+                        try {
+                            g.pose().translate(tx, y, 0);
+                            g.pose().scale(nameScale, nameScale, 1);
+                            g.drawString(font, name.get(i), 0, 0, GuiFx.fade(WarehouseTheme.TEXT_BRIGHT, p), true);
+                        } finally {
+                            g.pose().popPose();
+                        }
+                        y += 10 * nameScale + 1;
+                    }
+                    y += 4;
+                    final float ruleAlpha = p;
+                    ref(g, tx, y, tx + tw, y + 1, (rw, rh) -> CrateArt.rarityRule(g, 0, 0, Math.round(rw), accent, ruleAlpha));
+                    y += 8;
+
+                    String description = translated(detail.entry.description()).getString();
+                    if (detail.role != null && detail.role.taken) description += "\n" + text("taken").getString();
+                    for (FormattedCharSequence line : font.split(Component.literal(description), tw)) {
+                        g.drawString(font, line, tx, Math.round(y), GuiFx.fade(WarehouseTheme.TEXT_BODY, p), false);
+                        y += 11;
+                    }
+                    Component state = detailState();
+                    if (state != null) {
+                        y += 3;
+                        boolean ok = detailAction.active;
+                        for (FormattedCharSequence line : font.split(state, tw)) {
+                            g.drawString(font, line, tx, Math.round(y), GuiFx.fade(ok ? WarehouseTheme.TEXT_GOLD : WarehouseTheme.DANGER, p), false);
+                            y += 11;
+                        }
+                    }
+                    detailMaxScroll = Math.max(0, Math.round(y + detailScroll) - contentBottom + 4);
+                    detailScroll = Math.min(detailScroll, detailMaxScroll);
+                } finally {
+                    g.pose().popPose();
+                }
+            } finally {
+                g.disableScissor();
             }
-        }
-        detailMaxScroll = Math.max(0, Math.round(y + detailScroll) - contentBottom + 4);
-        detailScroll = Math.min(detailScroll, detailMaxScroll);
-        g.pose().popPose();
-        g.disableScissor();
-        if (detailMaxScroll > 0) {
-            int track = contentBottom - artTop - 18;
-            int sy = artTop + track * detailScroll / detailMaxScroll;
-            g.fill(x1 - 5, sy, x1 - 3, sy + 18, GuiFx.fade(accent, .8F * p));
-        }
+            if (detailMaxScroll > 0) {
+                int track = contentBottom - artTop - 18;
+                int sy = artTop + track * detailScroll / detailMaxScroll;
+                g.fill(x1 - 5, sy, x1 - 3, sy + 18, GuiFx.fade(accent, .8F * p));
+            }
 
-        CrateFx.hairline(g, x0 + 10, x1 - 10, buttonRowY() - 8, 1, 50, GuiFx.fade(0x40FFFFFF, p), false);
-        if (!notice.isEmpty()) {
-            draw(g, trim(text(notice).getString(), tw, 1), tx, buttonRowY() - 20, 1, GuiFx.fade(WarehouseTheme.DANGER, p), false);
+            CrateFx.hairline(g, x0 + 10, x1 - 10, buttonRowY() - 8, 1, 50, GuiFx.fade(0x40FFFFFF, p), false);
+            if (!notice.isEmpty()) {
+                draw(g, trim(text(notice).getString(), w - 28, 1), x0 + 14, buttonRowY() - 20, 1, GuiFx.fade(WarehouseTheme.DANGER, p), false);
+            }
+            if (submitAt >= 0) {
+                float fill = WarehouseMotion.progress(time, submitAt, 180);
+                CrateFx.hairline(g, detailAction.getX(), detailAction.getX() + detailAction.getWidth() * fill,
+                        buttonRowY() - 5, 2, 10, GuiFx.fade(CrateArt.GOLD_LINE, p), false);
+            }
+            int hx = p == 1 ? mx : -1, hy = p == 1 ? my : -1;
+            detailBack.render(g, hx, hy, partialTick);
+            if (detailAction.visible) detailAction.render(g, hx, hy, partialTick);
+        } finally {
+            g.pose().popPose();
         }
-        if (submitAt >= 0) {
-            float fill = WarehouseMotion.progress(time, submitAt, 180);
-            CrateFx.hairline(g, detailAction.getX(), detailAction.getX() + detailAction.getWidth() * fill,
-                    buttonRowY() - 5, 2, 10, GuiFx.fade(CrateArt.GOLD_LINE, p), false);
-        }
-        int hx = p == 1 ? mx : -1, hy = p == 1 ? my : -1;
-        detailBack.render(g, hx, hy, partialTick);
-        if (detailAction.visible) detailAction.render(g, hx, hy, partialTick);
-        g.pose().popPose();
     }
 
     /** 面板里的状态行：角色卡能否使用、为什么不能；自选职业是否已被占用。 */
@@ -1090,6 +1148,12 @@ public final class WarehouseScreen extends Screen {
         if (e.kind().equals("card")) {
             return text(!cardsKnown ? "card_sync" : CardGuiGameState.gameActiveOrStarting() ? "lobby_only"
                     : e.count() <= 0 ? "not_owned" : !canUse(e) && !busy() ? "no_uses" : "cost_one");
+        }
+        if (e.kind().equals("role")) {
+            if (detail.role != null && detail.role.taken) return null;
+            return text(!cardsKnown ? "card_sync" : CardGuiGameState.gameActiveOrStarting() ? "lobby_only"
+                    : ClientLotteryState.cardBalances.getOrDefault("self_select", 0) <= 0 ? "not_owned"
+                    : ClientLotteryState.cardUseRemainingSelfUses <= 0 && !busy() ? "no_uses" : "cost_one");
         }
         if (e.equipped()) return text("equipped");
         if (isCrate(e) && e.count() <= 0) return text("caption_spent");
@@ -1108,10 +1172,13 @@ public final class WarehouseScreen extends Screen {
     private void ref(GuiGraphics g, float x0, float y0, float x1, float y1, RefPainter painter) {
         float u = unit();
         g.pose().pushPose();
-        g.pose().translate(x0, y0, 0);
-        g.pose().scale(u, u, 1);
-        painter.paint((x1 - x0) / u, (y1 - y0) / u);
-        g.pose().popPose();
+        try {
+            g.pose().translate(x0, y0, 0);
+            g.pose().scale(u, u, 1);
+            painter.paint((x1 - x0) / u, (y1 - y0) / u);
+        } finally {
+            g.pose().popPose();
+        }
     }
 
     private void chip(GuiGraphics g, float x0, float y0, float x1, float y1, int accent, float a) {
@@ -1125,10 +1192,13 @@ public final class WarehouseScreen extends Screen {
     private void draw(GuiGraphics g, String s, float x, float y, float scale, int color, boolean shadow) {
         if ((color >>> 24) < 5 || s.isEmpty()) return;
         g.pose().pushPose();
-        g.pose().translate(x, y, 0);
-        if (scale != 1) g.pose().scale(scale, scale, 1);
-        g.drawString(font, s, 0, 0, color, shadow);
-        g.pose().popPose();
+        try {
+            g.pose().translate(x, y, 0);
+            if (scale != 1) g.pose().scale(scale, scale, 1);
+            g.drawString(font, s, 0, 0, color, shadow);
+        } finally {
+            g.pose().popPose();
+        }
     }
 
     private String trim(String raw, float maxWidth, float scale) {
@@ -1144,14 +1214,17 @@ public final class WarehouseScreen extends Screen {
     private void spaced(GuiGraphics g, String s, float cx, float y, float scale, float spacing, int color) {
         if ((color >>> 24) < 5) return;
         g.pose().pushPose();
-        g.pose().translate(cx - spacedWidth(s, scale, spacing) / 2, y, 0);
-        g.pose().scale(scale, scale, 1);
-        for (int i = 0; i < s.length(); i++) {
-            String ch = s.substring(i, i + 1);
-            g.drawString(font, ch, 0, 0, color, false);
-            g.pose().translate(font.width(ch) + spacing, 0, 0);
+        try {
+            g.pose().translate(cx - spacedWidth(s, scale, spacing) / 2, y, 0);
+            g.pose().scale(scale, scale, 1);
+            for (int i = 0; i < s.length(); i++) {
+                String ch = s.substring(i, i + 1);
+                g.drawString(font, ch, 0, 0, color, false);
+                g.pose().translate(font.width(ch) + spacing, 0, 0);
+            }
+        } finally {
+            g.pose().popPose();
         }
-        g.pose().popPose();
     }
 
     // =====================================================================
@@ -1349,14 +1422,14 @@ public final class WarehouseScreen extends Screen {
             if (entry.kind().equals("currency") && entry.id().equals("green_apples")) {
                 candidate = ResourceLocation.tryParse(entry.icon());
             }
-            art = candidate != null && minecraft.getResourceManager().getResource(candidate).isPresent() ? candidate : null;
+            art = hasArtResource(candidate) ? candidate : null;
             ItemStack stack = ItemStack.EMPTY;
             if (entry.kind().equals("skin")) stack = SkinItems.preview(entry.id());
             if (stack.isEmpty()) {
                 ResourceLocation item = ResourceLocation.tryParse(entry.kind().equals("currency") ? "minecraft:apple" : entry.icon());
                 stack = new ItemStack(item == null ? Items.CHEST : BuiltInRegistries.ITEM.get(item));
             }
-            icon = stack.isEmpty() ? new ItemStack(Items.CHEST) : stack;
+            icon = stack.isEmpty() ? FALLBACK_CHEST : stack;
         }
 
         private static Component entryName(WarehouseEntry entry) {
@@ -1422,39 +1495,46 @@ public final class WarehouseScreen extends Screen {
             float size = Math.min(w * .58F, wellBottom - wellTop - 2) + 2 * hover;
             drawIcon(g, x + w / 2F, (wellTop + wellBottom) / 2F, size, opacity * (dim ? .55F : 1));
 
-            g.pose().pushPose(); g.pose().translate(0, 0, 200);
-            String name = trim(getMessage().getString(), w - 6, 1);
-            int nameColor = dim ? WarehouseTheme.TEXT_MUTED : GuiFx.mix(WarehouseTheme.TEXT_BODY, WarehouseTheme.TEXT_BRIGHT, hover);
-            draw(g, name, Math.round(x + (w - font.width(name)) / 2F), Math.round(y + h - 15), 1,
-                    GuiFx.fade(nameColor, opacity), true);
-            String quantity = quantity();
-            int quantityW = quantity.isEmpty() ? 0 : font.width(quantity);
-            if (quantityW > 0) {
-                draw(g, quantity, Math.round(x + w - 3 - quantityW), Math.round(y + 3), 1, GuiFx.fade(WarehouseTheme.TEXT_GOLD, opacity), true);
+            g.pose().pushPose();
+            try {
+                g.pose().translate(0, 0, 200);
+                String name = trim(getMessage().getString(), w - 6, 1);
+                int nameColor = dim ? WarehouseTheme.TEXT_MUTED : GuiFx.mix(WarehouseTheme.TEXT_BODY, WarehouseTheme.TEXT_BRIGHT, hover);
+                draw(g, name, Math.round(x + (w - font.width(name)) / 2F), Math.round(y + h - 15), 1,
+                        GuiFx.fade(nameColor, opacity), true);
+                String quantity = quantity();
+                int quantityW = quantity.isEmpty() ? 0 : font.width(quantity);
+                if (quantityW > 0) {
+                    draw(g, quantity, Math.round(x + w - 3 - quantityW), Math.round(y + 3), 1, GuiFx.fade(WarehouseTheme.TEXT_GOLD, opacity), true);
+                }
+                String tag = tag();
+                if (tag != null) {
+                    int color = role != null ? WarehouseTheme.DANGER : entry.equipped() ? WarehouseTheme.TEAL : CrateArt.GOLD_LINE;
+                    float tw = font.width(tag) + 13;
+                    // 放不下文字时只留状态菱形，完整状态在悬停提示与详情面板里。
+                    boolean label = tw + quantityW + 8 <= w;
+                    if (label) chip(g, x + 2, y + 2, x + 2 + tw, y + 13, color, opacity);
+                    CrateFx.diamond(g, x + 7, y + 7.5F, 2.2F, 2.2F, GuiFx.fade(color, opacity), false);
+                    CrateFx.glow(g, x + 7, y + 7.5F, 6, color, .5F * opacity);
+                    if (label) draw(g, tag, Math.round(x + 11), Math.round(y + 4), 1,
+                            GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_BRIGHT, color, .35F), opacity), false);
+                }
+            } finally {
+                g.pose().popPose();
             }
-            String tag = tag();
-            if (tag != null) {
-                int color = role != null ? WarehouseTheme.DANGER : entry.equipped() ? WarehouseTheme.TEAL : CrateArt.GOLD_LINE;
-                float tw = font.width(tag) + 13;
-                // 放不下文字时只留状态菱形，完整状态在悬停提示与详情面板里。
-                boolean label = tw + quantityW + 8 <= w;
-                if (label) chip(g, x + 2, y + 2, x + 2 + tw, y + 13, color, opacity);
-                CrateFx.diamond(g, x + 7, y + 7.5F, 2.2F, 2.2F, GuiFx.fade(color, opacity), false);
-                CrateFx.glow(g, x + 7, y + 7.5F, 6, color, .5F * opacity);
-                if (label) draw(g, tag, Math.round(x + 11), Math.round(y + 4), 1,
-                        GuiFx.fade(GuiFx.mix(WarehouseTheme.TEXT_BRIGHT, color, .35F), opacity), false);
-            }
-            g.pose().popPose();
         }
 
         void drawIcon(GuiGraphics g, float cx, float cy, float size, float opacity) {
             if (size < 4 || opacity < .01F) return;
             if (art != null) {
                 g.setColor(1, 1, 1, opacity);
-                int pixels = entry.kind().equals("currency") ? 32 : 128;
-                int s = Math.round(size);
-                g.blit(art, Math.round(cx - s / 2F), Math.round(cy - s / 2F), s, s, 0, 0, pixels, pixels, pixels, pixels);
-                g.setColor(1, 1, 1, 1);
+                try {
+                    int pixels = entry.kind().equals("currency") ? 32 : 128;
+                    int s = Math.round(size);
+                    g.blit(art, Math.round(cx - s / 2F), Math.round(cy - s / 2F), s, s, 0, 0, pixels, pixels, pixels, pixels);
+                } finally {
+                    g.setColor(1, 1, 1, 1);
+                }
             } else {
                 CrateArt.item(g, icon, cx, cy, size / 16F, 0, 0, 1, opacity);
             }

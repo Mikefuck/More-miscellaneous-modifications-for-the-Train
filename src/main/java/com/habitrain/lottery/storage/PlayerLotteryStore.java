@@ -27,11 +27,14 @@ public final class PlayerLotteryStore {
     private static final Gson GSON = new Gson();
     private static final ThreadLocal<Integer> DEFERRED_FLUSH = ThreadLocal.withInitial(() -> 0);
 
+    private static final int MAX_OFFLINE_CACHE = 64;
+
     private final Map<UUID, PlayerLotteryData> cache = new ConcurrentHashMap<>();
     private final Map<UUID, Boolean> dirty = new ConcurrentHashMap<>();
     private final Set<UUID> loadFailed = ConcurrentHashMap.newKeySet();
     /** Players loaded from .bak must repair the primary without copying a corrupt primary back over it. */
     private final Set<UUID> recoveredFromBackup = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> onlinePlayers = ConcurrentHashMap.newKeySet();
     /** True after this world's player store has started. */
     private volatile boolean takeoverActive;
 
@@ -82,13 +85,24 @@ public final class PlayerLotteryStore {
                     .filter(path -> path.getFileName().toString()
                             .matches("[0-9a-fA-F-]{36}\\.json"))
                     .forEach(path -> {
+                        JsonObject primaryJson = null;
+                        boolean primaryValid = false;
                         try {
                             var loaded = AtomicJsonFiles.readJson(path, JsonObject.class, GSON);
                             if (!loaded.ok() || loaded.value() == null) {
                                 HabiLotteryMod.LOGGER.error("Cannot retire unreadable player account {}", path);
                                 ok[0] = false;
-                            } else if (!scrubLegacyJson(path, loaded.value())) {
-                                ok[0] = false;
+                            } else {
+                                primaryJson = loaded.value();
+                                if (!scrubLegacyJson(path, primaryJson)) {
+                                    ok[0] = false;
+                                } else if (!Files.isRegularFile(path)
+                                        && !AtomicJsonFiles.writeJson(path, primaryJson, GSON, true, false)) {
+                                    HabiLotteryMod.LOGGER.error("Failed healing recovered player account {}", path);
+                                    ok[0] = false;
+                                } else {
+                                    primaryValid = true;
+                                }
                             }
                         } catch (RuntimeException e) {
                             ok[0] = false;
@@ -99,21 +113,57 @@ public final class PlayerLotteryStore {
                             if (!Files.isRegularFile(backup)) {
                                 HabiLotteryMod.LOGGER.error("Player account backup is not a regular file {}", backup);
                                 ok[0] = false;
-                            } else if (!scrubLegacyFileSafely(backup)) {
-                                ok[0] = false;
+                            } else {
+                                JsonObject bakJson = tryParseSingleJson(backup);
+                                if (bakJson == null) {
+                                    if (primaryValid && primaryJson != null) {
+                                        AtomicJsonFiles.quarantine(backup);
+                                        if (AtomicJsonFiles.writeJson(backup, primaryJson, GSON, true, false)) {
+                                            HabiLotteryMod.LOGGER.warn(
+                                                    "Quarantined torn player backup {} and rebuilt from valid primary",
+                                                    backup);
+                                        } else {
+                                            HabiLotteryMod.LOGGER.error(
+                                                    "Quarantined torn player backup {} but failed rebuilding it",
+                                                    backup);
+                                            ok[0] = false;
+                                        }
+                                    } else {
+                                        ok[0] = false;
+                                    }
+                                } else if (!scrubLegacyJsonSafely(backup, bakJson)) {
+                                    ok[0] = false;
+                                }
                             }
                         }
                     });
             // A world may have only a recovery copy after an interrupted write. Scrub it
-            // too, without treating it as a new authoritative primary file.
+            // and heal the missing primary file so offline scans and listPlayers see the account.
             try (var backups = Files.list(players)) {
                 backups.filter(path -> path.getFileName().toString()
                                 .matches("[0-9a-fA-F-]{36}\\.json\\.bak"))
-                        .forEach(path -> {
-                            if (!Files.isRegularFile(path)) {
-                                HabiLotteryMod.LOGGER.error("Player account backup is not a regular file {}", path);
+                        .forEach(bakPath -> {
+                            if (!Files.isRegularFile(bakPath)) {
+                                HabiLotteryMod.LOGGER.error("Player account backup is not a regular file {}", bakPath);
                                 ok[0] = false;
-                            } else if (!scrubLegacyFileSafely(path)) {
+                                return;
+                            }
+                            String fileName = bakPath.getFileName().toString();
+                            Path primary = bakPath.resolveSibling(fileName.substring(0, 41));
+                            if (Files.isRegularFile(primary)) {
+                                return;
+                            }
+                            JsonObject bakJson = tryParseSingleJson(bakPath);
+                            if (bakJson == null) {
+                                HabiLotteryMod.LOGGER.error(
+                                        "Orphan player backup {} is unreadable and primary is missing", bakPath);
+                                AtomicJsonFiles.quarantine(bakPath);
+                                ok[0] = false;
+                                return;
+                            }
+                            if (!scrubLegacyJsonSafely(bakPath, bakJson)
+                                    || !AtomicJsonFiles.writeJson(primary, bakJson, GSON, true, false)) {
+                                HabiLotteryMod.LOGGER.error("Failed healing orphan player account {}", primary);
                                 ok[0] = false;
                             }
                         });
@@ -177,24 +227,24 @@ public final class PlayerLotteryStore {
         return true;
     }
 
-    private static boolean scrubLegacyFile(Path path) {
-        if (path == null || !Files.isRegularFile(path)) {
-            return true;
-        }
-        JsonObject json = readRawJson(path);
-        if (json == null) {
-            HabiLotteryMod.LOGGER.error("Cannot parse legacy player account {}", path);
-            return false;
-        }
-        return scrubLegacyJson(path, json);
-    }
-
-    private static boolean scrubLegacyFileSafely(Path path) {
+    private static boolean scrubLegacyJsonSafely(Path path, JsonObject json) {
         try {
-            return scrubLegacyFile(path);
+            return scrubLegacyJson(path, json);
         } catch (RuntimeException e) {
             HabiLotteryMod.LOGGER.error("Failed retiring legacy player account {}", path, e);
             return false;
+        }
+    }
+
+    private static JsonObject tryParseSingleJson(Path path) {
+        if (path == null || !Files.isRegularFile(path)) {
+            return null;
+        }
+        try (var reader = Files.newBufferedReader(path, java.nio.charset.StandardCharsets.UTF_8)) {
+            return GSON.fromJson(reader, JsonObject.class);
+        } catch (Exception e) {
+            HabiLotteryMod.LOGGER.warn("Failed parsing {}: {}", path, e.toString());
+            return null;
         }
     }
 
@@ -210,19 +260,12 @@ public final class PlayerLotteryStore {
         }
     }
 
-    private static JsonObject readRawJson(Path path) {
-        if (path == null || !Files.isRegularFile(path)) {
-            return null;
-        }
-        var loaded = AtomicJsonFiles.readJson(path, JsonObject.class, GSON);
-        return loaded.ok() ? loaded.value() : null;
-    }
-
     public void onPlayerJoin(ServerPlayer player) {
         if (player == null || !isTakeoverActive()) {
             return;
         }
         UUID uuid = player.getUUID();
+        onlinePlayers.add(uuid);
         loadFailed.remove(uuid);
         PlayerLotteryData data = adoptJoin(uuid);
         if (data == null) {
@@ -320,6 +363,7 @@ public final class PlayerLotteryStore {
             return;
         }
         UUID uuid = player.getUUID();
+        onlinePlayers.remove(uuid);
         if (loadFailed.contains(uuid)) {
             loadFailed.remove(uuid);
             cache.remove(uuid);
@@ -364,8 +408,47 @@ public final class PlayerLotteryStore {
             dirty.put(uuid, true);
         } else {
             recoveredFromBackup.remove(uuid);
+            if (!isPlayerOnline(uuid)) {
+                evictCleanOfflineEntries(uuid);
+            }
         }
         return load.data;
+    }
+
+    private boolean isPlayerOnline(UUID uuid) {
+        if (uuid == null) {
+            return false;
+        }
+        if (onlinePlayers.contains(uuid)) {
+            return true;
+        }
+        MinecraftServer srv = HabiLotteryMod.getServer();
+        return srv != null && srv.getPlayerList() != null && srv.getPlayerList().getPlayer(uuid) != null;
+    }
+
+    private void evictCleanOfflineEntries(UUID protectedUuid) {
+        int maxTotal = onlinePlayers.size() + MAX_OFFLINE_CACHE;
+        if (cache.size() <= maxTotal) {
+            return;
+        }
+        for (UUID candidate : cache.keySet()) {
+            if (cache.size() <= maxTotal) {
+                break;
+            }
+            if (candidate.equals(protectedUuid) || isPlayerOnline(candidate)
+                    || isDirty(candidate) || recoveredFromBackup.contains(candidate)) {
+                continue;
+            }
+            cache.remove(candidate);
+        }
+    }
+
+    int cachedCountForTest() {
+        return cache.size();
+    }
+
+    boolean isCachedForTest(UUID uuid) {
+        return uuid != null && cache.containsKey(uuid);
     }
 
     public PlayerLotteryData getOrLoad(ServerPlayer player) {
@@ -680,11 +763,18 @@ public final class PlayerLotteryStore {
         }
         // A recovered .bak is the only trusted copy when the primary was corrupt. Do not
         // copy that corrupt primary back over the valid backup during the repair write.
-        boolean repairBackup = recoveredFromBackup.contains(uuid);
+        boolean repairBackup = recoveredFromBackup.contains(uuid) && !Files.isRegularFile(file);
+        if (recoveredFromBackup.contains(uuid) && Files.isRegularFile(file)) {
+            // Only skip backup if the on-disk primary could not be quarantined/healed and is still unreadable.
+            repairBackup = tryParseSingleJson(file) == null;
+        }
         boolean ok = AtomicJsonFiles.writeJson(file, data, GSON, true, !repairBackup);
         if (ok) {
             dirty.remove(uuid);
             recoveredFromBackup.remove(uuid);
+            if (!isPlayerOnline(uuid)) {
+                evictCleanOfflineEntries(uuid);
+            }
         } else {
             HabiLotteryMod.LOGGER.error("Failed saving player lottery data {}", uuid);
         }
@@ -722,6 +812,7 @@ public final class PlayerLotteryStore {
         dirty.clear();
         loadFailed.clear();
         recoveredFromBackup.clear();
+        onlinePlayers.clear();
         takeoverActive = false;
         DEFERRED_FLUSH.remove();
     }
@@ -815,13 +906,19 @@ public final class PlayerLotteryStore {
         if (WorldLotteryPaths.ready() && WorldLotteryPaths.playersDir() != null
                 && java.nio.file.Files.isDirectory(WorldLotteryPaths.playersDir())) {
             try (var s = java.nio.file.Files.list(WorldLotteryPaths.playersDir())) {
-                s.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(p -> {
+                s.filter(p -> {
                     String fn = p.getFileName().toString();
-                    String uidStr = fn.substring(0, fn.length() - 5);
+                    return fn.endsWith(".json") || fn.endsWith(".json.bak");
+                }).forEach(p -> {
+                    String fn = p.getFileName().toString();
+                    String uidStr = fn.endsWith(".json.bak")
+                            ? fn.substring(0, fn.length() - ".json.bak".length())
+                            : fn.substring(0, fn.length() - ".json".length());
                     try {
                         UUID uuid = UUID.fromString(uidStr);
                         if (!rows.containsKey(uuid) && !isLoadFailed(uuid)) {
-                            DiskLoad load = readPlayerFile(p);
+                            Path primaryFile = WorldLotteryPaths.playerFile(uuid);
+                            DiskLoad load = readPlayerFile(primaryFile);
                             if (load.ok() && load.data != null) {
                                 com.habitrain.lottery.network.PlayerAdminModels.PlayerRow r =
                                         new com.habitrain.lottery.network.PlayerAdminModels.PlayerRow(
@@ -901,7 +998,8 @@ public final class PlayerLotteryStore {
             data.updatedAt = System.currentTimeMillis();
             return data;
         }
-        if (data.rewardReceipts == null) data.rewardReceipts = new java.util.HashSet<>();
+        data.rewardReceipts = PlayerLotteryData.asBoundedSet(
+                data.rewardReceipts, PlayerLotteryData.REWARD_RECEIPTS_CAP);
         if (data.systemItems == null) data.systemItems = new java.util.HashMap<>();
         data.systemItems.entrySet().removeIf(e -> e.getKey() == null || e.getValue() == null || e.getValue() <= 0);
         if (data.unlocked == null) {
@@ -928,9 +1026,21 @@ public final class PlayerLotteryStore {
         data.ownedSkinCounts = counts;
         data.crateReceipts = data.crateReceipts == null ? new java.util.LinkedHashMap<>()
                 : new java.util.LinkedHashMap<>(data.crateReceipts);
-        data.crateOpenHistory = data.crateOpenHistory == null ? new java.util.HashSet<>()
-                : new java.util.HashSet<>(data.crateOpenHistory);
-        data.crateOpenHistory.addAll(data.crateReceipts.keySet());
+        Set<String> history = PlayerLotteryData.asBoundedSet(
+                data.crateOpenHistory, PlayerLotteryData.CRATE_OPEN_HISTORY_CAP);
+        history.addAll(data.crateReceipts.keySet());
+        data.crateOpenHistory = history;
+        java.util.Set<String> pendingDebits = new java.util.LinkedHashSet<>();
+        if (data.pendingCrateDebits != null) {
+            for (String openId : data.pendingCrateDebits) {
+                if (openId != null && !openId.isBlank()) {
+                    pendingDebits.add(openId);
+                }
+            }
+        }
+        data.pendingCrateDebits = pendingDebits;
+        data.paidShopPurchases = PlayerLotteryData.asBoundedSet(
+                data.paidShopPurchases, PlayerLotteryData.PAID_SHOP_ORDERS_CAP);
         data.inventoryRevision = Math.max(0, data.inventoryRevision);
         if (data.equipped == null) {
             data.equipped = new HashMap<>();

@@ -33,6 +33,11 @@ public final class MenuGateServerBridge {
     private MenuGateServerBridge() {}
 
     /** 门控启用且该玩家未授权时返回 true（拒绝配置写入）。 */
+    public static boolean gateBlocked(ServerPlayer player) {
+        return isBlocked(player, player == null ? null : player.getServer());
+    }
+
+    /** 门控启用且该玩家未授权时返回 true（拒绝配置写入）。 */
     public static boolean isBlocked(ServerPlayer player, MinecraftServer server) {
         if (server == null || !server.isDedicatedServer()) {
             // 非专用服没有「未授权」概念，核心语义即放行。

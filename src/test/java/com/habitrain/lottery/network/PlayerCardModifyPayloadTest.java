@@ -11,7 +11,7 @@ class PlayerCardModifyPayloadTest {
     void payloadKeepsTargetTypeOperationAndValue() {
         String target = UUID.randomUUID().toString();
 
-        var payload = new LotteryNetwork.PlayerCardModifyC2S(
+        var payload = new PlayerCardModifyC2S(
                 target, "killer", "SET", 8);
 
         assertEquals(target, payload.targetUuid());

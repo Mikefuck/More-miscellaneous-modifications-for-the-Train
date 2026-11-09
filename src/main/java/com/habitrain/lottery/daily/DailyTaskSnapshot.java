@@ -10,7 +10,23 @@ import java.util.Map;
 public record DailyTaskSnapshot(long epochDayUtc, int greenApples,
                                 Map<String, Integer> cards, int cardTotal,
                                 List<TaskRow> tasks, boolean shopOpen, List<ShopRow> shop,
-                                String shopReceipt) {
+                                String shopReceipt,
+                                long nextResetEpochSecond, String resetZoneId) {
+    public DailyTaskSnapshot(long epochDayUtc, int greenApples,
+                             Map<String, Integer> cards, int cardTotal,
+                             List<TaskRow> tasks, boolean shopOpen, List<ShopRow> shop,
+                             String shopReceipt) {
+        this(epochDayUtc, greenApples, cards, cardTotal, tasks, shopOpen, shop, shopReceipt,
+                (epochDayUtc + 1) * 86_400L, "UTC");
+    }
+
+    public long effectiveNextResetEpochSecond() {
+        return nextResetEpochSecond > 0L ? nextResetEpochSecond : (epochDayUtc + 1) * 86_400L;
+    }
+
+    public String effectiveResetZoneId() {
+        return (resetZoneId == null || resetZoneId.isBlank()) ? "UTC" : resetZoneId;
+    }
     public record TaskRow(String id, String title, String description, String reward,
                           int progress, int target, boolean claimed, boolean random) { }
 

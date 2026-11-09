@@ -5,12 +5,12 @@ import com.habitrain.lottery.daily.DailyLoginRewardTask;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
+import com.habitrain.lottery.time.LotteryDayClock;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.HashSet;
 
 /**
@@ -36,7 +36,7 @@ public final class LoginRewardService {
     }
 
     public static long todayEpochDayUtc() {
-        return LocalDate.now(ZoneOffset.UTC).toEpochDay();
+        return LotteryDayClock.todayEpochDay();
     }
 
     public static LocalDate dateOf(long epochDay) {
@@ -121,9 +121,8 @@ public final class LoginRewardService {
         settle(player, false);
         DailyLoginRewardTask.onLogin(player);
         PlayerLotteryData d = PlayerLotteryStore.get().getOrLoad(player);
-        player.sendSystemMessage(Component.literal(
-                "§a[签到] 连续登录 " + d.consecutiveLoginDays
-                        + " 天 · 每日登录奖励请在每日任务终端领取"));
+        player.sendSystemMessage(Component.translatable(
+                "message.habitrain_lottery.login.inspect", d.consecutiveLoginDays));
         LotteryNetwork.sendLoginState(player);
     }
 
@@ -176,13 +175,19 @@ public final class LoginRewardService {
     }
 
     private static void settle(ServerPlayer player, boolean announceFailure) {
-        long today = todayEpochDayUtc();
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        if (store.isLoadFailed(player.getUUID())) {
+            return;
+        }
+        PlayerLotteryData current = store.getOrLoad(player);
+        if (store.isLoadFailed(player.getUUID())) {
+            return;
+        }
+        long today = LotteryDayClock.monotonicEpochDay(current.lastLoginEpochDay);
         LocalDate todayDate = dateOf(today);
         String monthKey = String.format("%04d-%02d", todayDate.getYear(), todayDate.getMonthValue());
         int dayOfMonth = todayDate.getDayOfMonth();
 
-        PlayerLotteryStore store = PlayerLotteryStore.get();
-        PlayerLotteryData current = store.getOrLoad(player);
         if (alreadySettledToday(current, today, monthKey, dayOfMonth)) {
             return;
         }
@@ -196,7 +201,7 @@ public final class LoginRewardService {
                     "Login day flush failed for {}; restored snapshot (UTC day not consumed)",
                     player.getUUID());
             if (announceFailure) {
-                player.sendSystemMessage(Component.literal("§c[签到] 存档写入失败，登录记录未保存，请稍后重试"));
+                player.sendSystemMessage(Component.translatable("message.habitrain_lottery.login.flush_failed"));
             }
         }
     }

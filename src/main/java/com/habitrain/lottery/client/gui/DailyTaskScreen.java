@@ -48,6 +48,7 @@ public final class DailyTaskScreen extends Screen {
     private static final long ENTER_MILLIS = 220L;
     /** 第一次点「购买」只进入确认态；这段时间内再点一次才真正下单。 */
     private static final long CONFIRM_MILLIS = 3_000L;
+    private static final DateTimeFormatter ISO_DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
 
     private static final String[] FILTER_KEYS = {
@@ -530,21 +531,24 @@ public final class DailyTaskScreen extends Screen {
     private void drawRows(GuiGraphics g, List<? extends ListRow> listRows, double offset) {
         BoardRect list = layout.list();
         GuiFx.beginClip(g, list.x() - 2, list.y(), list.right() + 2, list.bottom() + 1);
-        for (ListRow row : listRows) {
-            int y = layout.rowY(row.order, offset);
-            // 只处理可见行：滚出可视区的行必须关掉输入，否则点到看不见的「领取」
-            boolean inView = y + layout.rowH() >= list.y() - 1 && y <= list.bottom() + 1;
-            row.visible = inView;
-            if (!inView) {
-                continue;
+        try {
+            for (ListRow row : listRows) {
+                int y = layout.rowY(row.order, offset);
+                // 只处理可见行：滚出可视区的行必须关掉输入，否则点到看不见的「领取」
+                boolean inView = y + layout.rowH() >= list.y() - 1 && y <= list.bottom() + 1;
+                row.visible = inView;
+                if (!inView) {
+                    continue;
+                }
+                row.setX(list.x());
+                row.setY(y);
+                row.setWidth(list.w());
+                row.setHeight(layout.rowH());
+                row.render(g, mouseX, mouseY, partialTick);
             }
-            row.setX(list.x());
-            row.setY(y);
-            row.setWidth(list.w());
-            row.setHeight(layout.rowH());
-            row.render(g, mouseX, mouseY, partialTick);
+        } finally {
+            GuiFx.endClip(g);
         }
-        GuiFx.endClip(g);
         DailyBoardTheme.scrollbar(g, list.right() + 3, list, offset,
                 layout.maxScroll(listRows.size()));
     }
@@ -628,7 +632,7 @@ public final class DailyTaskScreen extends Screen {
         out.append("\n").append(Component.literal(limitText(item)));
         if (item.limited() && item.resetDay() >= 0) {
             out.append("\n").append(Component.translatable(KEY + "shop.tip.reset",
-                    LocalDate.ofEpochDay(item.resetDay()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))));
+                    LocalDate.ofEpochDay(item.resetDay()).format(ISO_DATE_FMT)));
         }
         if (item.matchLocked()) {
             out.append("\n").append(Component.translatable(KEY + "shop.tip.in_match"));
@@ -978,14 +982,15 @@ public final class DailyTaskScreen extends Screen {
 
     private String utcDate() {
         long day = snapshot == null ? Instant.now().getEpochSecond() / 86_400L : snapshot.epochDayUtc();
-        return LocalDate.ofEpochDay(day).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")) + " UTC";
+        String zoneLabel = snapshot == null ? "UTC" : snapshot.effectiveResetZoneId();
+        return LocalDate.ofEpochDay(day).format(ISO_DATE_FMT) + " " + zoneLabel;
     }
 
     private String countdown() {
         if (snapshot == null) {
             return "--:--:--";
         }
-        long next = (snapshot.epochDayUtc() + 1) * 86_400L;
+        long next = snapshot.effectiveNextResetEpochSecond();
         long secs = Math.max(0, next - Instant.now().getEpochSecond());
         return String.format(Locale.ROOT, "%02d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60);
     }

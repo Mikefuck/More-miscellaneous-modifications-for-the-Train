@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "habitrain_lottery:login_calendar",
+    "habitrain_lottery:mailbox",
+    "habitrain_lottery:daily_task_board"
+  ]
+}

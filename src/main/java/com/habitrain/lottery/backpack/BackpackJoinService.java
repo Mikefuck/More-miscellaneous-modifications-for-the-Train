@@ -104,16 +104,29 @@ public final class BackpackJoinService {
 
     private static void overlay(ServerPlayer player, Map<String, Integer> local, boolean addOnly) {
         Map<FactionCardType, Integer> current = BackpackManager.getCards(player);
-        for (FactionCardType type : FactionCardType.values()) {
-            if (type == FactionCardType.NONE) {
-                continue;
+        overlayCards(current, local, addOnly, (type, delta) -> BackpackManager.addCard(player, type, delta));
+    }
+
+    static void overlayCards(
+            Map<FactionCardType, Integer> current,
+            Map<String, Integer> local,
+            boolean addOnly,
+            java.util.function.BiConsumer<FactionCardType, Integer> addCard
+    ) {
+        LocalBackpackStore.runWithApplyingCommitted(() -> {
+            for (FactionCardType type : FactionCardType.values()) {
+                if (type == FactionCardType.NONE) {
+                    continue;
+                }
+                int want = local == null ? 0 : local.getOrDefault(
+                        type.questKey.toLowerCase(java.util.Locale.ROOT),
+                        local.getOrDefault(type.questKey, 0));
+                int have = current == null ? 0 : current.getOrDefault(type, 0);
+                int delta = (addOnly ? Math.max(want, have) : want) - have;
+                if (delta != 0) {
+                    addCard.accept(type, delta);
+                }
             }
-            int want = local.getOrDefault(type.questKey, 0);
-            int have = current.getOrDefault(type, 0);
-            int delta = (addOnly ? Math.max(want, have) : want) - have;
-            if (delta != 0) {
-                BackpackManager.addCard(player, type, delta);
-            }
-        }
+        });
     }
 }

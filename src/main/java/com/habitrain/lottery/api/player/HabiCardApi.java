@@ -16,6 +16,7 @@ import com.habitrain.lottery.storage.WorldLotteryPaths;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import net.minecraft.server.level.ServerPlayer;
 
+import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -52,22 +53,22 @@ public final class HabiCardApi {
     private HabiCardApi() {
     }
 
-    /** Ordered map of all six balances (missing values are {@code 0}). */
+    /** Ordered immutable map of all six balances (missing values are {@code 0}). */
     public static Map<String, Integer> all(UUID uuid) {
         Map<String, Integer> out = HabiLotteryApi.emptyCardMap();
-        if (uuid == null || !WorldLotteryPaths.ready()) {
-            return out;
+        if (uuid == null || !ApiGuards.isOnServerThread() || !WorldLotteryPaths.ready()) {
+            return Collections.unmodifiableMap(out);
         }
         ServerPlayer online = HabiLotteryApi.online(uuid);
         CardSnapshot snapshot = online != null
                 ? PlayerCardAdminService.snapshotOnline(online)
                 : PlayerCardAdminService.snapshotOffline(uuid);
         if (snapshot.status() == CardStoreStatus.CORRUPT) {
-            return out;
+            return Collections.unmodifiableMap(out);
         }
         Map<String, Integer> live = snapshot.cards();
         if (live == null) {
-            return out;
+            return Collections.unmodifiableMap(out);
         }
         for (HabiCardKind kind : HabiCardKind.ordered()) {
             Integer value = live.get(kind.id());
@@ -76,7 +77,7 @@ public final class HabiCardApi {
             }
             out.put(kind.id(), value == null ? 0 : Math.max(0, value));
         }
-        return out;
+        return Collections.unmodifiableMap(out);
     }
 
     /** One balance; {@code 0} when unknown or unreadable. */
@@ -117,7 +118,7 @@ public final class HabiCardApi {
      * ({@link #DAILY_FACTION_CARD_LIMIT} plus bonuses, minus today's uses).
      */
     public static int dailyFactionCardRemaining(UUID uuid) {
-        if (uuid == null || !WorldLotteryPaths.ready()) {
+        if (uuid == null || !ApiGuards.isOnServerThread() || !WorldLotteryPaths.ready()) {
             return 0;
         }
         PlayerLotteryStore store = PlayerLotteryStore.get();
@@ -128,7 +129,7 @@ public final class HabiCardApi {
         if (store.isLoadFailed(uuid)) {
             return 0;
         }
-        long today = LoginRewardService.todayEpochDayUtc();
+        long today = com.habitrain.lottery.time.LotteryDayClock.monotonicEpochDay(data.lastFactionCardUseEpochDay);
         boolean sameDay = data.lastFactionCardUseEpochDay == today;
         int used = sameDay ? Math.max(0, data.factionCardUsesToday) : 0;
         int bonus = sameDay ? Math.max(0, data.factionCardBonusUsesToday) : 0;
@@ -137,7 +138,7 @@ public final class HabiCardApi {
 
     /** Remaining self-select uses for the current UTC day. */
     public static int dailySelfSelectRemaining(UUID uuid) {
-        if (uuid == null || !WorldLotteryPaths.ready()) {
+        if (uuid == null || !ApiGuards.isOnServerThread() || !WorldLotteryPaths.ready()) {
             return 0;
         }
         return DailySelfSelectService.remaining(uuid);
@@ -151,8 +152,9 @@ public final class HabiCardApi {
         if (player == null) {
             return HabiAssetResult.fail(HabiFailure.PLAYER_OFFLINE);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         boolean ok = DailyFactionCardService.grantBonusUse(player);
         return ok ? HabiAssetResult.success(dailyFactionCardRemaining(player.getUUID()))
@@ -164,8 +166,9 @@ public final class HabiCardApi {
         if (player == null) {
             return HabiAssetResult.fail(HabiFailure.PLAYER_OFFLINE);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         boolean ok = DailyFactionCardService.revokeBonusUse(player);
         return ok ? HabiAssetResult.success(dailyFactionCardRemaining(player.getUUID()))
@@ -200,8 +203,9 @@ public final class HabiCardApi {
         if (!HabiAssetPolicy.isValidCardOperation(operation, value)) {
             return HabiAssetResult.fail(HabiFailure.INVALID_VALUE);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         CardOperation cardOperation = operation == HabiAssetOperation.ADD ? CardOperation.ADD : CardOperation.SET;
         if (operation == HabiAssetOperation.ADD && value > 0) {
@@ -234,8 +238,9 @@ public final class HabiCardApi {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         PlayerLotteryStore store = PlayerLotteryStore.get();
         if (store.isLoadFailed(uuid)) {

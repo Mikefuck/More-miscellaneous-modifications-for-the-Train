@@ -3,13 +3,16 @@ package com.habitrain.lottery.skin;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
 import com.habitrain.lottery.api.skin.SkinQuality;
+import com.habitrain.lottery.testutil.TestRegistryResetExtension;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Regression coverage for the independent skin catalogue. */
+@ExtendWith(TestRegistryResetExtension.class)
 class IndependentSkinTest {
     @Test
     void registeredSkinsResolveIndependently() {

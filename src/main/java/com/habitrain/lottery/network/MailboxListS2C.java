@@ -11,8 +11,8 @@ public record MailboxListS2C(String json) implements CustomPacketPayload {
     public static final Type<MailboxListS2C> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath(HabiLotteryMod.MOD_ID, "mailbox_list"));
     public static final StreamCodec<RegistryFriendlyByteBuf, MailboxListS2C> CODEC = StreamCodec.of(
-            (buf, value) -> buf.writeUtf(value.json == null ? "" : value.json, 1_000_000),
-            buf -> new MailboxListS2C(buf.readUtf(1_000_000))
+            (buf, value) -> buf.writeUtf(value.json == null ? "" : value.json, LotteryNetwork.ADMIN_S2C_JSON_MAX_CHARS),
+            buf -> new MailboxListS2C(buf.readUtf(LotteryNetwork.ADMIN_S2C_JSON_MAX_CHARS))
     );
 
     @Override

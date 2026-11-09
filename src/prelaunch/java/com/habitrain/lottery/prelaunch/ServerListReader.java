@@ -34,6 +34,9 @@ public final class ServerListReader {
     private static final int TAG_INT_ARRAY = 11;
     private static final int TAG_LONG_ARRAY = 12;
     private static final int MAX_DEPTH = 64;
+    static final int MAX_LIST_LENGTH = 4096;
+    private static final int MAX_COMPOUND_ENTRIES = 4096;
+    private static final long MAX_ARRAY_BYTES = 16L * 1024L * 1024L;
 
     private ServerListReader() {
     }
@@ -89,14 +92,20 @@ public final class ServerListReader {
             case TAG_DOUBLE:
                 return in.readDouble();
             case TAG_BYTE_ARRAY:
-                skipFully(in, checkedLength(in.readInt()));
+                skipFully(in, checkedArrayBytes(in.readInt(), 1));
                 return null;
             case TAG_STRING:
                 return in.readUTF();
             case TAG_LIST: {
                 int elementType = in.readUnsignedByte();
-                int length = checkedLength(in.readInt());
-                List<Object> list = new ArrayList<>();
+                int length = in.readInt();
+                if (length < 0 || length > MAX_LIST_LENGTH) {
+                    throw new IOException("Invalid NBT list length " + length);
+                }
+                if (length > 0 && (elementType <= TAG_END || elementType > TAG_LONG_ARRAY)) {
+                    throw new IOException("Invalid NBT list element type " + elementType);
+                }
+                List<Object> list = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
                     list.add(readPayload(in, elementType, depth + 1));
                 }
@@ -104,20 +113,24 @@ public final class ServerListReader {
             }
             case TAG_COMPOUND: {
                 Map<String, Object> map = new LinkedHashMap<>();
+                int entries = 0;
                 while (true) {
                     int childType = in.readUnsignedByte();
                     if (childType == TAG_END) {
                         return map;
+                    }
+                    if (++entries > MAX_COMPOUND_ENTRIES) {
+                        throw new IOException("NBT compound has too many entries");
                     }
                     String key = in.readUTF();
                     map.put(key, readPayload(in, childType, depth + 1));
                 }
             }
             case TAG_INT_ARRAY:
-                skipFully(in, (long) checkedLength(in.readInt()) * 4);
+                skipFully(in, checkedArrayBytes(in.readInt(), 4));
                 return null;
             case TAG_LONG_ARRAY:
-                skipFully(in, (long) checkedLength(in.readInt()) * 8);
+                skipFully(in, checkedArrayBytes(in.readInt(), 8));
                 return null;
             case TAG_END:
                 return null;
@@ -126,11 +139,15 @@ public final class ServerListReader {
         }
     }
 
-    private static int checkedLength(int length) throws IOException {
+    private static long checkedArrayBytes(int length, int elementBytes) throws IOException {
         if (length < 0) {
             throw new IOException("Negative NBT length");
         }
-        return length;
+        long bytes = (long) length * elementBytes;
+        if (bytes > MAX_ARRAY_BYTES) {
+            throw new IOException("NBT array too large: " + bytes);
+        }
+        return bytes;
     }
 
     private static void skipFully(DataInputStream in, long bytes) throws IOException {

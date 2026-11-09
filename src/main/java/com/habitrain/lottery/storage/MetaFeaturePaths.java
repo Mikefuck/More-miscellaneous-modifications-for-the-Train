@@ -41,7 +41,7 @@ public final class MetaFeaturePaths {
      * contract is null-on-not-ready, not "throw".
      */
     private static Path requireReady() {
-        return WorldLotteryPaths.ready() ? WorldLotteryPaths.root() : null;
+        return WorldLotteryPaths.root();
     }
 
     public static Path root() {
@@ -55,7 +55,7 @@ public final class MetaFeaturePaths {
 
     public static Path mailPlayer(UUID id) {
         Path dir = mailDir();
-        return dir == null || id == null ? null : dir.resolve(id + ".json");
+        return dir == null || id == null ? null : WorldLotteryPaths.resolveChildFile(dir, id + ".json");
     }
 
     public static Path recordsDir() {
@@ -135,7 +135,7 @@ public final class MetaFeaturePaths {
 
     public static Path backpackPlayer(UUID id) {
         Path dir = backpackDir();
-        return dir == null || id == null ? null : dir.resolve(id + ".json");
+        return dir == null || id == null ? null : WorldLotteryPaths.resolveChildFile(dir, id + ".json");
     }
 
     /**

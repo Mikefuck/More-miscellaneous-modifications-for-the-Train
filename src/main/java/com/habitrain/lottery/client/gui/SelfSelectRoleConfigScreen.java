@@ -37,12 +37,14 @@ public final class SelfSelectRoleConfigScreen extends Screen {
     private boolean saving;
     private boolean requested;
     private boolean conflict;
+    private boolean renderedLocked;
     private int pendingTicks;
     private String requestId = "";
     private String query = "";
     private Component status = text("loading");
     private EditBox search;
     private Button master, allow, deny, save, refresh, cancel, previous, next;
+    private Button backButton;
     private int left, contentWidth, searchY, toolsY, listY, listBottom;
     private boolean suppressBackground;
 
@@ -57,9 +59,39 @@ public final class SelfSelectRoleConfigScreen extends Screen {
         return Component.translatable(KEY + key, args);
     }
 
+    /** Clears transient session state when switching worlds/servers ({@code B-23.1}). */
+    public void resetSessionState() {
+        writable = false;
+        pending = false;
+        saving = false;
+        requested = false;
+        conflict = false;
+        pendingTicks = 0;
+        requestId = "";
+        roles = List.of();
+        filtered = List.of();
+        baseline = new SelfSelectRoleConfig();
+        draft = baseline.copy();
+        status = text("loading");
+    }
+
     @Override
     protected void init() {
+        rebuildScreen();
+    }
+
+    private void rebuildScreen() {
+        clearWidgets();
         rows.clear();
+        renderedLocked = MenuAccessBridge.isLocked();
+        if (renderedLocked) {
+            search = null;
+            master = allow = deny = save = refresh = previous = next = null;
+            backButton = cancel = addRenderableWidget(
+                    AdminLockGuard.createLockedBackButton(width, height, text("cancel"), b -> onClose()));
+            return;
+        }
+
         contentWidth = Math.min(720, width - 16);
         left = (width - contentWidth) / 2;
         int hintLines = Math.min(2, font.split(text("hint"), contentWidth).size());
@@ -95,7 +127,7 @@ public final class SelfSelectRoleConfigScreen extends Screen {
         int footerY = height - 26;
         refresh = addRenderableWidget(Button.builder(text("refresh"), b -> confirmDiscard(this::request))
                 .bounds(left, footerY, third, 20).tooltip(Tooltip.create(text("refresh_hint"))).build());
-        cancel = addRenderableWidget(Button.builder(text("cancel"), b -> onClose())
+        backButton = cancel = addRenderableWidget(Button.builder(text("cancel"), b -> onClose())
                 .bounds(left + third + 4, footerY, third, 20).build());
         save = addRenderableWidget(Button.builder(text("save"), b -> submit())
                 .bounds(left + (third + 4) * 2, footerY, contentWidth - (third + 4) * 2, 20).build());
@@ -130,6 +162,10 @@ public final class SelfSelectRoleConfigScreen extends Screen {
     }
 
     private void rebuildRows() {
+        if (MenuAccessBridge.isLocked()) {
+            rebuildScreen();
+            return;
+        }
         int focusedRow = rows.indexOf(getFocused());
         for (AbstractWidget row : rows) removeWidget(row);
         rows.clear();
@@ -161,8 +197,10 @@ public final class SelfSelectRoleConfigScreen extends Screen {
         }, null);
         // Rebuilt rows precede the footer in Tab order, matching their visual order.
         for (Button button : new Button[]{refresh, cancel, save}) {
-            removeWidget(button);
-            addRenderableWidget(button);
+            if (button != null) {
+                removeWidget(button);
+                addRenderableWidget(button);
+            }
         }
         if (focusedRow >= 0 && !rows.isEmpty()) setFocused(rows.get(Math.min(focusedRow, rows.size() - 1)));
         refreshLocks();
@@ -207,6 +245,12 @@ public final class SelfSelectRoleConfigScreen extends Screen {
     public void receive(SelfSelectAdminNetwork.ConfigS2C response) {
         if (!pending || !response.requestId().equals(requestId)) return;
         pending = false;
+        if ("rate_limited".equals(response.message())) {
+            // Preserve current editor state and draft rather than overwriting with "{}"!
+            status = text("rate_limited");
+            refreshLocks();
+            return;
+        }
         try {
             var snapshot = GSON.fromJson(response.json(), SelfSelectRoleConfigService.Snapshot.class);
             writable = snapshot != null && snapshot.writable() && !"no_permission".equals(response.message());
@@ -235,6 +279,13 @@ public final class SelfSelectRoleConfigScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (MenuAccessBridge.isLocked() != renderedLocked) {
+            rebuildScreen();
+            return;
+        }
+        if (renderedLocked) {
+            return;
+        }
         if (pending && (!SelfSelectAdminClient.connected() || ++pendingTicks >= 200)) {
             pending = false;
             requestId = "";
@@ -256,11 +307,26 @@ public final class SelfSelectRoleConfigScreen extends Screen {
 
     @Override
     public void onClose() {
+        if (MenuAccessBridge.isLocked()) {
+            if (minecraft != null) minecraft.setScreen(parent);
+            return;
+        }
         if (!pending) confirmDiscard(() -> minecraft.setScreen(parent));
     }
 
     @Override
+    public boolean mouseClicked(double mx, double my, int button) {
+        if (MenuAccessBridge.isLocked()) {
+            return AdminLockGuard.handleLockedMouseClicked(backButton, mx, my, button);
+        }
+        return super.mouseClicked(mx, my, button);
+    }
+
+    @Override
     public boolean mouseScrolled(double mx, double my, double horizontal, double vertical) {
+        if (MenuAccessBridge.isLocked()) {
+            return false;
+        }
         if (list.mouseScrolled(mx, my, vertical)) {
             rebuildRows();
             return true;
@@ -270,6 +336,9 @@ public final class SelfSelectRoleConfigScreen extends Screen {
 
     @Override
     public boolean keyPressed(int key, int scan, int modifiers) {
+        if (MenuAccessBridge.isLocked()) {
+            return AdminLockGuard.handleLockedKeyPressed(this, backButton, key);
+        }
         if (key == GLFW.GLFW_KEY_PAGE_UP || key == GLFW.GLFW_KEY_PAGE_DOWN) {
             scroll((key == GLFW.GLFW_KEY_PAGE_UP ? -1 : 1) * list.visibleRows());
             if (!rows.isEmpty()) setFocused(rows.get(0));
@@ -279,12 +348,28 @@ public final class SelfSelectRoleConfigScreen extends Screen {
     }
 
     @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (MenuAccessBridge.isLocked()) {
+            return false;
+        }
+        return super.charTyped(codePoint, modifiers);
+    }
+
+    @Override
     public void renderBackground(GuiGraphics g, int mx, int my, float delta) {
         if (!suppressBackground) super.renderBackground(g, mx, my, delta);
     }
 
     @Override
     public void render(GuiGraphics g, int mx, int my, float delta) {
+        if (MenuAccessBridge.isLocked()) {
+            if (!renderedLocked) {
+                rebuildScreen();
+            }
+            renderBackground(g, mx, my, delta);
+            AdminLockGuard.renderLockedScreen(g, font, width, height, backButton, mx, my, delta);
+            return;
+        }
         renderBackground(g, mx, my, delta);
         g.drawCenteredString(font, title, width / 2, 10, 0xFFFFFFFF);
         var hint = font.split(text("hint"), contentWidth);

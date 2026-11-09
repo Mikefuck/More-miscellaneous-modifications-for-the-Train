@@ -11,6 +11,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
 import org.joml.Matrix4f;
+import org.joml.Vector3f;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -386,17 +387,23 @@ public final class CrateArt {
         int low = Math.min(2, (int) blur), high = Math.min(2, low + 1);
         float mix = blur - low;
         g.pose().pushPose();
-        g.pose().translate(width * .5F - pan * 120, height * .5F, 0);
-        float zoom = 1.06F + .07F * dolly + .10F * pan;
-        g.pose().scale(zoom, zoom, 1);
-        g.pose().translate(-width * .5F, -height * .5F, 0);
-        g.blit(COURTYARD[low], 0, 0, width, height, 0, 0, 1920, 1080, 1920, 1080);
-        if (mix > .01F) {
-            g.setColor(1, 1, 1, mix);
-            g.blit(COURTYARD[high], 0, 0, width, height, 0, 0, 1920, 1080, 1920, 1080);
-            g.setColor(1, 1, 1, 1);
+        try {
+            g.pose().translate(width * .5F - pan * 120, height * .5F, 0);
+            float zoom = 1.06F + .07F * dolly + .10F * pan;
+            g.pose().scale(zoom, zoom, 1);
+            g.pose().translate(-width * .5F, -height * .5F, 0);
+            g.blit(COURTYARD[low], 0, 0, width, height, 0, 0, 1920, 1080, 1920, 1080);
+            if (mix > .01F) {
+                g.setColor(1, 1, 1, mix);
+                try {
+                    g.blit(COURTYARD[high], 0, 0, width, height, 0, 0, 1920, 1080, 1920, 1080);
+                } finally {
+                    g.setColor(1, 1, 1, 1);
+                }
+            }
+        } finally {
+            g.pose().popPose();
         }
-        g.pose().popPose();
     }
 
     /** 全屏暗场：转场与「切黑」桥接。 */
@@ -419,15 +426,21 @@ public final class CrateArt {
                             float yawDeg, float rollDeg, float tint, float alpha) {
         if (stack == null || stack.isEmpty() || scale <= 0.02F || alpha <= .01F) return;
         g.pose().pushPose();
-        g.pose().translate(cx, cy, 0.0F);
-        if (yawDeg != 0.0F) g.pose().mulPose(Axis.YP.rotationDegrees(yawDeg));
-        if (rollDeg != 0.0F) g.pose().mulPose(Axis.ZP.rotationDegrees(rollDeg));
-        g.pose().scale(scale, scale, 1.0F);
-        float t = Mth.clamp(tint, 0.0F, 1.0F);
-        g.setColor(t, t, t, alpha);
-        g.renderFakeItem(stack, -8, -8);
-        g.setColor(1.0F, 1.0F, 1.0F, 1.0F);
-        g.pose().popPose();
+        try {
+            g.pose().translate(cx, cy, 0.0F);
+            if (yawDeg != 0.0F) g.pose().mulPose(Axis.YP.rotationDegrees(yawDeg));
+            if (rollDeg != 0.0F) g.pose().mulPose(Axis.ZP.rotationDegrees(rollDeg));
+            g.pose().scale(scale, scale, 1.0F);
+            float t = Mth.clamp(tint, 0.0F, 1.0F);
+            g.setColor(t, t, t, alpha);
+            try {
+                g.renderFakeItem(stack, -8, -8);
+            } finally {
+                g.setColor(1.0F, 1.0F, 1.0F, 1.0F);
+            }
+        } finally {
+            g.pose().popPose();
+        }
     }
 
     // =====================================================================
@@ -464,15 +477,36 @@ public final class CrateArt {
         if (e > 0.02F) CrateFx.rectGlow(g, x, y, x + w, y + h, 10 + 18 * e, rarity, 0.45F * e * a);
     }
 
+    /**
+     * 将画布局部矩形 {@code (x, y, w, h)} 通过当前 {@code pose} 矩阵变换为屏幕 GUI 裁剪坐标
+     * {@code [sx0, sy0, sx1, sy1]}（供 {@link GuiGraphics#enableScissor} 使用）。
+     */
+    public static int[] transformScissorBounds(Matrix4f pose, float x, float y, float w, float h) {
+        Vector3f p0 = pose.transformPosition(x, y, 0.0F, new Vector3f());
+        Vector3f p1 = pose.transformPosition(x + w, y + h, 0.0F, new Vector3f());
+        float minX = Math.min(p0.x, p1.x), maxX = Math.max(p0.x, p1.x);
+        float minY = Math.min(p0.y, p1.y), maxY = Math.max(p0.y, p1.y);
+        int sx0 = (int) Math.floor(minX + 1e-4F);
+        int sy0 = (int) Math.floor(minY + 1e-4F);
+        int sx1 = (int) Math.ceil(maxX - 1e-4F);
+        int sy1 = (int) Math.ceil(maxY - 1e-4F);
+        return new int[]{sx0, sy0, sx1, sy1};
+    }
+
     /** 斜向扫光（悬停 / 中奖时掠过卡面），{@code sweep} 0..1。 */
     public static void sheen(GuiGraphics g, float x, float y, float w, float h, float sweep, float strength) {
-        if (strength <= 0.01F) return;
+        if (strength <= 0.01F || w <= 0.0F || h <= 0.0F) return;
         float band = w * 0.28F, skew = h * 0.45F;
         float cx = x - band - skew + (w + band * 2 + skew * 2) * sweep;
         int c = GuiFx.fade(0xFFFFFFFF, 0.22F * Mth.clamp(strength, 0, 1));
-        g.enableScissor((int) x, (int) y, (int) (x + w), (int) (y + h));
-        CrateFx.skewBand(g, cx, y, y + h, band, skew, c);
-        g.disableScissor();
+        int[] clip = transformScissorBounds(g.pose().last().pose(), x, y, w, h);
+        if (clip[2] <= clip[0] || clip[3] <= clip[1]) return;
+        g.enableScissor(clip[0], clip[1], clip[2], clip[3]);
+        try {
+            CrateFx.skewBand(g, cx, y, y + h, band, skew, c);
+        } finally {
+            g.disableScissor();
+        }
     }
 
     // =====================================================================

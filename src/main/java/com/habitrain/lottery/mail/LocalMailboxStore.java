@@ -7,11 +7,14 @@ import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.AtomicJsonFiles.JsonLoad;
 import com.habitrain.lottery.storage.MetaFeaturePaths;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.time.LotteryDayClock;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Per-player mailbox JSON under {@code {world}/habitrain_lottery/mail/players/}.
@@ -24,6 +27,8 @@ import java.util.UUID;
  */
 public final class LocalMailboxStore {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    static final long EXPIRED_RETENTION_MS = 7L * 24L * 60L * 60L * 1000L;
+    private static final Set<Path> BACKUP_RECOVERED_PATHS = ConcurrentHashMap.newKeySet();
 
     private LocalMailboxStore() {
     }
@@ -109,20 +114,27 @@ public final class LocalMailboxStore {
         if (path == null) {
             return new MailLoad(JsonLoad.Status.MISSING, new ArrayList<>(), null);
         }
+        Path norm = path.toAbsolutePath().normalize();
         JsonLoad<FileRoot> load = AtomicJsonFiles.readJson(path, FileRoot.class, GSON);
         if (load.corrupt()) {
+            BACKUP_RECOVERED_PATHS.remove(norm);
             HabiLotteryMod.LOGGER.error("Corrupt mailbox JSON {}, not treating as empty inbox", path);
             return new MailLoad(JsonLoad.Status.CORRUPT, null, load.quarantined());
         }
         if (load.isMissing()) {
+            BACKUP_RECOVERED_PATHS.remove(norm);
             return new MailLoad(JsonLoad.Status.MISSING, new ArrayList<>(), null);
         }
         FileRoot root = load.value();
         List<MailJson> mails = root == null || root.mails == null
                 ? new ArrayList<>()
                 : new ArrayList<>(root.mails);
-        JsonLoad.Status status = load.usedBackup() ? JsonLoad.Status.OK_BACKUP : JsonLoad.Status.OK;
-        return new MailLoad(status, mails, load.quarantined());
+        if (load.usedBackup()) {
+            BACKUP_RECOVERED_PATHS.add(norm);
+            return new MailLoad(JsonLoad.Status.OK_BACKUP, mails, load.quarantined());
+        }
+        BACKUP_RECOVERED_PATHS.remove(norm);
+        return new MailLoad(JsonLoad.Status.OK, mails, load.quarantined());
     }
 
     public static boolean save(UUID uuid, List<MailJson> mails) {
@@ -132,21 +144,77 @@ public final class LocalMailboxStore {
         return saveTo(MetaFeaturePaths.mailPlayer(uuid), mails);
     }
 
+    public static boolean save(UUID uuid, List<MailJson> mails, boolean backup) {
+        if (!WorldLotteryPaths.ready() || uuid == null) {
+            return false;
+        }
+        return saveTo(MetaFeaturePaths.mailPlayer(uuid), mails, backup);
+    }
+
     public static boolean saveTo(Path path, List<MailJson> mails) {
         if (path == null) {
             return false;
         }
+        boolean backup = !BACKUP_RECOVERED_PATHS.contains(path.toAbsolutePath().normalize());
+        return saveTo(path, mails, backup);
+    }
+
+    public static boolean saveTo(Path path, List<MailJson> mails, boolean backup) {
+        if (path == null) {
+            return false;
+        }
+        Path norm = path.toAbsolutePath().normalize();
+        boolean effectiveBackup = backup && !BACKUP_RECOVERED_PATHS.contains(norm);
         FileRoot root = new FileRoot();
-        root.mails = mails == null ? new ArrayList<>() : new ArrayList<>(mails);
-        // Audit B-13: pass the backup flag explicitly (as PlayerLotteryStore does).
-        // With backups off, readJson can only quarantine a corrupt mailbox — there is
-        // no .bak to fall back to, so a damaged file means every mail in it is gone
-        // and the player is permanently denied their mailbox contents.
-        boolean saved = AtomicJsonFiles.writeJson(path, root, GSON, true, true);
-        if (!saved) {
+        root.mails = pruneExpiredMails(mails, LotteryDayClock.instant().toEpochMilli());
+        // Audit B-13 + I-05: pass the backup flag explicitly (as PlayerLotteryStore does),
+        // skipping .bak overwrite when recovering from .bak so an un-quarantined corrupt
+        // primary can never clobber the sole valid .bak.
+        boolean saved = AtomicJsonFiles.writeJson(path, root, GSON, true, effectiveBackup);
+        if (saved) {
+            BACKUP_RECOVERED_PATHS.remove(norm);
+        } else {
             HabiLotteryMod.LOGGER.error("Failed saving mailbox {}", path);
         }
         return saved;
+    }
+
+    static List<MailJson> pruneExpiredMails(List<MailJson> mails, long nowMs) {
+        if (mails == null || mails.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<MailJson> kept = new ArrayList<>(mails.size());
+        for (MailJson m : mails) {
+            if (m == null) {
+                continue;
+            }
+            if (shouldPruneExpired(m, nowMs)) {
+                continue;
+            }
+            kept.add(m);
+        }
+        return kept;
+    }
+
+    private static boolean shouldPruneExpired(MailJson m, long nowMs) {
+        if (m.expiresAt <= 0L || nowMs <= m.expiresAt || (nowMs - m.expiresAt) <= EXPIRED_RETENTION_MS) {
+            return false;
+        }
+        if (MailService.hasClaimingMarker(m) || MailService.hasClaimFailedMarker(m)) {
+            return false;
+        }
+        return m.claimed || !hasRewardAttachments(m);
+    }
+
+    private static boolean hasRewardAttachments(MailJson m) {
+        if (m.commands == null || m.commands.isEmpty()) {
+            return false;
+        }
+        try {
+            return !MailCommandsCodec.decodeStrict(m.commands).isEmpty();
+        } catch (RuntimeException invalid) {
+            return true;
+        }
     }
 
     /**
@@ -161,13 +229,13 @@ public final class LocalMailboxStore {
         j.content = draft.content() == null ? "" : draft.content();
         j.claimed = false;
         j.read = false;
-        j.sentAt = System.currentTimeMillis();
+        j.sentAt = LotteryDayClock.instant().toEpochMilli();
         j.expiresAt = draft.expiresAt();
         j.commands = new ArrayList<>(MailCommandsCodec.encode(draft.rewards()));
         return j;
     }
 
     public static boolean isExpired(MailJson m) {
-        return m != null && m.expiresAt > 0 && System.currentTimeMillis() > m.expiresAt;
+        return m != null && m.expiresAt > 0 && LotteryDayClock.instant().toEpochMilli() > m.expiresAt;
     }
 }

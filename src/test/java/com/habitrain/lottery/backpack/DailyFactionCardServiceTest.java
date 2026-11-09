@@ -3,12 +3,16 @@ package com.habitrain.lottery.backpack;
 import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.time.LotteryDayClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -19,6 +23,7 @@ class DailyFactionCardServiceTest {
 
     @BeforeEach
     void setUp() {
+        LotteryDayClock.setTestClock(Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneOffset.UTC));
         PlayerLotteryStore.get().reset();
         WorldLotteryPaths.clear();
         WorldLotteryPaths.initForTest(temp);
@@ -28,6 +33,7 @@ class DailyFactionCardServiceTest {
     void tearDown() {
         PlayerLotteryStore.get().reset();
         WorldLotteryPaths.clear();
+        LotteryDayClock.resetTestClock();
     }
 
     @Test

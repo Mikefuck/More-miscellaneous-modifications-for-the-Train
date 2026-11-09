@@ -25,6 +25,7 @@ public class MultilineTextArea extends AbstractWidget {
     private int cursorCol;
     private boolean editable = true;
     private int maxLength = 1_000_000;
+    private char pendingHighSurrogate;
 
     public MultilineTextArea(Font font, int x, int y, int w, int h) {
         super(x, y, w, h, Component.literal("textarea"));
@@ -49,32 +50,87 @@ public class MultilineTextArea extends AbstractWidget {
         return text;
     }
 
+    int cursorLine() {
+        return cursorLine;
+    }
+
+    int cursorCol() {
+        return cursorCol;
+    }
+
     public void setValue(String value) {
-        this.text = value == null ? "" : value;
-        if (this.text.length() > maxLength) {
-            this.text = this.text.substring(0, maxLength);
-        }
+        pendingHighSurrogate = 0;
+        String normalized = value == null ? "" : value.replace("\r\n", "\n").replace('\r', '\n');
+        this.text = truncateCodePointSafe(normalized, maxLength);
         reflow();
         cursorLine = 0;
         cursorCol = 0;
         scroll = 0;
     }
 
+    private int currentTextLength() {
+        int total = Math.max(0, lines.size() - 1);
+        for (String line : lines) {
+            total += line.length();
+        }
+        return total;
+    }
+
+    private static String truncateCodePointSafe(String s, int budget) {
+        if (budget <= 0 || s.isEmpty()) {
+            return "";
+        }
+        if (s.length() <= budget) {
+            return s;
+        }
+        int end = budget;
+        if (Character.isHighSurrogate(s.charAt(end - 1))) {
+            end--;
+        }
+        return end <= 0 ? "" : s.substring(0, end);
+    }
+
+    private static int snapToCodePointBoundary(String line, int col) {
+        int clamped = Mth.clamp(col, 0, line.length());
+        if (clamped > 0 && clamped < line.length()
+                && Character.isHighSurrogate(line.charAt(clamped - 1))
+                && Character.isLowSurrogate(line.charAt(clamped))) {
+            return clamped - 1;
+        }
+        return clamped;
+    }
+
+    private static int prevCodePointIndex(String line, int col) {
+        int clamped = Mth.clamp(col, 0, line.length());
+        if (clamped <= 0) {
+            return 0;
+        }
+        return Character.offsetByCodePoints(line, clamped, -1);
+    }
+
+    private static int nextCodePointIndex(String line, int col) {
+        int clamped = Mth.clamp(col, 0, line.length());
+        if (clamped >= line.length()) {
+            return line.length();
+        }
+        return Character.offsetByCodePoints(line, clamped, 1);
+    }
+
     private void reflow() {
         lines.clear();
         if (text.isEmpty()) {
             lines.add("");
-            return;
-        }
-        String[] raw = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
-        for (String r : raw) {
-            lines.add(r);
-        }
-        if (lines.isEmpty()) {
-            lines.add("");
+        } else {
+            String[] raw = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+            for (String r : raw) {
+                lines.add(r);
+            }
+            if (lines.isEmpty()) {
+                lines.add("");
+            }
         }
         cursorLine = Mth.clamp(cursorLine, 0, lines.size() - 1);
-        cursorCol = Mth.clamp(cursorCol, 0, lines.get(cursorLine).length());
+        cursorCol = snapToCodePointBoundary(lines.get(cursorLine), cursorCol);
         int visible = Math.max(1, (height - 8) / 10);
         scroll = Mth.clamp(scroll, 0, Math.max(0, lines.size() - visible));
     }
@@ -88,10 +144,6 @@ public class MultilineTextArea extends AbstractWidget {
             sb.append(lines.get(i));
         }
         text = sb.toString();
-        if (text.length() > maxLength) {
-            text = text.substring(0, maxLength);
-            reflow();
-        }
     }
 
     @Override
@@ -104,30 +156,37 @@ public class MultilineTextArea extends AbstractWidget {
         int lineH = 10;
         int visible = Math.max(1, (height - 8) / lineH);
         int y = getY() + 4;
-        for (int i = 0; i < visible; i++) {
-            int li = scroll + i;
-            if (li >= lines.size()) {
-                break;
-            }
-            String line = lines.get(li);
-            int color = 0xFFE8ECF0;
-            // simple JSON highlight
-            if (line.trim().startsWith("\"")) {
-                color = 0xFF9CDCFE;
-            } else if (line.contains(":")) {
-                color = 0xFFDCDCAA;
-            } else if (line.trim().startsWith("{") || line.trim().startsWith("}")
-                    || line.trim().startsWith("[") || line.trim().startsWith("]")) {
-                color = 0xFFC586C0;
-            }
-            g.drawString(font, line, getX() + 4, y, color, false);
-            if (isFocused() && editable && li == cursorLine) {
-                int cx = getX() + 4 + font.width(line.substring(0, Math.min(cursorCol, line.length())));
-                if ((System.currentTimeMillis() / 400) % 2 == 0) {
-                    g.fill(cx, y - 1, cx + 1, y + 9, 0xFFFFFFFF);
+        int clipRight = lines.size() > visible ? getX() + width - 4 : getX() + width - 2;
+        g.enableScissor(getX() + 2, getY() + 2, Math.max(getX() + 2, clipRight), Math.max(getY() + 2, getY() + height - 2));
+        try {
+            for (int i = 0; i < visible; i++) {
+                int li = scroll + i;
+                if (li >= lines.size()) {
+                    break;
                 }
+                String line = lines.get(li);
+                int color = 0xFFE8ECF0;
+                // simple JSON highlight
+                if (line.trim().startsWith("\"")) {
+                    color = 0xFF9CDCFE;
+                } else if (line.contains(":")) {
+                    color = 0xFFDCDCAA;
+                } else if (line.trim().startsWith("{") || line.trim().startsWith("}")
+                        || line.trim().startsWith("[") || line.trim().startsWith("]")) {
+                    color = 0xFFC586C0;
+                }
+                g.drawString(font, line, getX() + 4, y, color, false);
+                if (isFocused() && editable && li == cursorLine) {
+                    int safeCol = snapToCodePointBoundary(line, cursorCol);
+                    int cx = getX() + 4 + font.width(line.substring(0, safeCol));
+                    if ((System.currentTimeMillis() / 400) % 2 == 0) {
+                        g.fill(cx, y - 1, cx + 1, y + 9, 0xFFFFFFFF);
+                    }
+                }
+                y += lineH;
             }
-            y += lineH;
+        } finally {
+            g.disableScissor();
         }
 
         // scrollbar
@@ -143,6 +202,7 @@ public class MultilineTextArea extends AbstractWidget {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (isMouseOver(mouseX, mouseY)) {
+            pendingHighSurrogate = 0;
             setFocused(true);
             int lineH = 10;
             int relY = (int) mouseY - getY() - 4;
@@ -152,12 +212,13 @@ public class MultilineTextArea extends AbstractWidget {
             String line = lines.get(li);
             int relX = (int) mouseX - getX() - 4;
             cursorCol = 0;
-            for (int i = 0; i <= line.length(); i++) {
-                if (font.width(line.substring(0, i)) >= relX) {
-                    cursorCol = i;
+            int i = 0;
+            while (i <= line.length()) {
+                cursorCol = i;
+                if (font.width(line.substring(0, i)) >= relX || i == line.length()) {
                     break;
                 }
-                cursorCol = i;
+                i = nextCodePointIndex(line, i);
             }
             return true;
         }
@@ -179,6 +240,7 @@ public class MultilineTextArea extends AbstractWidget {
         if (!isFocused()) {
             return false;
         }
+        pendingHighSurrogate = 0;
         boolean ctrl = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0
                 || (modifiers & GLFW.GLFW_MOD_SUPER) != 0;
         if (ctrl && keyCode == GLFW.GLFW_KEY_A) {
@@ -220,8 +282,9 @@ public class MultilineTextArea extends AbstractWidget {
     private boolean handleNav(int keyCode) {
         int visible = Math.max(1, (height - 8) / 10);
         if (keyCode == GLFW.GLFW_KEY_LEFT) {
+            String line = lines.get(cursorLine);
             if (cursorCol > 0) {
-                cursorCol--;
+                cursorCol = prevCodePointIndex(line, cursorCol);
             } else if (cursorLine > 0) {
                 cursorLine--;
                 cursorCol = lines.get(cursorLine).length();
@@ -230,8 +293,9 @@ public class MultilineTextArea extends AbstractWidget {
             return true;
         }
         if (keyCode == GLFW.GLFW_KEY_RIGHT) {
-            if (cursorCol < lines.get(cursorLine).length()) {
-                cursorCol++;
+            String line = lines.get(cursorLine);
+            if (cursorCol < line.length()) {
+                cursorCol = nextCodePointIndex(line, cursorCol);
             } else if (cursorLine < lines.size() - 1) {
                 cursorLine++;
                 cursorCol = 0;
@@ -242,7 +306,8 @@ public class MultilineTextArea extends AbstractWidget {
         if (keyCode == GLFW.GLFW_KEY_UP) {
             if (cursorLine > 0) {
                 cursorLine--;
-                cursorCol = Math.min(cursorCol, lines.get(cursorLine).length());
+                String line = lines.get(cursorLine);
+                cursorCol = snapToCodePointBoundary(line, Math.min(cursorCol, line.length()));
             }
             ensureCursorVisible(visible);
             return true;
@@ -250,7 +315,8 @@ public class MultilineTextArea extends AbstractWidget {
         if (keyCode == GLFW.GLFW_KEY_DOWN) {
             if (cursorLine < lines.size() - 1) {
                 cursorLine++;
-                cursorCol = Math.min(cursorCol, lines.get(cursorLine).length());
+                String line = lines.get(cursorLine);
+                cursorCol = snapToCodePointBoundary(line, Math.min(cursorCol, line.length()));
             }
             ensureCursorVisible(visible);
             return true;
@@ -287,6 +353,20 @@ public class MultilineTextArea extends AbstractWidget {
         if (!isFocused() || !editable) {
             return false;
         }
+        if (Character.isHighSurrogate(codePoint)) {
+            pendingHighSurrogate = codePoint;
+            return true;
+        }
+        if (Character.isLowSurrogate(codePoint)) {
+            if (pendingHighSurrogate != 0) {
+                char high = pendingHighSurrogate;
+                pendingHighSurrogate = 0;
+                insert(new String(new char[]{high, codePoint}));
+                return true;
+            }
+            return false;
+        }
+        pendingHighSurrogate = 0;
         if (codePoint == '\n' || codePoint == '\r') {
             return false;
         }
@@ -297,14 +377,23 @@ public class MultilineTextArea extends AbstractWidget {
         return true;
     }
 
-    private void insert(String s) {
+    void insert(String s) {
         if (s == null || s.isEmpty()) {
             return;
         }
         s = s.replace("\r\n", "\n").replace('\r', '\n');
+        int budget = maxLength - currentTextLength();
+        if (budget <= 0) {
+            return;
+        }
+        s = truncateCodePointSafe(s, budget);
+        if (s.isEmpty()) {
+            return;
+        }
         String line = lines.get(cursorLine);
-        String left = line.substring(0, cursorCol);
-        String right = line.substring(cursorCol);
+        int safeCol = snapToCodePointBoundary(line, cursorCol);
+        String left = line.substring(0, safeCol);
+        String right = line.substring(safeCol);
         String[] parts = (left + s + right).split("\n", -1);
         lines.remove(cursorLine);
         for (int i = 0; i < parts.length; i++) {
@@ -323,8 +412,15 @@ public class MultilineTextArea extends AbstractWidget {
     private void backspace() {
         if (cursorCol > 0) {
             String line = lines.get(cursorLine);
-            lines.set(cursorLine, line.substring(0, cursorCol - 1) + line.substring(cursorCol));
-            cursorCol--;
+            int clamped = Mth.clamp(cursorCol, 0, line.length());
+            int after = (clamped < line.length()
+                    && Character.isHighSurrogate(line.charAt(clamped - 1))
+                    && Character.isLowSurrogate(line.charAt(clamped)))
+                    ? clamped + 1
+                    : clamped;
+            int prevCol = prevCodePointIndex(line, after);
+            lines.set(cursorLine, line.substring(0, prevCol) + line.substring(after));
+            cursorCol = prevCol;
         } else if (cursorLine > 0) {
             String prev = lines.get(cursorLine - 1);
             String cur = lines.get(cursorLine);
@@ -342,7 +438,10 @@ public class MultilineTextArea extends AbstractWidget {
     private void deleteForward() {
         String line = lines.get(cursorLine);
         if (cursorCol < line.length()) {
-            lines.set(cursorLine, line.substring(0, cursorCol) + line.substring(cursorCol + 1));
+            int safeCol = snapToCodePointBoundary(line, cursorCol);
+            int nextCol = nextCodePointIndex(line, safeCol);
+            lines.set(cursorLine, line.substring(0, safeCol) + line.substring(nextCol));
+            cursorCol = safeCol;
         } else if (cursorLine < lines.size() - 1) {
             lines.set(cursorLine, line + lines.get(cursorLine + 1));
             lines.remove(cursorLine + 1);

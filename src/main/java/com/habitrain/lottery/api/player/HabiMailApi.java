@@ -4,7 +4,6 @@ import com.habitrain.lottery.mail.MailComposeLimits;
 import com.habitrain.lottery.mail.MailDraft;
 import com.habitrain.lottery.mail.MailReward;
 import com.habitrain.lottery.mail.MailService;
-import com.habitrain.lottery.storage.WorldLotteryPaths;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
@@ -19,10 +18,9 @@ import java.util.UUID;
  * exactly once when the player claims it. Online players also receive an
  * in-game notification.</p>
  *
- * <p>Reward amounts are clamped to
- * {@link MailComposeLimits#MIN_REWARD_AMOUNT}..{@link MailComposeLimits#MAX_REWARD_AMOUNT}
- * and at most {@link MailComposeLimits#MAX_REWARDS} rewards per mail, matching
- * the compose screen.</p>
+ * <p>Public reward amounts must be positive ({@code amount > 0}), clamped at
+ * {@link MailComposeLimits#MAX_REWARD_AMOUNT}, and at most
+ * {@link MailComposeLimits#MAX_REWARDS} rewards per mail.</p>
  *
  * <p>Server thread only.</p>
  */
@@ -45,7 +43,7 @@ public final class HabiMailApi {
      * @return true when the mailbox JSON was written
      */
     public static boolean send(UUID target, String nameHint, MailDraft draft) {
-        if (target == null || draft == null || !WorldLotteryPaths.ready()) {
+        if (target == null || draft == null || !ApiGuards.isServerThreadAndReady()) {
             return false;
         }
         ServerPlayer online = HabiLotteryApi.online(target);
@@ -65,37 +63,37 @@ public final class HabiMailApi {
 
     /**
      * Builds a draft that never expires from up to
-     * {@link MailComposeLimits#MAX_REWARDS} clamped rewards.
+     * {@link MailComposeLimits#MAX_REWARDS} positive rewards.
      */
     public static MailDraft draft(String sender, String title, String content, List<MailReward> rewards) {
         return draft(sender, title, content, NEVER_EXPIRES, rewards);
     }
 
-    /** Builds a draft from a list of rewards. */
+    /** Builds a draft from a list of positive rewards (non-positive entries are ignored). */
     public static MailDraft draft(String sender, String title, String content, long expiresAt,
                                   List<MailReward> rewards) {
         List<MailReward> safe = new ArrayList<>();
         if (rewards != null) {
             for (MailReward reward : rewards) {
-                if (reward == null || reward.amount() == 0) {
+                if (reward == null || reward.amount() <= 0) {
                     continue;
                 }
                 if (safe.size() >= MailComposeLimits.MAX_REWARDS) {
                     break;
                 }
-                safe.add(clamp(reward));
+                safe.add(clampPositive(reward));
             }
         }
         return new MailDraft(sender, title, content, expiresAt, safe);
     }
 
-    /** One draft that grants green apples. */
+    /** One draft that grants a positive quantity of green apples. */
     public static MailDraft greenApples(String sender, String title, String content, int amount) {
         return draft(sender, title, content, List.of(greenApples(amount)));
     }
 
     public static MailReward greenApples(int amount) {
-        return MailReward.greenApples(MailComposeLimits.clampRewardAmount(amount));
+        return MailReward.greenApples(positiveAmount(amount));
     }
 
     /**
@@ -106,33 +104,43 @@ public final class HabiMailApi {
         if (kind == null || !kind.isFactionCard()) {
             return null;
         }
-        return MailReward.factionCard(kind.id(), MailComposeLimits.clampRewardAmount(amount));
+        return MailReward.factionCard(kind.id(), positiveAmount(amount));
     }
 
     /** {@code SELF_SELECT_CARD} reward. */
     public static MailReward selfSelectCard(int amount) {
-        return MailReward.selfSelectCard(MailComposeLimits.clampRewardAmount(amount));
+        return MailReward.selfSelectCard(positiveAmount(amount));
+    }
+
+    /** {@code SKIN} reward for a registered {@code type/id} skin. */
+    public static MailReward skin(String type, String id) {
+        return MailReward.skin(type, id);
     }
 
     /** {@code LIMIT_BREAK_CARD} reward. */
-    public static MailReward skin(String type, String id) { return MailReward.skin(type, id); }
-
     public static MailReward limitBreakCard(int amount) {
-        return MailReward.limitBreakCard(MailComposeLimits.clampRewardAmount(amount));
+        return MailReward.limitBreakCard(positiveAmount(amount));
     }
 
     /** A crate attachment from the shared crate catalogue. */
     public static MailReward crate(String crateId, int amount) {
-        return MailReward.crate(crateId, MailComposeLimits.clampRewardAmount(amount));
+        return MailReward.crate(crateId, positiveAmount(amount));
     }
 
     /** A matching crate key attachment from the shared crate catalogue. */
     public static MailReward key(String crateId, int amount) {
-        return MailReward.key(crateId, MailComposeLimits.clampRewardAmount(amount));
+        return MailReward.key(crateId, positiveAmount(amount));
     }
 
-    private static MailReward clamp(MailReward reward) {
-        int amount = MailComposeLimits.clampRewardAmount(reward.amount());
+    private static int positiveAmount(int amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Mail reward amount must be positive: " + amount);
+        }
+        return Math.min(MailComposeLimits.MAX_REWARD_AMOUNT, amount);
+    }
+
+    private static MailReward clampPositive(MailReward reward) {
+        int amount = Math.max(1, Math.min(MailComposeLimits.MAX_REWARD_AMOUNT, reward.amount()));
         if (amount == reward.amount()) {
             return reward;
         }

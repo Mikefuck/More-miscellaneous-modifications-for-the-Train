@@ -1,5 +1,6 @@
 package com.habitrain.lottery.client.gui;
 
+import com.habitrain.lottery.client.MenuAccessBridge;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.MailTargetParse;
 import com.habitrain.lottery.network.MailComposeC2SPayload;
@@ -7,33 +8,40 @@ import com.habitrain.lottery.network.MailComposeC2SPayload.RewardEntry;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /**
- * OP mail composer. The three-step layout keeps content, recipients, and rewards
- * visually separate so the full feature set remains usable at small GUI scales.
+ * OP mail composer ({@code B-22}, {@code I-24.2}, {@code I-24.3}, {@code N-02}).
  */
 public class MailComposeScreen extends Screen {
+    private static final String KEY_PREFIX = "screen.habitrain_lottery.mail_compose.";
     private static final int PAGE_CONTENT = 0;
     private static final int PAGE_RECIPIENTS = 1;
     private static final int PAGE_REWARDS = 2;
     private static final int PAGE_SKIN = 3;
     private static final int PAGE_CRATES = 4;
-    private EditBox skinBox;
-    private String skinEntry = "";
+    private static final int SEND_COOLDOWN_TICKS = 60;
 
-    private static final String[] PAGE_LABELS = {"1 写邮件", "2 收件人", "3 附件", "4 皮肤", "5 箱子/钥匙"};
+    private static final String[] PAGE_KEYS = {
+            "step.content", "step.recipients", "step.rewards", "step.skin", "step.crates"
+    };
     private static final String[] FACTIONS = {"killer", "civilian", "neutral", "neutral_for_killer"};
-    private static final String[] FACTION_LABELS = {"杀手", "平民", "中立", "杀手中立"};
+    private static final String[] FACTION_KEYS = {
+            "faction.killer", "faction.civilian", "faction.neutral", "faction.neutral_for_killer"
+    };
 
     private static final int PANEL_BORDER = 0xFF8B6835;
     private static final int PANEL_BG = 0xF0101720;
@@ -54,6 +62,11 @@ public class MailComposeScreen extends Screen {
     private EditBox limitBreakAmountBox;
     private EditBox crateAmountBox;
     private EditBox expiresBox;
+    private EditBox skinBox;
+    private String skinEntry = "";
+
+    private Button backButton;
+    private Button sendButton;
 
     private int page = PAGE_CONTENT;
     private int targetMode = MailComposeC2SPayload.MODE_ONLINE_LIST;
@@ -61,9 +74,20 @@ public class MailComposeScreen extends Screen {
     private int crateIdx;
     private boolean keyAttachment;
 
+    private int crateRowScroll;
+    private int crateGridTop;
+    private int crateGridBottom;
+    private int crateVisibleRows = 1;
+    private int crateTotalRows;
+    private int cratePreviewY;
+
+    private int sendCooldownTicks;
+    private boolean renderedLocked;
+
     private final List<String> selectedOnline = new ArrayList<>();
     private final List<String> onlineNames = new ArrayList<>();
     private final ScrollableButtonList onlineList = new ScrollableButtonList();
+    private final List<AbstractWidget> onlineRowWidgets = new ArrayList<>();
     private EditBox onlineSearchBox;
     private String onlineSearchQuery = "";
     private String status = "";
@@ -78,9 +102,19 @@ public class MailComposeScreen extends Screen {
     private int contentBottom;
     private int footerY;
 
+    private boolean suppressNestedBackground;
+
     public MailComposeScreen(Screen parent) {
-        super(Component.literal("撰写系统邮件"));
+        super(tr("title"));
         this.parent = parent;
+    }
+
+    private static Component tr(String key, Object... args) {
+        return Component.translatable(KEY_PREFIX + key, args);
+    }
+
+    public boolean editable() {
+        return !MenuAccessBridge.isLocked() && ClientPlayNetworking.canSend(MailComposeC2SPayload.TYPE);
     }
 
     @Override
@@ -89,32 +123,64 @@ public class MailComposeScreen extends Screen {
         rebuildPage();
     }
 
+    @Override
+    public void tick() {
+        super.tick();
+        if (renderedLocked != MenuAccessBridge.isLocked()) {
+            rebuildPage();
+            return;
+        }
+        if (sendCooldownTicks > 0) {
+            sendCooldownTicks--;
+            updateSendButtonState();
+        }
+    }
+
     private void rebuildPage() {
         clearWidgets();
+        onlineRowWidgets.clear();
+        backButton = null;
+        sendButton = null;
+
+        renderedLocked = MenuAccessBridge.isLocked();
+        if (renderedLocked) {
+            backButton = addRenderableWidget(AdminLockGuard.createLockedBackButton(
+                    width, height, tr("action.back"), b -> onClose()));
+            return;
+        }
+
         calculateLayout();
         buildStepButtons();
 
         switch (page) {
             case PAGE_RECIPIENTS -> buildRecipientsPage();
             case PAGE_REWARDS -> buildRewardsPage();
-            case PAGE_SKIN -> {
-                skinBox = new EditBox(font, contentX, contentTop + 24, contentWidth, 20, Component.literal("皮肤附件 type/id"));
-                skinBox.setMaxLength(64); skinBox.setValue(skinEntry);
-                skinBox.setHint(Component.literal("例如 knife/my_skin（留空不附加）"));
-                skinBox.setResponder(value -> skinEntry = value.trim());
-                addRenderableWidget(skinBox);
-                skinBox.setTooltip(Tooltip.create(Component.literal("填写新皮肤组件已注册的 type/id；领取后解锁，重复领取不叠加")));
-            }
+            case PAGE_SKIN -> buildSkinPage();
             case PAGE_CRATES -> buildCratePage();
             default -> buildContentPage();
         }
 
-        addRenderableWidget(Button.builder(Component.literal("返回"), b -> onClose())
+        backButton = addRenderableWidget(Button.builder(tr("action.back"), b -> onClose())
                 .bounds(contentX, footerY, 72, 20)
                 .build());
-        addRenderableWidget(Button.builder(Component.literal("发送邮件"), b -> send())
+        sendButton = addRenderableWidget(Button.builder(tr("action.send"), b -> send())
                 .bounds(contentX + contentWidth - 104, footerY, 104, 20)
                 .build());
+        updateSendButtonState();
+    }
+
+    private void updateSendButtonState() {
+        if (sendButton == null) {
+            return;
+        }
+        if (sendCooldownTicks > 0) {
+            int secs = Math.max(1, (sendCooldownTicks + 19) / 20);
+            sendButton.active = false;
+            sendButton.setMessage(tr("action.send_cooldown", secs));
+        } else {
+            sendButton.active = editable();
+            sendButton.setMessage(tr("action.send"));
+        }
     }
 
     private void calculateLayout() {
@@ -132,14 +198,14 @@ public class MailComposeScreen extends Screen {
     private void buildStepButtons() {
         int gap = 4;
         int navY = panelY + 30;
-        int baseWidth = Math.max(1, (contentWidth - gap * (PAGE_LABELS.length - 1)) / PAGE_LABELS.length);
+        int baseWidth = Math.max(1, (contentWidth - gap * (PAGE_KEYS.length - 1)) / PAGE_KEYS.length);
         int x = contentX;
-        for (int i = 0; i < PAGE_LABELS.length; i++) {
-            int buttonWidth = i == PAGE_LABELS.length - 1
+        for (int i = 0; i < PAGE_KEYS.length; i++) {
+            int buttonWidth = i == PAGE_KEYS.length - 1
                     ? contentX + contentWidth - x
                     : baseWidth;
             final int nextPage = i;
-            Button button = Button.builder(Component.literal(PAGE_LABELS[i]), b -> {
+            Button button = Button.builder(tr(PAGE_KEYS[i]), b -> {
                 page = nextPage;
                 status = "";
                 rebuildPage();
@@ -156,18 +222,18 @@ public class MailComposeScreen extends Screen {
         int fieldY = contentTop + 12;
 
         if (senderBox == null) {
-            senderBox = new EditBox(font, contentX, fieldY, fieldWidth, 18, Component.literal("发件人"));
+            senderBox = new EditBox(font, contentX, fieldY, fieldWidth, 18, tr("field.sender"));
             senderBox.setMaxLength(64);
-            senderBox.setValue("系统");
+            senderBox.setValue(tr("default.sender").getString());
         }
         place(senderBox, contentX, fieldY, fieldWidth);
         addRenderableWidget(senderBox);
 
         if (titleBox == null) {
             titleBox = new EditBox(font, contentX + fieldWidth + gap, fieldY, fieldWidth, 18,
-                    Component.literal("标题"));
+                    tr("field.title"));
             titleBox.setMaxLength(128);
-            titleBox.setValue("系统邮件");
+            titleBox.setValue(tr("default.title").getString());
         }
         place(titleBox, contentX + fieldWidth + gap, fieldY, fieldWidth);
         addRenderableWidget(titleBox);
@@ -177,7 +243,7 @@ public class MailComposeScreen extends Screen {
         if (bodyArea == null) {
             bodyArea = new MultilineTextArea(font, contentX, bodyY, contentWidth, bodyHeight);
             bodyArea.setMaxLength(8000);
-            bodyArea.setValue("请查收附件奖励。");
+            bodyArea.setValue(tr("default.body").getString());
         } else {
             bodyArea.setX(contentX);
             bodyArea.setY(bodyY);
@@ -187,15 +253,35 @@ public class MailComposeScreen extends Screen {
         addRenderableWidget(bodyArea);
     }
 
+    private void buildSkinPage() {
+        if (skinBox == null) {
+            skinBox = new EditBox(font, contentX, contentTop + 24, contentWidth, 20, tr("skin.label"));
+            skinBox.setMaxLength(64);
+            skinBox.setHint(tr("skin.hint"));
+            skinBox.setTooltip(Tooltip.create(tr("skin.tooltip")));
+            skinBox.setValue(skinEntry);
+            skinBox.setResponder(value -> skinEntry = value == null ? "" : value.trim());
+        } else {
+            skinBox.setX(contentX);
+            skinBox.setY(contentTop + 24);
+            skinBox.setWidth(Math.max(1, contentWidth));
+            skinBox.setHeight(20);
+            if (!skinBox.isFocused() && !Objects.equals(skinBox.getValue(), skinEntry)) {
+                skinBox.setValue(skinEntry);
+            }
+        }
+        addRenderableWidget(skinBox);
+    }
+
     private void buildRecipientsPage() {
         int gap = 4;
         int modeY = contentTop + 12;
         int modeWidth = Math.max(1, (contentWidth - gap * 2) / 3);
-        addModeButton("在线多选", MailComposeC2SPayload.MODE_ONLINE_LIST,
+        addModeButton("mode.online", MailComposeC2SPayload.MODE_ONLINE_LIST,
                 contentX, modeY, modeWidth);
-        addModeButton("所有玩家", MailComposeC2SPayload.MODE_ALL_PLAYERS,
+        addModeButton("mode.all", MailComposeC2SPayload.MODE_ALL_PLAYERS,
                 contentX + modeWidth + gap, modeY, modeWidth);
-        addModeButton("按名字发送", MailComposeC2SPayload.MODE_OFFLINE_NAME,
+        addModeButton("mode.by_name", MailComposeC2SPayload.MODE_OFFLINE_NAME,
                 contentX + (modeWidth + gap) * 2, modeY,
                 contentX + contentWidth - (contentX + (modeWidth + gap) * 2));
 
@@ -203,70 +289,55 @@ public class MailComposeScreen extends Screen {
         if (targetMode == MailComposeC2SPayload.MODE_ONLINE_LIST) {
             refreshOnlineNames();
             selectedOnline.removeIf(name -> !onlineNames.contains(name));
-            List<String> visible = visibleOnlineNames();
 
             int smallButtonWidth = Math.min(58, Math.max(42, contentWidth / 5));
-            addRenderableWidget(Button.builder(Component.literal("全选"), b -> {
+            addRenderableWidget(Button.builder(tr("action.select_all"), b -> {
                 refreshOnlineNames();
                 selectedOnline.clear();
                 selectedOnline.addAll(visibleOnlineNames());
-                status = "已选择 " + selectedOnline.size() + " 名在线玩家";
-                rebuildPage();
+                status = tr("status.selected_online", selectedOnline.size()).getString();
+                rebuildOnlineListRows(detailTop);
             }).bounds(contentX + contentWidth - smallButtonWidth * 2 - gap, detailTop,
                     smallButtonWidth, 20).build());
-            addRenderableWidget(Button.builder(Component.literal("清空"), b -> {
+            addRenderableWidget(Button.builder(tr("action.clear_selection"), b -> {
                 selectedOnline.clear();
-                status = "已清空在线玩家选择";
-                rebuildPage();
+                status = tr("status.cleared_online").getString();
+                rebuildOnlineListRows(detailTop);
             }).bounds(contentX + contentWidth - smallButtonWidth, detailTop,
                     smallButtonWidth, 20).build());
 
-            onlineSearchBox = new EditBox(font, contentX, detailTop + 24, contentWidth, 16,
-                    Component.literal("搜索"));
-            onlineSearchBox.setMaxLength(64);
-            onlineSearchBox.setValue(onlineSearchQuery == null ? "" : onlineSearchQuery);
-            onlineSearchBox.setHint(Component.literal("搜索玩家名"));
-            onlineSearchBox.setResponder(s -> {
-                String next = s == null ? "" : s;
-                if (next.equals(onlineSearchQuery)) {
-                    return;
+            if (onlineSearchBox == null) {
+                onlineSearchBox = new EditBox(font, contentX, detailTop + 24, contentWidth, 16,
+                        tr("search.label"));
+                onlineSearchBox.setMaxLength(64);
+                onlineSearchBox.setHint(tr("search.hint"));
+                onlineSearchBox.setValue(onlineSearchQuery == null ? "" : onlineSearchQuery);
+                onlineSearchBox.setResponder(s -> {
+                    String next = s == null ? "" : s;
+                    if (next.equals(onlineSearchQuery)) {
+                        return;
+                    }
+                    onlineSearchQuery = next;
+                    onlineList.setScroll(0);
+                    if (!MenuAccessBridge.isLocked()
+                            && page == PAGE_RECIPIENTS
+                            && targetMode == MailComposeC2SPayload.MODE_ONLINE_LIST) {
+                        rebuildOnlineListRows(contentTop + 42);
+                    }
+                });
+            } else {
+                onlineSearchBox.setX(contentX);
+                onlineSearchBox.setY(detailTop + 24);
+                onlineSearchBox.setWidth(Math.max(1, contentWidth));
+                onlineSearchBox.setHeight(16);
+                if (!onlineSearchBox.isFocused()
+                        && !Objects.equals(onlineSearchBox.getValue(), onlineSearchQuery)) {
+                    onlineSearchBox.setValue(onlineSearchQuery == null ? "" : onlineSearchQuery);
                 }
-                onlineSearchQuery = next;
-                onlineList.setScroll(0);
-                rebuildPage();
-                if (onlineSearchBox != null) {
-                    onlineSearchBox.setFocused(true);
-                    setFocused(onlineSearchBox);
-                    onlineSearchBox.setCursorPosition(onlineSearchQuery.length());
-                }
-            });
+            }
             addRenderableWidget(onlineSearchBox);
 
-            List<String> labels = new ArrayList<>(visible.size());
-            for (String name : visible) {
-                labels.add((selectedOnline.contains(name) ? "§a[✓] " : "§7[ ] ") + name);
-            }
-
-            int listTop = detailTop + 50;
-            int viewportHeight = Math.max(20, contentBottom - listTop);
-            int savedScroll = onlineList.getScroll();
-            onlineList.setBounds(contentX, listTop, contentWidth, viewportHeight);
-            onlineList.setRowHeight(20);
-            onlineList.setItems(labels, 0);
-            onlineList.setScroll(savedScroll);
-            onlineList.setOnSelect(index -> {
-                if (index < 0 || index >= visible.size()) {
-                    return;
-                }
-                String name = visible.get(index);
-                if (selectedOnline.contains(name)) {
-                    selectedOnline.remove(name);
-                } else {
-                    selectedOnline.add(name);
-                }
-                rebuildPage();
-            });
-            onlineList.rebuildWidgets(this::addRenderableWidget, null);
+            rebuildOnlineListRows(detailTop);
         } else if (targetMode == MailComposeC2SPayload.MODE_OFFLINE_NAME) {
             int areaY = detailTop + 14;
             int areaHeight = Math.max(34, contentBottom - areaY);
@@ -283,13 +354,51 @@ public class MailComposeScreen extends Screen {
         }
     }
 
-    private void addModeButton(String label, int mode, int x, int y, int buttonWidth) {
-        Button button = Button.builder(Component.literal(label), b -> {
+    private void rebuildOnlineListRows(int detailTop) {
+        for (AbstractWidget w : onlineRowWidgets) {
+            removeWidget(w);
+        }
+        onlineRowWidgets.clear();
+
+        refreshOnlineNames();
+        selectedOnline.removeIf(name -> !onlineNames.contains(name));
+        List<String> visible = visibleOnlineNames();
+        List<String> labels = new ArrayList<>(visible.size());
+        for (String name : visible) {
+            labels.add((selectedOnline.contains(name) ? "§a[✓] " : "§7[ ] ") + name);
+        }
+
+        int listTop = detailTop + 50;
+        int viewportHeight = Math.max(20, contentBottom - listTop);
+        int savedScroll = onlineList.getScroll();
+        onlineList.setBounds(contentX, listTop, contentWidth, viewportHeight);
+        onlineList.setRowHeight(20);
+        onlineList.setItems(labels, 0);
+        onlineList.setScroll(savedScroll);
+        onlineList.setOnSelect(index -> {
+            if (index < 0 || index >= visible.size()) {
+                return;
+            }
+            String name = visible.get(index);
+            if (selectedOnline.contains(name)) {
+                selectedOnline.remove(name);
+            } else {
+                selectedOnline.add(name);
+            }
+            rebuildOnlineListRows(detailTop);
+        });
+        onlineList.rebuildWidgets(w -> {
+            onlineRowWidgets.add(w);
+            addRenderableWidget(w);
+        }, null);
+    }
+
+    private void addModeButton(String labelKey, int mode, int x, int y, int buttonWidth) {
+        Button button = Button.builder(tr(labelKey), b -> {
             targetMode = mode;
             if (mode == MailComposeC2SPayload.MODE_ALL_PLAYERS && expiresBox != null) {
                 expiresBox.setValue(String.valueOf(MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS));
-                status = "已启用对所有玩家发放，邮件默认限时 "
-                        + MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS + " 天";
+                status = tr("status.all_players_mode", MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS).getString();
             } else {
                 status = "";
             }
@@ -304,10 +413,11 @@ public class MailComposeScreen extends Screen {
         int fieldWidth = Math.max(1, (contentWidth - gap) / 2);
         int fieldY = contentTop + 12;
 
-        greenApplesBox = prepareNumberBox(greenApplesBox, contentX, fieldY, fieldWidth, true, "绿苹果");
+        greenApplesBox = prepareNumberBox(greenApplesBox, contentX, fieldY, fieldWidth, true,
+                tr("field.green_apples"));
         boolean freshExpiresBox = expiresBox == null;
         expiresBox = prepareNumberBox(expiresBox, contentX + fieldWidth + gap, fieldY,
-                contentX + contentWidth - (contentX + fieldWidth + gap), false, "有效期");
+                contentX + contentWidth - (contentX + fieldWidth + gap), false, tr("field.expires"));
         if (freshExpiresBox && targetMode == MailComposeC2SPayload.MODE_ALL_PLAYERS) {
             expiresBox.setValue(String.valueOf(MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS));
         }
@@ -323,7 +433,7 @@ public class MailComposeScreen extends Screen {
             int buttonWidth = i == FACTIONS.length - 1
                     ? contentX + contentWidth - x
                     : factionWidth;
-            String label = (i == factionIdx ? "◆ " : "") + FACTION_LABELS[i];
+            String label = (i == factionIdx ? "◆ " : "") + tr(FACTION_KEYS[i]).getString();
             Button button = Button.builder(Component.literal(label), b -> {
                 factionIdx = selectedFaction;
                 rebuildPage();
@@ -336,64 +446,101 @@ public class MailComposeScreen extends Screen {
         int cardAmountY = factionY + 38;
         int amountWidth = Math.max(1, (contentWidth - gap * 2) / 3);
         cardAmountBox = prepareNumberBox(cardAmountBox, contentX, cardAmountY, amountWidth,
-                true, "阵营卡数量");
+                true, tr("field.card_amount"));
         addRenderableWidget(cardAmountBox);
-        selfSelectAmountBox = prepareNumberBox(selfSelectAmountBox, contentX + amountWidth + gap, cardAmountY, amountWidth,
-                true, "自选卡数量");
+        selfSelectAmountBox = prepareNumberBox(selfSelectAmountBox, contentX + amountWidth + gap, cardAmountY,
+                amountWidth, true, tr("field.self_select_amount"));
         addRenderableWidget(selfSelectAmountBox);
         Component limitBreakLabel = Component.translatable("screen.habitrain_lottery.config.cards.limit_break");
         limitBreakAmountBox = prepareNumberBox(limitBreakAmountBox,
-                contentX + (amountWidth + gap) * 2, cardAmountY, amountWidth, true, limitBreakLabel.getString());
+                contentX + (amountWidth + gap) * 2, cardAmountY, amountWidth, true, limitBreakLabel);
         limitBreakAmountBox.setTooltip(Tooltip.create(limitBreakLabel));
         addRenderableWidget(limitBreakAmountBox);
     }
 
     private void buildCratePage() {
         int gap = 5;
-        int rowWidth = Math.max(1, (contentWidth - gap * 2) / 3);
-        int y = contentTop + 12;
         List<CrateCatalog.Entry> entries = CrateCatalog.publishedEntries();
-        for (int i = 0; i < entries.size(); i++) {
-            CrateCatalog.Entry entry = entries.get(i);
-            int row = i / 3;
-            int col = i % 3;
-            int x = contentX + col * (rowWidth + gap);
-            int buttonWidth = col == 2 ? contentX + contentWidth - x : rowWidth;
-            final int selected = i;
-            Button button = Button.builder(Component.literal((i == crateIdx ? "◆ " : "") + entry.id()), b -> {
-                crateIdx = selected;
-                rebuildPage();
-            }).bounds(x, y + row * 25, buttonWidth, 20).build();
-            button.active = i != crateIdx;
-            addRenderableWidget(button);
+        if (!entries.isEmpty()) {
+            crateIdx = Mth.clamp(crateIdx, 0, entries.size() - 1);
+        } else {
+            crateIdx = 0;
         }
-        int controlsY = y + ((entries.size() + 2) / 3) * 25 + 6;
+
+        // Pin Crate/Key toggle + crateAmountBox + attachment preview at the bottom of content area,
+        // and make the 3-column crate grid scrollable above them (I-24.2).
+        cratePreviewY = Math.max(contentTop + 56, contentBottom - 10);
+        int amountY = cratePreviewY - 22;
+        int controlsY = amountY - 24;
+
+        crateGridTop = contentTop + 14;
+        crateGridBottom = Math.max(crateGridTop + 20, controlsY - 6);
+        crateTotalRows = (entries.size() + 2) / 3;
+        crateVisibleRows = Math.max(1, (crateGridBottom - crateGridTop + 5) / 25);
+        int maxRowScroll = Math.max(0, crateTotalRows - crateVisibleRows);
+        crateRowScroll = Mth.clamp(crateRowScroll, 0, maxRowScroll);
+
+        int gridWidth = maxRowScroll > 0 ? Math.max(60, contentWidth - 6) : contentWidth;
+        int colWidth = Math.max(1, (gridWidth - gap * 2) / 3);
+        int endRow = Math.min(crateTotalRows, crateRowScroll + crateVisibleRows);
+        for (int row = crateRowScroll; row < endRow; row++) {
+            int rowY = crateGridTop + (row - crateRowScroll) * 25;
+            for (int col = 0; col < 3; col++) {
+                int i = row * 3 + col;
+                if (i >= entries.size()) {
+                    break;
+                }
+                CrateCatalog.Entry entry = entries.get(i);
+                int x = contentX + col * (colWidth + gap);
+                int buttonWidth = col == 2 ? contentX + gridWidth - x : colWidth;
+                final int selected = i;
+                Button button = Button.builder(Component.literal((i == crateIdx ? "◆ " : "") + entry.id()), b -> {
+                    crateIdx = selected;
+                    rebuildPage();
+                }).bounds(x, rowY, Math.max(1, buttonWidth), 20).build();
+                button.active = i != crateIdx;
+                addRenderableWidget(button);
+            }
+        }
+
         int half = Math.max(1, (contentWidth - gap) / 2);
-        Button crateButton = Button.builder(Component.literal(keyAttachment ? "箱子" : "◆ 箱子"), b -> {
+        String crateLabel = (keyAttachment ? "" : "◆ ") + tr("crates.kind_crate").getString();
+        Button crateButton = Button.builder(Component.literal(crateLabel), b -> {
             keyAttachment = false;
             rebuildPage();
         }).bounds(contentX, controlsY, half, 20).build();
         crateButton.active = keyAttachment;
         addRenderableWidget(crateButton);
-        Button keyButton = Button.builder(Component.literal(keyAttachment ? "◆ 钥匙" : "钥匙"), b -> {
+
+        String keyLabel = (keyAttachment ? "◆ " : "") + tr("crates.kind_key").getString();
+        Button keyButton = Button.builder(Component.literal(keyLabel), b -> {
             keyAttachment = true;
             rebuildPage();
         }).bounds(contentX + half + gap, controlsY, contentX + contentWidth - (contentX + half + gap), 20).build();
         keyButton.active = !keyAttachment;
         addRenderableWidget(keyButton);
-        crateAmountBox = prepareNumberBox(crateAmountBox, contentX, controlsY + 28, contentWidth, false,
-                keyAttachment ? "钥匙数量" : "箱子数量");
+
+        crateAmountBox = prepareNumberBox(crateAmountBox, contentX, amountY, contentWidth, false,
+                tr(keyAttachment ? "crates.key_amount" : "crates.crate_amount"));
         addRenderableWidget(crateAmountBox);
     }
 
-    private EditBox prepareNumberBox(EditBox box, int x, int y, int boxWidth,
-                                     boolean allowNegative, String narration) {
+    private EditBox prepareNumberBox(
+            EditBox box,
+            int x,
+            int y,
+            int boxWidth,
+            boolean allowNegative,
+            Component narration
+    ) {
         if (box == null) {
-            box = new EditBox(font, x, y, Math.max(1, boxWidth), 18, Component.literal(narration));
+            box = new EditBox(font, x, y, Math.max(1, boxWidth), 18, narration);
             box.setMaxLength(8);
             box.setValue("0");
             box.setFilter(value -> value.isEmpty()
                     || (allowNegative ? value.matches("-?\\d*") : value.matches("\\d*")));
+        } else {
+            box.setMessage(narration);
         }
         place(box, x, y, Math.max(1, boxWidth));
         return box;
@@ -447,35 +594,42 @@ public class MailComposeScreen extends Screen {
         if (limitBreakCards != 0) {
             built.add(new RewardEntry(RewardEntry.LIMIT_BREAK_CARD, limitBreakCards, ""));
         }
-        if (!skinEntry.isBlank()) built.add(new RewardEntry(RewardEntry.SKIN, 1, skinEntry));
+        if (!skinEntry.isBlank()) {
+            built.add(new RewardEntry(RewardEntry.SKIN, 1, skinEntry));
+        }
         int crateAmount = parseIntSafe(crateAmountBox != null ? crateAmountBox.getValue() : "0", 0);
-        if (crateAmount != 0 && !CrateCatalog.publishedEntries().isEmpty()) {
-            built.add(new RewardEntry(keyAttachment ? RewardEntry.KEY : RewardEntry.CRATE,
-                    crateAmount, CrateCatalog.publishedEntries().get(Math.max(0, Math.min(crateIdx,
-                            CrateCatalog.publishedEntries().size() - 1))).id()));
+        List<CrateCatalog.Entry> entries = CrateCatalog.publishedEntries();
+        if (crateAmount != 0 && !entries.isEmpty()) {
+            built.add(new RewardEntry(
+                    keyAttachment ? RewardEntry.KEY : RewardEntry.CRATE,
+                    crateAmount,
+                    entries.get(Mth.clamp(crateIdx, 0, entries.size() - 1)).id()));
         }
         return built;
     }
 
     private void send() {
+        if (!editable() || sendCooldownTicks > 0) {
+            return;
+        }
         List<String> targets = new ArrayList<>();
         if (targetMode == MailComposeC2SPayload.MODE_ONLINE_LIST) {
             targets.addAll(selectedOnline);
             if (targets.isEmpty()) {
-                status = "请先在“选收件人”中选择在线玩家";
+                status = tr("status.choose_online_first").getString();
                 page = PAGE_RECIPIENTS;
                 rebuildPage();
                 return;
             }
             if (targets.size() > MailTargetParse.MAX_TARGETS) {
-                status = "最多可选择 " + MailTargetParse.MAX_TARGETS + " 个目标";
+                status = tr("status.too_many_targets", MailTargetParse.MAX_TARGETS).getString();
                 return;
             }
         } else if (targetMode == MailComposeC2SPayload.MODE_OFFLINE_NAME) {
             String raw = offlineArea != null ? offlineArea.getValue() : "";
             List<String> names = MailTargetParse.splitNames(raw);
             if (names.isEmpty()) {
-                status = "请至少输入一个玩家名";
+                status = tr("status.enter_name_first").getString();
                 page = PAGE_RECIPIENTS;
                 rebuildPage();
                 return;
@@ -483,7 +637,7 @@ public class MailComposeScreen extends Screen {
             targets.addAll(names);
         }
         if (titleBox == null || titleBox.getValue().isBlank()) {
-            status = "邮件标题不能为空";
+            status = tr("status.empty_title").getString();
             page = PAGE_CONTENT;
             rebuildPage();
             return;
@@ -491,27 +645,51 @@ public class MailComposeScreen extends Screen {
 
         int expiresDays = parseIntSafe(expiresBox != null ? expiresBox.getValue() : "0", 0);
         if (targetMode == MailComposeC2SPayload.MODE_ALL_PLAYERS && expiresDays <= 0) {
-            // 所有玩家模式未填写有效期时兜底为 30 天（与服务端一致）。
             expiresDays = MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS;
             if (expiresBox != null) {
                 expiresBox.setValue(String.valueOf(expiresDays));
             }
         }
 
+        String senderValue = (senderBox == null || senderBox.getValue().isBlank())
+                ? tr("default.sender").getString()
+                : senderBox.getValue();
         MailComposeC2SPayload payload = new MailComposeC2SPayload(
                 targetMode,
                 targets,
-                senderBox == null ? "系统" : senderBox.getValue(),
+                senderValue,
                 titleBox.getValue(),
                 bodyArea == null ? "" : bodyArea.getValue(),
                 expiresDays,
                 buildRewards()
         );
+
+        if (targetMode == MailComposeC2SPayload.MODE_ALL_PLAYERS && minecraft != null) {
+            int finalExpires = expiresDays;
+            String summary = rewardSummary();
+            minecraft.setScreen(new ConfirmScreen(confirmed -> {
+                minecraft.setScreen(this);
+                if (confirmed) {
+                    dispatchMailPayload(payload);
+                }
+            }, tr("confirm_all.title"), tr("confirm_all.body", titleBox.getValue(), finalExpires, summary)));
+            return;
+        }
+        dispatchMailPayload(payload);
+    }
+
+    private void dispatchMailPayload(MailComposeC2SPayload payload) {
+        if (!editable() || sendCooldownTicks > 0) {
+            return;
+        }
         try {
             ClientPlayNetworking.send(payload);
-            status = "邮件已提交到服务器";
+            sendCooldownTicks = SEND_COOLDOWN_TICKS;
+            status = tr("status.submitted").getString();
+            updateSendButtonState();
         } catch (Throwable t) {
-            status = "发送失败：" + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+            String detail = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+            status = tr("status.send_failed", detail).getString();
         }
     }
 
@@ -526,28 +704,30 @@ public class MailComposeScreen extends Screen {
     private String rewardSummary() {
         List<RewardEntry> rewards = buildRewards();
         if (rewards.isEmpty()) {
-            return "当前无附件";
+            return tr("summary.none").getString();
         }
         List<String> parts = new ArrayList<>();
         for (RewardEntry reward : rewards) {
             switch (reward.kind()) {
-                case RewardEntry.SKIN -> parts.add("皮肤 " + reward.factionType());
-                case RewardEntry.GREEN_APPLES -> parts.add("绿苹果 " + reward.amount());
-                case RewardEntry.FACTION_CARD ->
-                        parts.add(FACTION_LABELS[factionIdx] + "阵营卡 x" + reward.amount());
-                case RewardEntry.SELF_SELECT_CARD -> parts.add("自选卡 x" + reward.amount());
-                case RewardEntry.LIMIT_BREAK_CARD -> parts.add(Component.translatable(
-                        "screen.habitrain_lottery.config.cards.limit_break").getString() + " x" + reward.amount());
-                case RewardEntry.CRATE -> parts.add("箱子 " + reward.factionType() + " x" + reward.amount());
-                case RewardEntry.KEY -> parts.add("钥匙 " + reward.factionType() + " x" + reward.amount());
+                case RewardEntry.SKIN -> parts.add(tr("summary.skin", reward.factionType()).getString());
+                case RewardEntry.GREEN_APPLES -> parts.add(tr("summary.green_apples", reward.amount()).getString());
+                case RewardEntry.FACTION_CARD -> parts.add(
+                        tr("summary.faction_card", tr(FACTION_KEYS[factionIdx]).getString(), reward.amount()).getString());
+                case RewardEntry.SELF_SELECT_CARD -> parts.add(
+                        tr("summary.self_select", reward.amount()).getString());
+                case RewardEntry.LIMIT_BREAK_CARD -> parts.add(
+                        Component.translatable("screen.habitrain_lottery.config.cards.limit_break").getString()
+                                + " x" + reward.amount());
+                case RewardEntry.CRATE -> parts.add(
+                        tr("summary.crate", reward.factionType(), reward.amount()).getString());
+                case RewardEntry.KEY -> parts.add(
+                        tr("summary.key", reward.factionType(), reward.amount()).getString());
                 default -> {
                 }
             }
         }
         return String.join("  ·  ", parts);
     }
-
-    private boolean suppressNestedBackground;
 
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float delta) {
@@ -559,6 +739,11 @@ public class MailComposeScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float delta) {
+        if (MenuAccessBridge.isLocked()) {
+            renderBackground(graphics, mouseX, mouseY, delta);
+            AdminLockGuard.renderLockedScreen(graphics, font, width, height, backButton, mouseX, mouseY, delta);
+            return;
+        }
         renderBackground(graphics, mouseX, mouseY, delta);
         drawFrame(graphics);
         drawPageLabels(graphics);
@@ -572,7 +757,22 @@ public class MailComposeScreen extends Screen {
 
         if (page == PAGE_RECIPIENTS && targetMode == MailComposeC2SPayload.MODE_ONLINE_LIST) {
             onlineList.renderScrollbar(graphics);
+        } else if (page == PAGE_CRATES && crateTotalRows > crateVisibleRows) {
+            renderCrateGridScrollbar(graphics);
         }
+    }
+
+    private void renderCrateGridScrollbar(GuiGraphics g) {
+        int max = Math.max(0, crateTotalRows - crateVisibleRows);
+        if (max <= 0) {
+            return;
+        }
+        int trackH = Math.max(12, crateGridBottom - crateGridTop);
+        int trackX = contentX + contentWidth - 3;
+        g.fill(trackX, crateGridTop, trackX + 3, crateGridTop + trackH, 0x30FFFFFF);
+        int thumbH = Math.max(12, trackH * crateVisibleRows / Math.max(1, crateTotalRows));
+        int thumbY = crateGridTop + (trackH - thumbH) * crateRowScroll / max;
+        g.fill(trackX, thumbY, trackX + 3, thumbY + thumbH, BRASS);
     }
 
     private void drawFrame(GuiGraphics graphics) {
@@ -581,8 +781,8 @@ public class MailComposeScreen extends Screen {
         graphics.fill(panelX + 1, panelY + 1, panelX + panelWidth - 1, panelY + 27, PANEL_HEADER);
         graphics.fill(panelX + 1, panelY + 26, panelX + panelWidth - 1, panelY + 28, BRASS);
 
-        graphics.drawString(font, "列车邮局 · 系统邮件", contentX, panelY + 10, TEXT, false);
-        String opStamp = "OP 专用";
+        graphics.drawString(font, tr("header"), contentX, panelY + 10, TEXT, false);
+        String opStamp = tr("op_stamp").getString();
         int stampWidth = font.width(opStamp);
         if (contentWidth > 180) {
             graphics.drawString(font, opStamp, contentX + contentWidth - stampWidth, panelY + 10,
@@ -600,70 +800,113 @@ public class MailComposeScreen extends Screen {
 
     private void drawPageLabels(GuiGraphics graphics) {
         if (page == PAGE_CONTENT) {
-            graphics.drawString(font, "发件人", senderBox.getX(), senderBox.getY() - 10, MUTED, false);
-            graphics.drawString(font, "邮件标题", titleBox.getX(), titleBox.getY() - 10, MUTED, false);
-            graphics.drawString(font, "正文", bodyArea.getX(), bodyArea.getY() - 10, MUTED, false);
+            if (senderBox != null) {
+                graphics.drawString(font, tr("field.sender"), senderBox.getX(), senderBox.getY() - 10, MUTED, false);
+            }
+            if (titleBox != null) {
+                graphics.drawString(font, tr("field.title"), titleBox.getX(), titleBox.getY() - 10, MUTED, false);
+            }
+            if (bodyArea != null) {
+                graphics.drawString(font, tr("field.body"), bodyArea.getX(), bodyArea.getY() - 10, MUTED, false);
+            }
             return;
         }
         if (page == PAGE_RECIPIENTS) {
-            graphics.drawString(font, "发送范围", contentX, contentTop, MUTED, false);
+            graphics.drawString(font, tr("recipients.scope"), contentX, contentTop, MUTED, false);
             int detailTop = contentTop + 42;
             if (targetMode == MailComposeC2SPayload.MODE_ONLINE_LIST) {
-                graphics.drawString(font, "在线玩家 · 已选 " + selectedOnline.size() + " 人",
+                graphics.drawString(font, tr("recipients.online_selected", selectedOnline.size()),
                         contentX, detailTop, TEXT, false);
                 if (onlineNames.isEmpty()) {
-                    graphics.drawString(font, "当前没有可选择的在线玩家",
+                    graphics.drawString(font, tr("recipients.no_online"),
                             contentX, detailTop + 54, MUTED, false);
                 } else if (visibleOnlineNames().isEmpty()) {
-                    graphics.drawString(font, "无匹配玩家",
+                    graphics.drawString(font, tr("recipients.no_match"),
                             contentX, detailTop + 54, MUTED, false);
                 }
             } else if (targetMode == MailComposeC2SPayload.MODE_OFFLINE_NAME) {
-                graphics.drawString(font, "玩家名（支持换行、空格、逗号或分号分隔）",
+                graphics.drawString(font, tr("recipients.offline_hint"),
                         contentX, detailTop, TEXT, false);
             } else {
-                graphics.drawCenteredString(font, "邮件将发送给服务器内的所有玩家",
+                graphics.drawCenteredString(font, tr("recipients.all_line1"),
                         contentX + contentWidth / 2, detailTop + 20, TEXT);
-                graphics.drawCenteredString(font, "含离线与从未进服的玩家 · 默认限时 30 天",
+                graphics.drawCenteredString(font,
+                        tr("recipients.all_line2", MailComposeC2SPayload.DEFAULT_ALL_PLAYER_EXPIRY_DAYS),
                         contentX + contentWidth / 2, detailTop + 36, MUTED);
             }
             return;
         }
 
         if (page == PAGE_SKIN) {
-            graphics.drawString(font, "皮肤附件（type/id）", contentX, contentTop + 10, TEXT, false);
-            graphics.drawString(font, font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth), contentX, contentTop + 60, BRASS, false);
+            graphics.drawString(font, tr("skin.heading"), contentX, contentTop + 10, TEXT, false);
+            graphics.drawString(font, font.plainSubstrByWidth(
+                    tr("summary.prefix", rewardSummary()).getString(), contentWidth),
+                    contentX, contentTop + 60, BRASS, false);
             return;
         }
         if (page == PAGE_CRATES) {
-            String kind = keyAttachment ? "钥匙" : "箱子";
-            String selected = CrateCatalog.publishedEntries().isEmpty() ? "" : CrateCatalog.publishedEntries()
-                    .get(Math.max(0, Math.min(crateIdx, CrateCatalog.publishedEntries().size() - 1))).id();
-            graphics.drawString(font, kind + "附件 · 当前选择 " + selected, contentX, contentTop + 2, TEXT, false);
-            graphics.drawString(font, font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth),
-                    contentX, contentTop + 112, BRASS, false);
+            List<CrateCatalog.Entry> entries = CrateCatalog.publishedEntries();
+            String kind = tr(keyAttachment ? "crates.kind_key" : "crates.kind_crate").getString();
+            String selected = entries.isEmpty()
+                    ? tr("crates.none").getString()
+                    : entries.get(Mth.clamp(crateIdx, 0, entries.size() - 1)).id();
+            graphics.drawString(font, tr("crates.heading", kind, selected), contentX, contentTop + 2, TEXT, false);
+            if (entries.isEmpty()) {
+                graphics.drawString(font, tr("crates.empty"), contentX, crateGridTop + 4, MUTED, false);
+            }
+            graphics.drawString(font, font.plainSubstrByWidth(
+                    tr("summary.prefix", rewardSummary()).getString(), contentWidth),
+                    contentX, cratePreviewY, BRASS, false);
             return;
         }
-        graphics.drawString(font, "基础奖励", contentX, contentTop, MUTED, false);
-        graphics.drawString(font, "绿苹果", greenApplesBox.getX(), greenApplesBox.getY() - 10, MUTED, false);
-        graphics.drawString(font, "有效期（天）",
-                expiresBox.getX(), expiresBox.getY() - 10, MUTED, false);
-        graphics.drawString(font, "阵营卡类型（四选一）", contentX, greenApplesBox.getY() + 26, MUTED, false);
-        graphics.drawString(font, font.plainSubstrByWidth("阵营卡数量", cardAmountBox.getWidth()),
-                cardAmountBox.getX(), cardAmountBox.getY() - 10, TEXT, false);
-        graphics.drawString(font, font.plainSubstrByWidth(
-                        Component.translatable("screen.habitrain_lottery.config.cards.self_select").getString(), selfSelectAmountBox.getWidth()),
-                selfSelectAmountBox.getX(), selfSelectAmountBox.getY() - 10, TEXT, false);
-        graphics.drawString(font, font.plainSubstrByWidth(
-                        Component.translatable("screen.habitrain_lottery.config.cards.limit_break").getString(), limitBreakAmountBox.getWidth()),
-                limitBreakAmountBox.getX(), limitBreakAmountBox.getY() - 10, TEXT, false);
-        String summary = font.plainSubstrByWidth("附件预览：" + rewardSummary(), contentWidth);
-        graphics.drawString(font, summary, contentX, cardAmountBox.getY() + 29, BRASS, false);
+
+        graphics.drawString(font, tr("rewards.heading"), contentX, contentTop, MUTED, false);
+        if (greenApplesBox != null) {
+            graphics.drawString(font, tr("field.green_apples"),
+                    greenApplesBox.getX(), greenApplesBox.getY() - 10, MUTED, false);
+            graphics.drawString(font, tr("rewards.faction_heading"),
+                    contentX, greenApplesBox.getY() + 26, MUTED, false);
+        }
+        if (expiresBox != null) {
+            graphics.drawString(font, tr("field.expires_days"),
+                    expiresBox.getX(), expiresBox.getY() - 10, MUTED, false);
+        }
+        if (cardAmountBox != null) {
+            graphics.drawString(font, font.plainSubstrByWidth(
+                    tr("field.card_amount").getString(), cardAmountBox.getWidth()),
+                    cardAmountBox.getX(), cardAmountBox.getY() - 10, TEXT, false);
+            String summary = font.plainSubstrByWidth(
+                    tr("summary.prefix", rewardSummary()).getString(), contentWidth);
+            graphics.drawString(font, summary, contentX, cardAmountBox.getY() + 29, BRASS, false);
+        }
+        if (selfSelectAmountBox != null) {
+            graphics.drawString(font, font.plainSubstrByWidth(
+                            Component.translatable("screen.habitrain_lottery.config.cards.self_select").getString(),
+                            selfSelectAmountBox.getWidth()),
+                    selfSelectAmountBox.getX(), selfSelectAmountBox.getY() - 10, TEXT, false);
+        }
+        if (limitBreakAmountBox != null) {
+            graphics.drawString(font, font.plainSubstrByWidth(
+                            Component.translatable("screen.habitrain_lottery.config.cards.limit_break").getString(),
+                            limitBreakAmountBox.getWidth()),
+                    limitBreakAmountBox.getX(), limitBreakAmountBox.getY() - 10, TEXT, false);
+        }
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (MenuAccessBridge.isLocked()) {
+            return AdminLockGuard.handleLockedMouseClicked(backButton, mouseX, mouseY, button);
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
     }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY,
                                  double horizontalAmount, double verticalAmount) {
+        if (MenuAccessBridge.isLocked()) {
+            return false;
+        }
         if (page == PAGE_CONTENT && bodyArea != null
                 && bodyArea.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)) {
             return true;
@@ -678,12 +921,42 @@ public class MailComposeScreen extends Screen {
             int before = onlineList.getScroll();
             if (onlineList.mouseScrolled(mouseX, mouseY, verticalAmount)) {
                 if (onlineList.getScroll() != before) {
+                    rebuildOnlineListRows(contentTop + 42);
+                }
+                return true;
+            }
+        }
+        if (page == PAGE_CRATES && crateTotalRows > crateVisibleRows
+                && mouseX >= contentX && mouseX <= contentX + contentWidth
+                && mouseY >= crateGridTop && mouseY < crateGridBottom) {
+            int delta = verticalAmount > 0 ? -1 : (verticalAmount < 0 ? 1 : 0);
+            if (delta != 0) {
+                int max = Math.max(0, crateTotalRows - crateVisibleRows);
+                int next = Mth.clamp(crateRowScroll + delta, 0, max);
+                if (next != crateRowScroll) {
+                    crateRowScroll = next;
                     rebuildPage();
                 }
                 return true;
             }
         }
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (MenuAccessBridge.isLocked()) {
+            return AdminLockGuard.handleLockedKeyPressed(this, backButton, keyCode);
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (MenuAccessBridge.isLocked()) {
+            return false;
+        }
+        return super.charTyped(codePoint, modifiers);
     }
 
     @Override

@@ -43,15 +43,18 @@ public final class MailboxPages {
         PayloadTypeRegistry.playC2S().register(Request.TYPE, Request.CODEC);
         PayloadTypeRegistry.playS2C().register(Snapshot.TYPE, Snapshot.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(Request.TYPE, (p, ctx) -> ctx.server().execute(() -> {
-            if (LotteryNetwork.rateLimited(ctx.player(), "mailbox_request", 300)) return;
-            OFFSETS.put(ctx.player().getUUID(), Math.max(0, p.offset));
-            send(ctx.player());
+            ServerPlayer player = ctx.player();
+            if (player == null || player.hasDisconnected()) return;
+            if (LotteryNetwork.rateLimited(player, "mailbox_request", 300)) return;
+            OFFSETS.put(player.getUUID(), Math.max(0, p.offset));
+            send(player);
         }));
     }
 
     public static void forget(UUID uuid) { if (uuid != null) OFFSETS.remove(uuid); }
 
     public static void send(ServerPlayer player) {
+        if (player == null || player.hasDisconnected()) return;
         List<MailJson> mails = MailService.list(player);
         Snapshot page = page(mails, OFFSETS.getOrDefault(player.getUUID(), 0));
         OFFSETS.put(player.getUUID(), page.offset());
@@ -61,8 +64,8 @@ public final class MailboxPages {
             // Legacy clients receive a bounded first page and an explicit upgrade notice.
             page = page(mails, 0);
             ServerPlayNetworking.send(player, new MailboxListS2C(page.json()));
-            if (page.next() >= 0) player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§e[邮箱] 当前客户端仅显示第一页，请更新抽奖补齐以查看全部邮件"));
+            if (page.next() >= 0) player.sendSystemMessage(net.minecraft.network.chat.Component.translatable(
+                    "message.habitrain_lottery.mail.legacy_first_page"));
         }
     }
 

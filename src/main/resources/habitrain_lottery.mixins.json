@@ -1,10 +1,12 @@
 {
     "required": false,
     "package": "com.habitrain.lottery.mixin",
-    "plugin": "com.habitrain.lottery.mixin.HabiLotteryMixinPlugin",
+    "plugin": "com.habitrain.lottery.mixinplugin.HabiLotteryMixinPlugin",
     "compatibilityLevel": "JAVA_21",
     "mixins": [
         "SrePlayerSkinsMysqlMixin",
+        "PlayerEconomyMysqlMixin",
+        "EquippedSkinsDatabaseSyncMixin",
         "DerringerSkinExclusionMixin",
         "StoredUserEntryAccessor",
         "MatchRecordStoreMixin",
@@ -12,6 +14,7 @@
         "BackpackManagerMixin",
         "FactionCardTypeRoleIdMixin",
         "ProgressionDataManagerMixin",
+        "MurderFactionCardRefundMixin",
         "DailyTaskProgressionMixin",
         "ProgressionCoinRewardStatMixin",
         "AccountCoinRewardMixin",

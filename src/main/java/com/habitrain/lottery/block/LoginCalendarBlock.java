@@ -23,7 +23,7 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * Black-concrete calendar block. Horizontal FACING = display face normal (player-facing when placed).
- * Back face use: show/sync login streak. Multi-tile same-facing neighbors tile one calendar.
+ * Right-click inspects/syncs login streak. Multi-tile same-facing coplanar neighbors tile one calendar.
  */
 public final class LoginCalendarBlock extends HorizontalDirectionalBlock {
     public static final MapCodec<LoginCalendarBlock> CODEC = simpleCodec(LoginCalendarBlock::new);
@@ -58,17 +58,6 @@ public final class LoginCalendarBlock extends HorizontalDirectionalBlock {
         return this.defaultBlockState().setValue(FACING, context.getHorizontalDirection().getOpposite());
     }
 
-    /** Client mixin indexes place/remove; keep this class free of client-only types. */
-    @Override
-    public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean movedByPiston) {
-        super.onPlace(state, level, pos, oldState, movedByPiston);
-    }
-
-    @Override
-    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean movedByPiston) {
-        super.onRemove(state, level, pos, newState, movedByPiston);
-    }
-
     @Override
     protected RenderShape getRenderShape(BlockState state) {
         return RenderShape.MODEL;
@@ -79,16 +68,6 @@ public final class LoginCalendarBlock extends HorizontalDirectionalBlock {
         if (level.isClientSide) {
             return InteractionResult.SUCCESS;
         }
-        Direction display = state.getValue(FACING);
-        Direction hitFace = hit.getDirection();
-        // Back face = opposite of display; also allow any face for convenience if crouching? Spec: back activates.
-        if (hitFace == display.getOpposite() || hitFace == display) {
-            if (player instanceof ServerPlayer sp) {
-                LoginRewardService.onInspect(sp);
-            }
-            return InteractionResult.CONSUME;
-        }
-        // Sides: still allow inspect so players find the feature
         if (player instanceof ServerPlayer sp) {
             LoginRewardService.onInspect(sp);
         }

@@ -1,12 +1,14 @@
 package com.habitrain.lottery.storage;
 
 import com.habitrain.lottery.HabiLotteryMod;
+import com.habitrain.lottery.record.LocalMatchRecordStore;
 import com.habitrain.lottery.title.LocalTitleStore;
 
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
@@ -66,7 +68,9 @@ public final class LotteryBackupService {
                 return Result.fail("备份失败: 目标路径越界");
             }
             try {
-                copyTree(source, dest);
+                synchronized (LocalMatchRecordStore.writeLock()) {
+                    copyTree(source, dest);
+                }
             } catch (Exception copyEx) {
                 deleteTreeBestEffort(dest);
                 deleteTreeBestEffort(partialDir(dest));
@@ -182,14 +186,35 @@ public final class LotteryBackupService {
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Path fileName = file.getFileName();
+                if (fileName != null && fileName.toString().endsWith(".tmp")) {
+                    return FileVisitResult.CONTINUE;
+                }
                 Path rel = source.relativize(file);
                 Path target = destAbs.resolve(rel.toString()).normalize();
                 if (!target.startsWith(destAbs)) {
                     throw new IOException("backup copy escaped dest: " + rel);
                 }
                 Files.createDirectories(target.getParent());
-                Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                try {
+                    Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                } catch (NoSuchFileException vanished) {
+                    // Concurrent atomic move/cleanup deleted a transient file mid-walk; safe to skip.
+                    return FileVisitResult.CONTINUE;
+                }
                 return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
+                if (exc instanceof NoSuchFileException) {
+                    return FileVisitResult.CONTINUE;
+                }
+                Path fileName = file != null ? file.getFileName() : null;
+                if (fileName != null && fileName.toString().endsWith(".tmp")) {
+                    return FileVisitResult.CONTINUE;
+                }
+                throw exc;
             }
         });
     }

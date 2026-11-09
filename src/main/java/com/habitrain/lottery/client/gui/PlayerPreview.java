@@ -79,9 +79,12 @@ public final class PlayerPreview {
             Vector3f translate = new Vector3f(0.0F,
                     player.getBbHeight() / 2.0F + HEAD_OFFSET * entityScale, 0.0F);
             g.enableScissor(x1, y1, x2, y2);
-            InventoryScreen.renderEntityInInventory(g, (x1 + x2) / 2.0F, (y1 + y2) / 2.0F,
-                    desired / entityScale, translate, rotation, camera, player);
-            g.disableScissor();
+            try {
+                InventoryScreen.renderEntityInInventory(g, (x1 + x2) / 2.0F, (y1 + y2) / 2.0F,
+                        desired / entityScale, translate, rotation, camera, player);
+            } finally {
+                g.disableScissor();
+            }
         } finally {
             if (config != null) config.hideAllHats = prevHideHats;
             player.setItemSlot(EquipmentSlot.MAINHAND, prevMain);

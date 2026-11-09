@@ -1,76 +1,82 @@
 package com.habitrain.lottery.mixin.client;
 
+import com.habitrain.lottery.client.gui.WarehouseScreen;
 import com.habitrain.lottery.network.CardUseRequestC2S;
-import io.wifi.starrailexpress.backpack.BackpackState;
-import io.wifi.starrailexpress.client.data.ClientPlayerDataCache;
 import io.wifi.starrailexpress.client.gui.screen.BackpackScreen;
-import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
+
+import java.lang.reflect.Field;
 
 /**
- * Intercepts the upstream card-click command ({@code sre:pass activate <type>}
- * sent by {@link BackpackScreen#sendCommand}) and asks the server for the
- * 直接使用 / 自选角色 menu instead.
- *
- * <p>{@code sendCommand} is a BackpackScreen-private, SRE-specific method only
- * called from the card-click path, so intercepting it is mapping-safe
- * ({@code remap = false}, same as the other SRE-targeted mixins). When the server
- * does not have this mod registered ({@link ClientPlayNetworking#canSend} false),
- * the upstream command is left untouched and the plain SRE activation runs.
+ * Replaces {@link BackpackScreen} with {@link WarehouseScreen} at the {@link Minecraft#setScreen}
+ * entry point before {@link Screen#init()} runs, avoiding re-entrant screen replacement during
+ * {@code init(TAIL)} while leaving upstream {@link BackpackScreen} intact when connected to a server
+ * without {@code habitrain_lottery}.
  */
-@Mixin(value = BackpackScreen.class, remap = false)
+@Mixin(Minecraft.class)
 public abstract class BackpackScreenMixin {
-    @Shadow private net.minecraft.client.gui.screens.Screen parent;
+    @Unique
+    private static Field habi$parentField;
+    @Unique
+    private static boolean habi$parentFieldResolved;
 
-    @Inject(method = "init", at = @At("TAIL"), remap = true)
-    private void habi$separateCards(CallbackInfo ci) {
-        if (ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
-            net.minecraft.client.Minecraft.getInstance().setScreen(
-                    new com.habitrain.lottery.client.gui.WarehouseScreen(parent));
+    @ModifyVariable(method = "setScreen", at = @At("HEAD"), argsOnly = true)
+    private Screen habi$replaceBackpackScreen(Screen screen) {
+        if (!(screen instanceof BackpackScreen upstream)) {
+            return screen;
         }
+        Minecraft self = (Minecraft) (Object) this;
+        if (self.getConnection() == null || !ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
+            return screen;
+        }
+        Screen parent = habi$extractParent(upstream, self.screen);
+        int depth = 0;
+        while (parent instanceof BackpackScreen nested && depth++ < 8) {
+            parent = habi$extractParent(nested, null);
+        }
+        if (parent instanceof WarehouseScreen) {
+            return parent;
+        }
+        return new WarehouseScreen(parent);
     }
 
-
-    private static final String ACTIVATE_PREFIX = "sre:pass activate ";
-
-    @Shadow
-    private BackpackState backpack;
-
-    @Shadow
-    private LocalPlayer player;
-
-    @Inject(method = "count", at = @At("HEAD"))
-    private void habi$refreshBackpackBeforeCount(FactionCardType type, CallbackInfoReturnable<Integer> cir) {
-        if (this.player != null) {
-            this.backpack = ClientPlayerDataCache.backpack(this.player.getUUID());
-        }
-    }
-
-    @Inject(method = "sendCommand", at = @At("HEAD"), cancellable = true)
-    private void habi$openCardUseMenu(String command, CallbackInfo ci) {
-        if (command == null || !command.startsWith(ACTIVATE_PREFIX)) {
-            return;
-        }
-        String questKey = command.substring(ACTIVATE_PREFIX.length()).trim();
-        if (questKey.isEmpty()) {
-            return;
-        }
+    @Unique
+    private static Screen habi$extractParent(BackpackScreen screen, Screen fallback) {
         try {
-            if (ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
-                ClientPlayNetworking.send(new CardUseRequestC2S(questKey));
-                // Swallow the upstream command; the server answers with CardUseMenuS2C
-                // (or falls back to direct use / rejects with a clear message).
-                ci.cancel();
+            Field f = habi$parentField;
+            if (!habi$parentFieldResolved) {
+                try {
+                    f = BackpackScreen.class.getDeclaredField("parent");
+                    f.setAccessible(true);
+                } catch (NoSuchFieldException ignored) {
+                    for (Field candidate : BackpackScreen.class.getDeclaredFields()) {
+                        if (Screen.class.isAssignableFrom(candidate.getType())) {
+                            candidate.setAccessible(true);
+                            f = candidate;
+                            break;
+                        }
+                    }
+                }
+                habi$parentField = f;
+                habi$parentFieldResolved = true;
             }
-        } catch (Throwable t) {
-            // Let the upstream command run on any unexpected client-side failure.
+            if (f != null) {
+                Object val = f.get(screen);
+                if (val instanceof Screen parentScreen) {
+                    return parentScreen;
+                }
+                if (val == null) {
+                    return null;
+                }
+            }
+        } catch (Throwable ignored) {
         }
+        return fallback;
     }
 }

@@ -96,6 +96,7 @@ public final class TitleService {
 
     /** Apply only the committed store to the component, suppressing persistence callbacks. */
     public static void syncCommitted(ServerPlayer player) {
+        if (player == null) return;
         var load = LocalTitleStore.get().loadPlayerDetailed(player.getUUID());
         if (!load.ok() || load.data() == null) return;
         boolean previous = isApplyingLocal();
@@ -116,7 +117,7 @@ public final class TitleService {
      * Safe to call repeatedly; no-ops if CCA is unavailable.
      */
     public static void forceResync(ServerPlayer player) {
-        if (player == null || Boolean.TRUE.equals(FORCE_SYNCING.get())) {
+        if (player == null || player.hasDisconnected() || Boolean.TRUE.equals(FORCE_SYNCING.get())) {
             return;
         }
         FORCE_SYNCING.set(Boolean.TRUE);

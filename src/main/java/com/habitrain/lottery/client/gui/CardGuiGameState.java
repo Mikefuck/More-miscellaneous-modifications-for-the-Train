@@ -3,6 +3,8 @@ package com.habitrain.lottery.client.gui;
 import com.habitrain.core.api.match.MatchStateApi;
 import net.minecraft.client.Minecraft;
 
+import java.lang.ref.WeakReference;
+
 /**
  * 客户端对局状态守卫：当游戏一旦离开大厅进入开场（STARTING）或更后的状态，
  * 正在选择角色的窗口应当自动关闭，并且此时的选择一律不生效（服务端
@@ -27,7 +29,8 @@ public final class CardGuiGameState {
 
     private static long cachedAtNanos = 0L;
     private static boolean cachedValue = false;
-    private static Object cachedLevel = null;
+    private static WeakReference<Object> cachedLevel = new WeakReference<>(null);
+    private static boolean cachedLevelNonNull = false;
 
     private CardGuiGameState() {
     }
@@ -37,7 +40,8 @@ public final class CardGuiGameState {
         Minecraft mc = Minecraft.getInstance();
         Object level = mc == null ? null : mc.level;
         long now = System.nanoTime();
-        if (level == cachedLevel && now - cachedAtNanos < CACHE_TTL_NANOS) {
+        boolean sameLevel = level == null ? !cachedLevelNonNull : (cachedLevelNonNull && cachedLevel.get() == level);
+        if (sameLevel && now - cachedAtNanos < CACHE_TTL_NANOS) {
             return cachedValue;
         }
         boolean value;
@@ -47,7 +51,8 @@ public final class CardGuiGameState {
             // 读不到状态时按「已经开始」处理（fail-closed：不让人在开局后继续选角色）。
             value = true;
         }
-        cachedLevel = level;
+        cachedLevel = new WeakReference<>(level);
+        cachedLevelNonNull = level != null;
         cachedValue = value;
         cachedAtNanos = now;
         return value;
@@ -55,7 +60,8 @@ public final class CardGuiGameState {
 
     /** 测试/退出世界时清空缓存（避免跨会话残留）。 */
     public static void invalidate() {
-        cachedLevel = null;
+        cachedLevel = new WeakReference<>(null);
+        cachedLevelNonNull = false;
         cachedAtNanos = 0L;
         cachedValue = false;
     }

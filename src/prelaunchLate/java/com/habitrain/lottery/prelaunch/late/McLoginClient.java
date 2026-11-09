@@ -11,12 +11,14 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -29,6 +31,8 @@ import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
@@ -53,7 +57,11 @@ final class McLoginClient {
     static final int PROTOCOL_1_21_1 = 767;
     static final String HANDSHAKE_CHANNEL = "automodpack:handshake";
     static final String DATA_CHANNEL = "automodpack:data";
-    private static final int MAX_PACKET = 2 * 1024 * 1024;
+    static final int MAX_PACKET = 2 * 1024 * 1024;
+    static final int MAX_LOGIN_PACKETS = 64;
+    static final long DEFAULT_DEADLINE_MS = 30_000L;
+    static final int MAX_TEXT_DEPTH = 32;
+    static final int MAX_TEXT_LENGTH = 4096;
     private static final Gson GSON = new Gson();
 
     record Account(String name, UUID uuid, String accessToken) {
@@ -75,6 +83,11 @@ final class McLoginClient {
         }
     }
 
+    @FunctionalInterface
+    interface TimeoutUpdater {
+        void updateTimeoutMs(int timeoutMs) throws SocketException;
+    }
+
     private final Account account;
     private final String sessionHost;
     private final UnaryOperator<String> handshakeVersion;
@@ -91,19 +104,60 @@ final class McLoginClient {
     }
 
     AutoModpackData fetch(String host, int port) throws IOException {
+        return fetch(host, port, null, DEFAULT_DEADLINE_MS);
+    }
+
+    AutoModpackData fetch(String host, int port, ProgressWindow progress) throws IOException {
+        return fetch(host, port, progress, DEFAULT_DEADLINE_MS);
+    }
+
+    AutoModpackData fetch(String host, int port, ProgressWindow progress, long deadlineMs) throws IOException {
+        BooleanSupplier cancelled = progress == null ? () -> false : progress::isCancelled;
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, deadlineMs));
         try (Socket socket = new Socket()) {
+            if (progress != null) {
+                progress.onCancel(() -> {
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                    }
+                });
+            }
+            if (cancelled.getAsBoolean()) {
+                throw new LoginException("已取消连接服务器。");
+            }
+            int connectTimeout = (int) Math.max(1L, Math.min(10_000L, remainingMillis(deadlineNanos)));
             try {
-                socket.connect(new InetSocketAddress(host, port), 10_000);
+                socket.connect(new InetSocketAddress(host, port), connectTimeout);
             } catch (IOException e) {
+                if (cancelled.getAsBoolean()) {
+                    throw new LoginException("已取消连接服务器。", e);
+                }
                 throw new LoginException("无法连接服务器 " + host + ":" + port + "（" + e.getMessage() + "）", e);
             }
-            socket.setSoTimeout(20_000);
-            return fetch(socket.getInputStream(), socket.getOutputStream(), host, port);
+            socket.setSoTimeout((int) Math.max(1L, Math.min(20_000L, remainingMillis(deadlineNanos))));
+            return fetchWithDeadlineNanos(
+                    socket.getInputStream(), socket.getOutputStream(), host, port,
+                    deadlineNanos, cancelled, socket::setSoTimeout);
         }
     }
 
     AutoModpackData fetch(InputStream rawIn, OutputStream rawOut, String host, int port) throws IOException {
-        Connection connection = new Connection(rawIn, rawOut);
+        return fetch(rawIn, rawOut, host, port, DEFAULT_DEADLINE_MS, () -> false, null);
+    }
+
+    AutoModpackData fetch(InputStream rawIn, OutputStream rawOut, String host, int port,
+                          long deadlineMs, BooleanSupplier cancelled,
+                          TimeoutUpdater timeoutUpdater) throws IOException {
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, deadlineMs));
+        return fetchWithDeadlineNanos(rawIn, rawOut, host, port, deadlineNanos, cancelled, timeoutUpdater);
+    }
+
+    private AutoModpackData fetchWithDeadlineNanos(InputStream rawIn, OutputStream rawOut, String host, int port,
+                                                   long deadlineNanos, BooleanSupplier cancelled,
+                                                   TimeoutUpdater timeoutUpdater) throws IOException {
+        Connection connection = new Connection(
+                new DeadlineInputStream(rawIn, deadlineNanos, cancelled, timeoutUpdater), rawOut);
         connection.send(0x00, out -> {
             out.writeVarInt(PROTOCOL_1_21_1);
             out.writeString(host);
@@ -115,14 +169,45 @@ final class McLoginClient {
             out.writeLong(account.uuid().getMostSignificantBits());
             out.writeLong(account.uuid().getLeastSignificantBits());
         });
+        int packets = 0;
         while (true) {
-            Packet packet = connection.read();
+            if (cancelled != null && cancelled.getAsBoolean()) {
+                throw new LoginException("已取消连接服务器。");
+            }
+            if (++packets > MAX_LOGIN_PACKETS) {
+                throw new LoginException("服务器发送了过多登录阶段数据包（超过 " + MAX_LOGIN_PACKETS + " 个）。");
+            }
+            long remainingMs = remainingMillis(deadlineNanos);
+            if (remainingMs <= 0L) {
+                throw new LoginException("登录服务器获取下载凭证超时。");
+            }
+            if (timeoutUpdater != null) {
+                timeoutUpdater.updateTimeoutMs((int) Math.max(1L, Math.min(20_000L, remainingMs)));
+            }
+            Packet packet;
+            try {
+                packet = connection.read();
+            } catch (IOException e) {
+                if (cancelled != null && cancelled.getAsBoolean()) {
+                    throw new LoginException("已取消连接服务器。", e);
+                }
+                if (remainingMillis(deadlineNanos) <= 0L) {
+                    throw new LoginException("登录服务器获取下载凭证超时。", e);
+                }
+                throw e;
+            }
             switch (packet.id) {
                 case 0x00 -> throw new LoginException("服务器断开了连接：" + componentText(packet.in.readString()));
                 case 0x01 -> handleEncryption(connection, packet.in);
                 case 0x02 -> throw new LoginException(
                         "服务器在登录时没有下发 AutoModpack 整合包信息（服务器未安装 AutoModpack 或其下载服务未运行）。");
-                case 0x03 -> connection.threshold = packet.in.readVarInt();
+                case 0x03 -> {
+                    int newThreshold = packet.in.readVarInt();
+                    if (newThreshold < -1) {
+                        throw new IOException("Bad compression threshold " + newThreshold);
+                    }
+                    connection.threshold = newThreshold;
+                }
                 case 0x04 -> {
                     AutoModpackData data = handleQuery(connection, packet.in);
                     if (data != null) {
@@ -140,6 +225,11 @@ final class McLoginClient {
                         + "（服务器版本可能不是 1.21.1）。");
             }
         }
+    }
+
+    private static long remainingMillis(long deadlineNanos) {
+        long diff = deadlineNanos - System.nanoTime();
+        return diff <= 0L ? 0L : (diff + 999_999L) / 1_000_000L;
     }
 
     private AutoModpackData handleQuery(Connection connection, PacketReader in) throws IOException {
@@ -234,9 +324,8 @@ final class McLoginClient {
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
                 .build();
         HttpResponse<String> response;
-        try {
-            response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
-                    .send(request, HttpResponse.BodyHandlers.ofString());
+        try (HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()) {
+            response = http.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new LoginException("正版验证被中断。", e);
@@ -263,32 +352,67 @@ final class McLoginClient {
 
     /** Flattens a JSON text component into plain text for error messages. */
     static String componentText(String json) {
+        if (json == null) {
+            return "";
+        }
         try {
             StringBuilder out = new StringBuilder();
-            appendText(JsonParser.parseString(json), out);
-            return out.length() == 0 ? json : out.toString();
-        } catch (RuntimeException e) {
-            return json;
+            appendText(JsonParser.parseString(json), out, 0);
+            if (out.length() > 0) {
+                return out.toString();
+            }
+        } catch (RuntimeException | StackOverflowError ignored) {
         }
+        return truncateSafe(json, MAX_TEXT_LENGTH);
     }
 
-    private static void appendText(JsonElement element, StringBuilder out) {
-        if (element == null || element.isJsonNull()) {
+    private static void appendText(JsonElement element, StringBuilder out, int depth) {
+        if (element == null || element.isJsonNull() || depth > MAX_TEXT_DEPTH || out.length() >= MAX_TEXT_LENGTH) {
             return;
         }
         if (element.isJsonPrimitive()) {
-            out.append(element.getAsString());
+            appendBounded(out, element.getAsString());
         } else if (element.isJsonArray()) {
-            element.getAsJsonArray().forEach(child -> appendText(child, out));
+            for (JsonElement child : element.getAsJsonArray()) {
+                if (out.length() >= MAX_TEXT_LENGTH) {
+                    break;
+                }
+                appendText(child, out, depth + 1);
+            }
         } else if (element.isJsonObject()) {
             JsonObject object = element.getAsJsonObject();
-            if (object.has("text")) {
-                out.append(object.get("text").getAsString());
-            } else if (object.has("translate")) {
-                out.append(object.get("translate").getAsString());
+            if (object.has("text") && object.get("text").isJsonPrimitive()) {
+                appendBounded(out, object.get("text").getAsString());
+            } else if (object.has("translate") && object.get("translate").isJsonPrimitive()) {
+                appendBounded(out, object.get("translate").getAsString());
             }
-            appendText(object.get("extra"), out);
+            if (out.length() < MAX_TEXT_LENGTH) {
+                appendText(object.get("extra"), out, depth + 1);
+            }
         }
+    }
+
+    private static void appendBounded(StringBuilder out, String text) {
+        if (text == null || text.isEmpty() || out.length() >= MAX_TEXT_LENGTH) {
+            return;
+        }
+        int remaining = MAX_TEXT_LENGTH - out.length();
+        if (text.length() <= remaining) {
+            out.append(text);
+        } else {
+            out.append(truncateSafe(text, remaining));
+        }
+    }
+
+    private static String truncateSafe(String text, int maxChars) {
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        int cut = maxChars;
+        if (cut > 0 && Character.isHighSurrogate(text.charAt(cut - 1))) {
+            cut--;
+        }
+        return text.substring(0, cut);
     }
 
     private static String stringOr(JsonObject object, String key, String fallback) {
@@ -300,6 +424,47 @@ final class McLoginClient {
 
     interface PacketBody {
         void write(PacketWriter out) throws IOException;
+    }
+
+    /** Sits below buffering/encryption so every blocking socket read gets the remaining budget. */
+    private static final class DeadlineInputStream extends FilterInputStream {
+        private final long deadlineNanos;
+        private final BooleanSupplier cancelled;
+        private final TimeoutUpdater timeoutUpdater;
+
+        DeadlineInputStream(InputStream input, long deadlineNanos, BooleanSupplier cancelled,
+                            TimeoutUpdater timeoutUpdater) {
+            super(input);
+            this.deadlineNanos = deadlineNanos;
+            this.cancelled = cancelled;
+            this.timeoutUpdater = timeoutUpdater;
+        }
+
+        private void checkBudget(boolean updateTimeout) throws IOException {
+            if (cancelled != null && cancelled.getAsBoolean()) {
+                throw new LoginException("已取消连接服务器。");
+            }
+            long remaining = remainingMillis(deadlineNanos);
+            if (remaining <= 0L) throw new LoginException("登录服务器获取下载凭证超时。");
+            if (updateTimeout && timeoutUpdater != null) {
+                timeoutUpdater.updateTimeoutMs((int) Math.min(20_000L, remaining));
+            }
+        }
+
+        @Override public int read() throws IOException {
+            checkBudget(true);
+            int result = in.read();
+            checkBudget(false);
+            return result;
+        }
+
+        @Override public int read(byte[] buffer, int offset, int length) throws IOException {
+            if (length == 0) return 0;
+            checkBudget(true);
+            int result = in.read(buffer, offset, length);
+            checkBudget(false);
+            return result;
+        }
     }
 
     record Packet(int id, PacketReader in) {
@@ -363,10 +528,10 @@ final class McLoginClient {
             PacketReader reader = new PacketReader(frame);
             if (threshold >= 0) {
                 int dataLength = reader.readVarInt();
+                if (dataLength < 0 || dataLength > MAX_PACKET) {
+                    throw new IOException("Bad uncompressed length " + dataLength);
+                }
                 if (dataLength != 0) {
-                    if (dataLength > MAX_PACKET) {
-                        throw new IOException("Bad uncompressed length " + dataLength);
-                    }
                     reader = new PacketReader(inflate(reader.readRemaining(), dataLength));
                 }
             }

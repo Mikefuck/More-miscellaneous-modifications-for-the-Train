@@ -7,3 +7,51 @@ pluginManagement {
 }
 
 rootProject.name = "habitrain_lottery"
+
+// Clean up disowned Fabric Loom PID marker files left by abruptly terminated builds so Loom
+// does not get stuck in an infinite "ACQUIRED_PREVIOUS_OWNER_DISOWNED -> rebuild cache" loop.
+// IMPORTANT: Never delete .lock files or 0-byte FileChannel.lock() sentinel files!
+def userLoomCache = new File(gradle.gradleUserHomeDir, "caches/fabric-loom")
+def projectLoomCache = new File(settingsDir, ".gradle/loom-cache")
+[userLoomCache, projectLoomCache].each { dir ->
+    if (!dir.isDirectory()) return
+    dir.eachFileRecurse { f ->
+        if (!f.isFile() || !f.name.endsWith(".pid")) return
+        try {
+            def text = f.getText("UTF-8").trim()
+            if (!(text ==~ /\d+/)) return
+            long pid = Long.parseLong(text)
+            if (ProcessHandle.of(pid).map { it.isAlive() }.orElse(false)) return
+            f.delete()
+        } catch (Throwable ignored) {
+        }
+    }
+}
+def cachedManifest = new File(userLoomCache, "mojang_versions_manifest.json")
+def fallbackManifest = new File(projectLoomCache, "mojang_versions_manifest.json")
+if (fallbackManifest.isFile() && fallbackManifest.length() > 0L) {
+    if (!cachedManifest.isFile() || cachedManifest.length() == 0L) {
+        cachedManifest.parentFile.mkdirs()
+        java.nio.file.Files.copy(fallbackManifest.toPath(), cachedManifest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
+    cachedManifest.setLastModified(System.currentTimeMillis())
+}
+def cachedMcInfo = new File(userLoomCache, "1.21.1/mojang_minecraft_info.json")
+def fallbackMcInfo = new File(projectLoomCache, "mojang_minecraft_info.json")
+if (fallbackMcInfo.isFile() && fallbackMcInfo.length() > 0L) {
+    if (!cachedMcInfo.isFile() || cachedMcInfo.length() == 0L) {
+        cachedMcInfo.parentFile.mkdirs()
+        java.nio.file.Files.copy(fallbackMcInfo.toPath(), cachedMcInfo.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
+    cachedMcInfo.setLastModified(System.currentTimeMillis())
+}
+def props = gradle.startParameter.projectProperties
+if (props.containsKey("offline")) {
+    gradle.startParameter.offline = true
+} else if (!props.containsKey("online") && cachedManifest.isFile() && cachedMcInfo.isFile()) {
+    // B-25 note: Fabric Loom eagerly probes launchermeta.mojang.com during configuration unless
+    // Gradle offline mode is active, which fails TLS handshakes in restricted/sandboxed environments.
+    // Auto-enable offline mode whenever warm Loom metadata exists; pass -Ponline to force remote sync.
+    println("[habitrain_lottery] Local Loom cache detected; enabling Gradle offline mode (pass -Ponline to fetch remote artifacts).")
+    gradle.startParameter.offline = true
+}

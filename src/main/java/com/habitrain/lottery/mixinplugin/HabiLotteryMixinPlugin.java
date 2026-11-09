@@ -1,4 +1,4 @@
-package com.habitrain.lottery.mixin;
+package com.habitrain.lottery.mixinplugin;
 
 import org.objectweb.asm.tree.ClassNode;
 import org.slf4j.Logger;
@@ -14,6 +14,10 @@ import java.util.Set;
 
 /**
  * Error handler for habitrain_lottery's mixin configs.
+ *
+ * <p>Lives in {@code com.habitrain.lottery.mixinplugin} (outside Mixin's managed
+ * {@code com.habitrain.lottery.mixin} package) so Mixin never rejects it with
+ * {@code IllegalClassLoadError} ({@code B-11}).
  *
  * <p><b>Unified failure policy: our own mixins degrade, foreign mixins are
  * untouched.</b> Both lottery mixin configs declare {@code "required": false}, and

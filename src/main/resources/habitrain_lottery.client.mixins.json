@@ -1,7 +1,7 @@
 {
     "required": false,
     "package": "com.habitrain.lottery.mixin.client",
-    "plugin": "com.habitrain.lottery.mixin.HabiLotteryMixinPlugin",
+    "plugin": "com.habitrain.lottery.mixinplugin.HabiLotteryMixinPlugin",
     "compatibilityLevel": "JAVA_21",
     "client": [
         "MapIntroduceEmptyMixin",

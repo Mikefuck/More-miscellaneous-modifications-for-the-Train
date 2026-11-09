@@ -1,15 +1,14 @@
 package com.habitrain.lottery.api.player;
 
+import com.habitrain.lottery.api.skin.HabiSkinApi;
+import com.habitrain.lottery.api.skin.SkinDefinition;
 import com.habitrain.lottery.bridge.SkinStateCoordinator;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.SkinTypeKeys;
-import com.habitrain.lottery.storage.WorldLotteryPaths;
-import com.habitrain.lottery.api.skin.SkinDefinition;
-import com.habitrain.lottery.api.skin.HabiSkinApi;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,7 +54,7 @@ public final class HabiSkinPlayerApi {
 
     /** True when the player owns {@code type/skin}; {@code default} is always owned. */
     public static boolean isUnlocked(UUID uuid, String type, String skin) {
-        if (uuid == null) {
+        if (uuid == null || !ApiGuards.isOnServerThread()) {
             return false;
         }
         String canonical = canonicalType(type);
@@ -69,26 +68,26 @@ public final class HabiSkinPlayerApi {
         return PlayerLotteryStore.get().isSkinUnlocked(uuid, canonical, id);
     }
 
-    /** Sorted owned skin ids for one type (never includes {@code default}). */
+    /** Sorted immutable owned skin ids for one type (never includes {@code default}). */
     public static List<String> unlocked(UUID uuid, String type) {
         String canonical = canonicalType(type);
-        if (uuid == null || canonical == null) {
+        if (uuid == null || canonical == null || !ApiGuards.isOnServerThread()) {
             return List.of();
         }
         PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(uuid);
         return collect(data, canonical);
     }
 
-    /** All owned skins grouped by canonical type. */
+    /** All owned skins grouped by canonical type (immutable outer map and inner lists). */
     public static Map<String, List<String>> unlockedAll(UUID uuid) {
-        Map<String, List<String>> out = new LinkedHashMap<>();
-        if (uuid == null) {
-            return out;
+        if (uuid == null || !ApiGuards.isOnServerThread()) {
+            return Map.of();
         }
         PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(uuid);
         if (data == null || data.unlocked == null) {
-            return out;
+            return Map.of();
         }
+        Map<String, List<String>> out = new LinkedHashMap<>();
         for (String type : data.unlocked.keySet()) {
             if (type == null) {
                 continue;
@@ -102,29 +101,29 @@ public final class HabiSkinPlayerApi {
                 out.put(canonical, skins);
             }
         }
-        return out;
+        return out.isEmpty() ? Map.of() : Collections.unmodifiableMap(out);
     }
 
     /** Equipped skin id for one type, or {@value #DEFAULT_SKIN}. */
     public static String equipped(UUID uuid, String type) {
         String canonical = canonicalType(type);
-        if (uuid == null || canonical == null) {
+        if (uuid == null || canonical == null || !ApiGuards.isOnServerThread()) {
             return DEFAULT_SKIN;
         }
         String equipped = PlayerLotteryStore.get().getEquipped(uuid, canonical);
         return equipped == null || equipped.isBlank() ? DEFAULT_SKIN : equipped;
     }
 
-    /** All non-default equipped skins by canonical type. */
+    /** All non-default equipped skins by canonical type (immutable view). */
     public static Map<String, String> equippedAll(UUID uuid) {
-        Map<String, String> out = new LinkedHashMap<>();
-        if (uuid == null) {
-            return out;
+        if (uuid == null || !ApiGuards.isOnServerThread()) {
+            return Map.of();
         }
         PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(uuid);
         if (data == null || data.equipped == null) {
-            return out;
+            return Map.of();
         }
+        Map<String, String> out = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : data.equipped.entrySet()) {
             if (entry.getKey() == null || entry.getValue() == null || entry.getValue().isBlank()) {
                 continue;
@@ -134,7 +133,7 @@ public final class HabiSkinPlayerApi {
                 out.put(canonical, entry.getValue());
             }
         }
-        return out;
+        return out.isEmpty() ? Map.of() : Collections.unmodifiableMap(out);
     }
 
     /** Grants one player ownership of {@code type/skin}. */
@@ -163,8 +162,9 @@ public final class HabiSkinPlayerApi {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         String canonical = canonicalType(type);
         if (canonical == null) {
@@ -207,7 +207,8 @@ public final class HabiSkinPlayerApi {
 
     /** Reads this shooter's saved preference for a sound-capable skin. Server thread only. */
     public static boolean isCustomSoundEnabled(UUID uuid, String type, String skin) {
-        return uuid != null && com.habitrain.lottery.api.skin.SkinSounds.supports(type, skin)
+        return uuid != null && ApiGuards.isOnServerThread()
+                && com.habitrain.lottery.api.skin.SkinSounds.supports(type, skin)
                 && PlayerLotteryStore.get().isCustomSoundEnabled(uuid, type, skin);
     }
 
@@ -217,7 +218,8 @@ public final class HabiSkinPlayerApi {
      */
     public static HabiAssetResult setCustomSoundEnabled(UUID uuid, String type, String skin, boolean enabled) {
         if (uuid == null) return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
-        if (!WorldLotteryPaths.ready()) return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) return HabiAssetResult.fail(guard);
         var definition = HabiSkinApi.find(type, skin);
         if (definition.isEmpty()) return HabiAssetResult.fail(HabiFailure.UNKNOWN_SKIN);
         if (!com.habitrain.lottery.api.skin.SkinSounds.supports(type, skin))
@@ -247,8 +249,9 @@ public final class HabiSkinPlayerApi {
         if (uuid == null) {
             return HabiAssetResult.fail(HabiFailure.NOT_FOUND);
         }
-        if (!WorldLotteryPaths.ready()) {
-            return HabiAssetResult.fail(HabiFailure.NOT_READY);
+        HabiFailure guard = ApiGuards.checkServerThreadAndReady();
+        if (guard != null) {
+            return HabiAssetResult.fail(guard);
         }
         String canonical = canonicalType(type);
         if (canonical == null) {
@@ -296,7 +299,7 @@ public final class HabiSkinPlayerApi {
                 }
             }
         }
-        return ids.isEmpty() ? List.of() : new ArrayList<>(ids);
+        return ids.isEmpty() ? List.of() : List.copyOf(ids);
     }
 
     static String canonicalType(String raw) {

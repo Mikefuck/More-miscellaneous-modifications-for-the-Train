@@ -2,11 +2,13 @@ package com.habitrain.lottery.crate;
 
 import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.api.skin.SkinQuality;
+import com.habitrain.lottery.storage.WorldLotteryPaths;
 
-import java.util.List;
-import java.util.Map;
-import java.util.LinkedHashMap;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * The single source of truth for every crate and its matching key.
@@ -14,6 +16,10 @@ import java.util.Collections;
  * <p>The crate opener, warehouse registration, mail attachments and admin
  * mail composer all consume this catalogue. Add a new crate here once and it
  * becomes available to each of those systems.</p>
+ *
+ * <p>Server-side world entries and client-side S2C synced entries are stored in
+ * separate maps so client network packets or {@code DISCONNECT} events on an
+ * integrated server can never clobber live server authority ({@code I-04}).</p>
  */
 public final class CrateCatalog {
     private static final List<Entry> ENTRIES = List.of(
@@ -36,7 +42,10 @@ public final class CrateCatalog {
         for (Entry entry : ENTRIES) entries.put(entry.id(), entry);
         BUILTINS = Collections.unmodifiableMap(entries);
     }
-    private static volatile Map<String, Entry> current = BUILTINS;
+
+    private static volatile Map<String, Entry> serverCurrent = BUILTINS;
+    private static volatile boolean serverActive = false;
+    private static volatile Map<String, Entry> clientCurrent = BUILTINS;
 
     private CrateCatalog() {
     }
@@ -84,27 +93,73 @@ public final class CrateCatalog {
     /** Public candidates only; never exposes player balances, quotas or transaction data. */
     public record RewardPreview(String kind, String id, int amount, String quality) {}
 
+    private static Map<String, Entry> activeMap() {
+        return (serverActive || WorldLotteryPaths.ready()) ? serverCurrent : clientCurrent;
+    }
+
+    private static Map<String, Entry> buildImmutableMap(List<Entry> entries) {
+        Map<String, Entry> next = new LinkedHashMap<>();
+        if (entries != null) {
+            for (Entry entry : entries) {
+                if (entry != null && entry.id().matches("[a-z0-9_.-]{1,48}")) {
+                    next.put(entry.id(), entry);
+                }
+            }
+        }
+        return Collections.unmodifiableMap(next);
+    }
+
     public static List<Entry> entries() {
-        return List.copyOf(current.values());
+        return List.copyOf(activeMap().values());
     }
 
     public static List<Entry> builtins() { return ENTRIES; }
 
     public static List<Entry> publishedEntries() {
-        return current.values().stream().filter(e -> !e.archived()).toList();
+        return activeMap().values().stream().filter(e -> !e.archived()).toList();
+    }
+
+    /** Replaces the authoritative server world catalogue. */
+    public static synchronized void replaceServerEntries(List<Entry> entries) {
+        serverCurrent = buildImmutableMap(entries);
+        serverActive = true;
+    }
+
+    /** Resets the authoritative server world catalogue on server stop. */
+    public static synchronized void resetServer() {
+        serverCurrent = BUILTINS;
+        serverActive = false;
+    }
+
+    /** Replaces the client-only S2C synced catalogue without touching server authority. */
+    public static synchronized void replaceClientEntries(List<Entry> entries) {
+        clientCurrent = buildImmutableMap(entries);
+    }
+
+    /** Resets the client-only S2C synced catalogue. */
+    public static synchronized void resetClient() {
+        clientCurrent = BUILTINS;
     }
 
     /** Replaces the world catalogue on the server, or the public catalogue on a client. */
     public static synchronized void replaceEntries(List<Entry> entries) {
-        Map<String, Entry> next = new LinkedHashMap<>();
-        if (entries != null) for (Entry entry : entries) {
-            if (entry != null && entry.id().matches("[a-z0-9_.-]{1,48}")) next.put(entry.id(), entry);
+        if (serverActive || WorldLotteryPaths.ready()) {
+            replaceServerEntries(entries);
+        } else {
+            replaceClientEntries(entries);
         }
-        current = Collections.unmodifiableMap(next);
     }
 
+    /**
+     * Resets client state unconditionally, and resets server state only when no world is loaded
+     * so client {@code DISCONNECT} on an integrated server never wipes live server authority.
+     */
     public static synchronized void reset() {
-        current = BUILTINS;
+        clientCurrent = BUILTINS;
+        if (!WorldLotteryPaths.ready()) {
+            serverCurrent = BUILTINS;
+            serverActive = false;
+        }
     }
 
     public static Entry builtin(String id) {
@@ -112,15 +167,15 @@ public final class CrateCatalog {
     }
 
     public static Entry find(String id) {
-        return id == null ? null : current.get(id.trim().toLowerCase(java.util.Locale.ROOT));
+        return id == null ? null : activeMap().get(id.trim().toLowerCase(Locale.ROOT));
     }
 
     public static boolean isCrateItem(String itemId) {
-        return itemId != null && current.values().stream().anyMatch(e -> e.crateItemId().equals(itemId));
+        return itemId != null && activeMap().values().stream().anyMatch(e -> e.crateItemId().equals(itemId));
     }
 
     public static boolean isKeyItem(String itemId) {
-        return itemId != null && current.values().stream().anyMatch(e -> e.keyItemId().equals(itemId));
+        return itemId != null && activeMap().values().stream().anyMatch(e -> e.keyItemId().equals(itemId));
     }
 
     public static String crateItemId(String id) {

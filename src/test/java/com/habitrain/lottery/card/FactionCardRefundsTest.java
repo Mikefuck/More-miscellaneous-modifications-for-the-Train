@@ -8,6 +8,7 @@ import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
 import com.habitrain.lottery.storage.WorldLotteryPaths;
+import com.habitrain.lottery.time.LotteryDayClock;
 import io.wifi.starrailexpress.progression.ProgressionState.FactionCardType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -26,6 +30,7 @@ class FactionCardRefundsTest {
     private final PlayerLotteryStore store = PlayerLotteryStore.get();
 
     @BeforeEach void setup() {
+        LotteryDayClock.setTestClock(Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneOffset.UTC));
         store.reset();
         ActiveCardForces.clear();
         WorldLotteryPaths.initForTests(root);
@@ -39,6 +44,7 @@ class FactionCardRefundsTest {
         store.reset();
         ActiveCardForces.clear();
         WorldLotteryPaths.clear();
+        LotteryDayClock.resetTestClock();
     }
 
     @Test void oldRefundCannotConsumeLaterDifferentCard() throws Exception {

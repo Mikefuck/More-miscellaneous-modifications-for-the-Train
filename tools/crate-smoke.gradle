@@ -1,6 +1,6 @@
 // Test-only crate-opening recorder: drives the real production CrateOpenScreen / WarehouseScreen,
 // grabs one PNG per client tick and writes a real-timestamp manifest for ffmpeg.
-// Usage: ./gradlew -I tools/crate-smoke.gradle runClient --gradle-user-home ../.gradle-user-home --console=plain
+// Usage: ./gradlew -I tools/crate-smoke.gradle runClient --no-daemon --gradle-user-home ../.gradle-user-home --console=plain
 // Nothing under tools/ is ever part of the release jar (its own source set is only added to the client run classpath).
 allprojects {
 afterEvaluate { project ->

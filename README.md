@@ -22,11 +22,11 @@ Fabric 1.21.1 账户功能模组。当前版本提供独立皮肤目录与皮肤
 
 ## 安装与构建
 
-运行环境：Minecraft 1.21.1、Fabric Loader、Java 21、Fabric API、StarRailExpress 4.3.x 和 `habitrain_core >=2.0.19`。
+运行环境（全部为硬依赖）：Minecraft 1.21.1、Fabric Loader `>=0.18.1`、Java 21、Fabric API、StarRailExpress `~4.3.0` 和 `habitrain_core >=2.0.19`。本模组内嵌 `a_habitrain_prelaunch` 与 `habitrain_prelaunch_late` 两个客户端启动前更新选择器子模块，并对外提供 `habitrain_lottery_skin_api`、`habitrain_lottery_skin_effects`、`habitrain_lottery_player_api`、`habitrain_lottery_daily_api` 四项能力声明。
 
 ```text
 mods/
-  habitrain_lottery-1.1.60.jar
+  habitrain_lottery-1.1.63.jar
   star_rail_express-4.3.0.jar
   habitrain_core-2.0.19.jar
 ```
@@ -67,6 +67,12 @@ mods/
 备份时应保存整个世界账户目录，保留奖励意图和回执。旧版本遗留的处理中邮件、没有卡牌回执的未提交开箱无法证明哪些奖励已经到账，会保持锁定并在日志记录，需管理员核对后恢复；不能直接删除标记重新领取。
 
 阵营卡退款按每次用卡的独立编号持久化，旧退款不会覆盖下一次退款。启动和玩家登录时都会重试未完成退款；旧版 `faction-refunds/<uuid>.json` 仍会独立恢复。
+
+新的阵营卡和自选卡激活会先把恢复记录与每日次数预扣一起写入玩家主文件 `pendingCardUses`，再凭独立回执扣卡。异常重启自动退还有扣卡证据的卡片与对应次数；若已分配成功但核销写盘失败，也按自动退卡处理。正常对局内断线重连不会退还正在生效的预约。大厅阶段可激活阵营卡，轮抽开始后禁止新增激活，界面与上游指令使用同一服务端入口。
+
+管理员邮件保留负数附件扣资产功能。领取前先校验所有余额，余额不足时不会开始扣款；跨文件写盘中断后按回执继续，已扣或已发部分不会重复执行。未完成奖励的主账本回执单独保留，不受历史回执窗口裁剪影响。
+
+管理称号列表按页加载，大库存页面分片传输后再完整显示；本次管理协议更新要求客户端与服务端同步升级。构建脚本检测到本地 Loom 缓存时会提示并采用离线模式，需要下载依赖时显式传 `-Ponline`。
 
 ## 管理命令
 

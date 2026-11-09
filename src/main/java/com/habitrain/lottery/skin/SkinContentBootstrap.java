@@ -68,10 +68,12 @@ public final class SkinContentBootstrap {
             // that throws halfway through can be rolled back instead of leaving a
             // half-registered catalogue behind.
             try {
-                com.habitrain.lottery.api.skin.SkinRegistrationTransaction.run(provider,
-                        () -> container.getEntrypoint().registerSkins());
+                runProviderTransaction(provider, container.getEntrypoint());
                 HabiLotteryMod.LOGGER.info("Loaded skin API registrations from {}", provider);
             } catch (Throwable t) {
+                if (t instanceof OutOfMemoryError || t instanceof InternalError || t instanceof UnknownError) {
+                    throw (Error) t;
+                }
                 skippedProviders.add(provider);
                 HabiLotteryMod.LOGGER.error("Skin registrar {} failed; restored its previous registrations", provider, t);
             }
@@ -86,6 +88,18 @@ public final class SkinContentBootstrap {
         }
         externalEntrypointsLoaded = true;
         return HabiSkinApi.size();
+    }
+
+    /**
+     * Runs one provider's registrar inside a transaction after clearing its previous
+     * contributions so modified/removed definitions reload cleanly, while any exception
+     * rolls back both the partial replay and the cleared entries.
+     */
+    public static void runProviderTransaction(String provider, SkinRegistrar registrar) {
+        com.habitrain.lottery.api.skin.SkinRegistrationTransaction.run(provider, () -> {
+            HabiSkinApi.removeProvider(provider);
+            registrar.registerSkins();
+        });
     }
 
     /**

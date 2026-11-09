@@ -19,27 +19,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SkinStateCoordinator {
     private static final AtomicBoolean REGISTERED = new AtomicBoolean();
     /**
-     * Per-player fingerprint of the last inventory the mirror inspected. The fingerprint
-     * scans inventory every tick; an unchanged value skips the second scan that applies skins.
+     * Per-player fingerprint of the last inventory the mirror inspected after applying
+     * equipped skins ({@code I-17}). Only recorded once {@link PlayerLotteryStore}
+     * takeover is active and the player's profile is healthy, so early ticks never
+     * suppress retries.
      */
     private static final Map<UUID, Long> LAST_INVENTORY = new HashMap<>();
     private SkinStateCoordinator() {}
     public static void registerLifecycle() {
         if (!REGISTERED.compareAndSet(false, true)) return;
         ServerTickEvents.END_SERVER_TICK.register(server -> {
+            var store = PlayerLotteryStore.get();
+            if (!store.isTakeoverActive()) return;
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                if (!inventoryChanged(player)) continue;
-                InventorySkinApplier.applyAllEquipped(player, null);
+                if (player == null || store.isLoadFailed(player.getUUID())) continue;
+                long before = fingerprint(player);
+                Long previous = LAST_INVENTORY.get(player.getUUID());
+                if (previous != null && previous == before) continue;
+                int changed = InventorySkinApplier.applyAllEquipped(player, null);
+                if (!store.isLoadFailed(player.getUUID())) {
+                    LAST_INVENTORY.put(player.getUUID(), changed > 0 ? fingerprint(player) : before);
+                }
             }
         });
-    }
-
-    /** True when the player's inventory differs from the last observed one. */
-    private static boolean inventoryChanged(ServerPlayer player) {
-        if (player == null) return false;
-        long fingerprint = fingerprint(player);
-        Long previous = LAST_INVENTORY.put(player.getUUID(), fingerprint);
-        return previous == null || previous != fingerprint;
     }
 
     /**
@@ -48,6 +50,9 @@ public final class SkinStateCoordinator {
      */
     private static long fingerprint(ServerPlayer player) {
         long hash = 1125899906842597L;
+        DisguiseIdentityBridge.Resolution identity = DisguiseIdentityBridge.resolveServer(player);
+        hash = hash * 31 + identity.kind().ordinal();
+        hash = hash * 31 + Objects.hashCode(identity.targetUuid());
         int size = player.getInventory().getContainerSize();
         hash = hash * 31 + size;
         for (int i = 0; i < size; i++) {
@@ -83,12 +88,17 @@ public final class SkinStateCoordinator {
         var result = store.commitEquipped(player.getUUID(), type, skin);
         if (!result.committed()) return new CommitOutcome(false, result.failure(), type, skin, previous, 0);
         int changed = InventorySkinApplier.applyEquippedToInventory(player, type, skin);
+        LAST_INVENTORY.put(player.getUUID(), fingerprint(player));
         SkinNetwork.sync(player);
         return new CommitOutcome(true, "", type, skin, previous, changed);
     }
     public static ReassertOutcome reassertPlayer(ServerPlayer player, String reason) {
         if (player == null) return new ReassertOutcome(false, 0);
+        var store = PlayerLotteryStore.get();
         int changed = InventorySkinApplier.applyAllEquipped(player, null);
+        if (store.isTakeoverActive() && !store.isLoadFailed(player.getUUID())) {
+            LAST_INVENTORY.put(player.getUUID(), fingerprint(player));
+        }
         SkinNetwork.sync(player);
         return new ReassertOutcome(true, changed);
     }
@@ -97,7 +107,7 @@ public final class SkinStateCoordinator {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) reassertPlayer(player, reason);
         return server.getPlayerList().getPlayerCount();
     }
-    public static void clearPending(MinecraftServer server) {}
+    public static void clearPending(MinecraftServer server) { forgetAll(); }
     public record CommitOutcome(boolean committed, String failure, String type, String skin, String previous, int changedStacks) {}
     public record ReassertOutcome(boolean mirrored, int changedStacks) {}
 }

@@ -27,9 +27,12 @@ import java.util.stream.Stream;
 public final class LocalTitleStore {
     private static final LocalTitleStore INSTANCE = new LocalTitleStore();
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    static final int MAX_OFFLINE_CACHE = 256;
 
     private TitleCatalog catalogCache;
     private boolean catalogDirty;
+    private volatile boolean catalogCorrupt;
+    private volatile boolean catalogUsedBackup;
     private final Map<UUID, PlayerTitleData> playerCache = new ConcurrentHashMap<>();
     private final Map<UUID, Boolean> playerDirty = new ConcurrentHashMap<>();
     private final Map<UUID, JsonLoad.Status> playerLoadStatus = new ConcurrentHashMap<>();
@@ -75,9 +78,19 @@ public final class LocalTitleStore {
         }
     }
 
+    public boolean isCatalogCorrupt() {
+        return catalogCorrupt;
+    }
+
     public TitleCatalog loadCatalog() {
         if (!WorldLotteryPaths.ready()) return emptyCatalog();
-        if (catalogCache == null) catalogCache = readCatalogFromDisk();
+        if (catalogCache == null) {
+            TitleCatalog loaded = readCatalogFromDisk();
+            if (catalogCorrupt) {
+                return emptyCatalog();
+            }
+            catalogCache = loaded;
+        }
         return GSON.fromJson(GSON.toJson(catalogCache), TitleCatalog.class);
     }
 
@@ -86,6 +99,19 @@ public final class LocalTitleStore {
     }
 
     public boolean saveCatalogChecked(TitleCatalog catalog) {
+        if (!WorldLotteryPaths.ready()) {
+            return false;
+        }
+        if (catalogCache == null && !catalogCorrupt) {
+            TitleCatalog loaded = readCatalogFromDisk();
+            if (!catalogCorrupt) {
+                catalogCache = loaded;
+            }
+        }
+        if (catalogCorrupt) {
+            HabiLotteryMod.LOGGER.error("Refusing to overwrite corrupt title catalog");
+            return false;
+        }
         if (catalog == null) {
             catalog = emptyCatalog();
         }
@@ -129,6 +155,7 @@ public final class LocalTitleStore {
                 : (load.ok() ? JsonLoad.Status.OK : JsonLoad.Status.MISSING);
         playerCache.put(uuid, data);
         playerLoadStatus.put(uuid, status);
+        trimOfflineCache(uuid);
         return new PlayerLoad(data.copy(), status);
     }
 
@@ -144,14 +171,24 @@ public final class LocalTitleStore {
         if (data == null) {
             data = emptyPlayer();
         }
+        Set<String> incomingReceipts = data.rewardReceipts;
+        long baseRevision = existing.data() == null ? 0L : Math.max(0L, existing.data().revision);
         data = normalizePlayer(data.copy());
-        if (existing.data() != null && existing.data().rewardReceipts != null)
-            data.rewardReceipts.addAll(existing.data().rewardReceipts);
+        Set<String> mergedReceipts = new PlayerTitleData.BoundedReceipts();
+        if (existing.data() != null && existing.data().rewardReceipts != null) {
+            mergedReceipts.addAll(existing.data().rewardReceipts);
+        }
+        if (incomingReceipts != null) {
+            mergedReceipts.addAll(incomingReceipts);
+        }
+        data.rewardReceipts = mergedReceipts;
+        data.revision = baseRevision + 1L;
         data.updatedAt = System.currentTimeMillis();
         if (writePlayerToDisk(uuid, data)) {
             playerCache.put(uuid, data);
             playerDirty.remove(uuid);
             playerLoadStatus.put(uuid, JsonLoad.Status.OK);
+            trimOfflineCache(uuid);
             return true;
         }
         return false;
@@ -159,7 +196,7 @@ public final class LocalTitleStore {
 
     public boolean flushAll() {
         boolean ok = true;
-        if (catalogDirty && catalogCache != null) {
+        if (catalogDirty && catalogCache != null && !catalogCorrupt) {
             if (writeCatalogToDisk(catalogCache)) {
                 catalogDirty = false;
             } else {
@@ -185,12 +222,65 @@ public final class LocalTitleStore {
         return ok;
     }
 
+    private void trimOfflineCache(UUID protectedPlayer) {
+        if (playerCache.size() <= MAX_OFFLINE_CACHE) return;
+        Set<UUID> online = new HashSet<>();
+        var server = HabiLotteryMod.getServer();
+        if (server != null && server.getPlayerList() != null) {
+            for (var player : server.getPlayerList().getPlayers()) online.add(player.getUUID());
+        }
+        int offline = 0;
+        for (UUID id : playerCache.keySet()) if (!online.contains(id)) offline++;
+        for (UUID id : new ArrayList<>(playerCache.keySet())) {
+            if (offline <= MAX_OFFLINE_CACHE) break;
+            if (id.equals(protectedPlayer) || online.contains(id) || Boolean.TRUE.equals(playerDirty.get(id))) continue;
+            if (playerCache.remove(id) != null) {
+                playerLoadStatus.remove(id);
+                playerDirty.remove(id);
+                offline--;
+            }
+        }
+    }
+
+    int cachedPlayersForTest() { return playerCache.size(); }
+
+    public void onPlayerQuit(net.minecraft.server.level.ServerPlayer player) {
+        if (player != null) {
+            onPlayerQuit(player.getUUID());
+        }
+    }
+
+    public void onPlayerQuit(UUID uuid) {
+        if (uuid == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(playerDirty.get(uuid))) {
+            PlayerTitleData data = playerCache.get(uuid);
+            if (data != null && WorldLotteryPaths.ready()) {
+                if (!writePlayerToDisk(uuid, data)) {
+                    return;
+                }
+            }
+            playerDirty.remove(uuid);
+        }
+        playerCache.remove(uuid);
+        if (playerLoadStatus.get(uuid) != JsonLoad.Status.CORRUPT) {
+            playerLoadStatus.remove(uuid);
+        }
+    }
+
+    boolean isPlayerCachedForTest(UUID uuid) {
+        return uuid != null && playerCache.containsKey(uuid);
+    }
+
     public void reset() {
         if (WorldLotteryPaths.ready()) {
             flushAll();
         }
         catalogCache = null;
         catalogDirty = false;
+        catalogCorrupt = false;
+        catalogUsedBackup = false;
         playerCache.clear();
         playerDirty.clear();
         playerLoadStatus.clear();
@@ -371,9 +461,13 @@ public final class LocalTitleStore {
         }
         JsonLoad<TitleCatalog> load = AtomicJsonFiles.readJson(TitlePaths.catalogFile(), TitleCatalog.class, GSON);
         if (load.corrupt()) {
+            catalogCorrupt = true;
+            catalogUsedBackup = false;
             HabiLotteryMod.LOGGER.error("Corrupt title catalog, not treating as empty authority");
             return emptyCatalog();
         }
+        catalogCorrupt = false;
+        catalogUsedBackup = load.usedBackup();
         if (!load.ok()) {
             return emptyCatalog();
         }
@@ -388,14 +482,20 @@ public final class LocalTitleStore {
         if (!WorldLotteryPaths.ready()) {
             return false;
         }
+        if (catalogCorrupt) {
+            HabiLotteryMod.LOGGER.error("Refusing to write title catalog while marked corrupt");
+            return false;
+        }
         try {
             TitlePaths.ensureDirs();
         } catch (IOException e) {
             HabiLotteryMod.LOGGER.error("Failed creating title dirs", e);
             return false;
         }
-        boolean saved = AtomicJsonFiles.writeJson(TitlePaths.catalogFile(), catalog, GSON, false);
-        if (!saved) {
+        boolean saved = AtomicJsonFiles.writeJson(TitlePaths.catalogFile(), catalog, GSON, true, !catalogUsedBackup);
+        if (saved) {
+            catalogUsedBackup = false;
+        } else {
             HabiLotteryMod.LOGGER.error("Failed saving title catalog");
         }
         return saved;
@@ -439,13 +539,14 @@ public final class LocalTitleStore {
         if (data == null) {
             return emptyPlayer();
         }
+        data.revision = Math.max(0L, data.revision);
         if (data.owned == null) {
             data.owned = new ArrayList<>();
         }
         if (data.current == null) {
             data.current = "";
         }
-        if (data.rewardReceipts == null) data.rewardReceipts = new HashSet<>();
+        data.rewardReceipts = PlayerTitleData.asBoundedReceipts(data.rewardReceipts);
         return data;
     }
 }

@@ -81,7 +81,7 @@ public final class SkinEffectRuntime {
 
     private static void tagThrownProjectile(NoHeavyWaterInfluencedThrowableItemProjectile throwable) {
         ItemStack current = throwable.getItem();
-        if (current == null || current.isEmpty() || current.has(SkinComponents.SKIN)) {
+        if (current == null || current.isEmpty()) {
             return;
         }
         String type = SkinItems.typeOf(current);
@@ -91,20 +91,22 @@ public final class SkinEffectRuntime {
         if (!(throwable.getOwner() instanceof Player player)) {
             return;
         }
-        String skin = equippedSkin(player, type);
-        if (skin == null || !SkinEffects.allowsItem(type, skin, current.getItem())) {
-            return;
-        }
+        DisguiseIdentityBridge.Resolution identity = DisguiseIdentityBridge.resolveServer(player);
+        if (identity.kind() == DisguiseIdentityBridge.Kind.SELF && current.has(SkinComponents.SKIN)) return;
         // copyWithCount(1) mirrors vanilla's setItem contract; the component is the only
         // thing we add, so the projectile keeps rendering its own item.
         ItemStack styled = current.copyWithCount(1);
-        styled.set(SkinComponents.SKIN, type + "/" + skin);
+        // Existing components can predate this tick's disguise change. Resolve them
+        // again, including stripping both skin and sound in anonymous/skinless cases.
+        InventorySkinApplier.applyStackForIdentity(styled, type, player.getUUID(), identity);
         throwable.setItem(styled);
     }
 
-    private static String equippedSkin(Player player, String type) {
+    private static String equippedSkin(UUID id, String type) {
+        if (id == null) {
+            return null;
+        }
         PlayerLotteryStore store = PlayerLotteryStore.get();
-        UUID id = player.getUUID();
         if (!store.isTakeoverActive() || store.isLoadFailed(id)) {
             return null;
         }
@@ -138,9 +140,23 @@ public final class SkinEffectRuntime {
             return false;
         }
         Entity owner = projectile instanceof Projectile shot ? shot.getOwner() : null;
+        UUID effectiveOwnerUuid = owner == null ? null : owner.getUUID();
+        if (owner instanceof Player ownerPlayer) {
+            DisguiseIdentityBridge.Resolution identity = DisguiseIdentityBridge.resolveServer(ownerPlayer);
+            if (identity.kind() == DisguiseIdentityBridge.Kind.HIDDEN_ANONYMOUS) {
+                return false;
+            }
+            if (identity.kind() == DisguiseIdentityBridge.Kind.DISGUISED_AS) {
+                String expectedSkin = equippedSkin(identity.targetUuid(), typeOf(entry));
+                if (expectedSkin == null || !entry.equals(typeOf(entry) + "/" + expectedSkin)) {
+                    return false;
+                }
+                effectiveOwnerUuid = identity.targetUuid();
+            }
+        }
         SkinImpactContext context = new SkinImpactContext(
                 typeOf(entry), idOf(entry), level, projectile.position(), stack,
-                owner == null ? null : owner.getUUID(),
+                effectiveOwnerUuid,
                 level.getGameTime(),
                 (delayTicks, action) -> schedule(level.getServer(), delayTicks, action));
         return SkinEffects.dispatchImpact(context);
@@ -153,7 +169,23 @@ public final class SkinEffectRuntime {
      */
     public static boolean replacesVanillaBurst(Entity projectile) {
         ItemStack stack = itemStackOf(projectile);
-        return SkinEffects.replacesVanillaBurst(SkinItems.entryOf(stack), stack);
+        String entry = SkinItems.entryOf(stack);
+        if (entry == null) {
+            return false;
+        }
+        if (projectile instanceof Projectile shot && shot.getOwner() instanceof Player ownerPlayer) {
+            DisguiseIdentityBridge.Resolution identity = DisguiseIdentityBridge.resolveServer(ownerPlayer);
+            if (identity.kind() == DisguiseIdentityBridge.Kind.HIDDEN_ANONYMOUS) {
+                return false;
+            }
+            if (identity.kind() == DisguiseIdentityBridge.Kind.DISGUISED_AS) {
+                String expectedSkin = equippedSkin(identity.targetUuid(), typeOf(entry));
+                if (expectedSkin == null || !entry.equals(typeOf(entry) + "/" + expectedSkin)) {
+                    return false;
+                }
+            }
+        }
+        return SkinEffects.replacesVanillaBurst(entry, stack);
     }
 
     private static ItemStack itemStackOf(Entity entity) {

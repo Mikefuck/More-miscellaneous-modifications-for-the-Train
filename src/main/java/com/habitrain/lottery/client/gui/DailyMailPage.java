@@ -7,7 +7,7 @@ import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.LocalMailboxStore.MailJson;
 import com.habitrain.lottery.mail.MailCommandsCodec;
 import com.habitrain.lottery.mail.MailReward;
-import com.habitrain.lottery.network.LotteryNetwork;
+import com.habitrain.lottery.network.ClientLotteryState;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
@@ -18,11 +18,15 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 
-import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -30,7 +34,7 @@ import java.util.Set;
  * 每日任务终端的「邮箱」分页：左侧信件列表、右侧信件详情、底栏刷新 / 全部领取 / 领取所选。
  *
  * <p>数据仍走原邮箱的同步通道（{@code MailboxRequestC2S} → {@code MailboxListS2C} →
- * {@link LotteryNetwork.ClientLotteryState#mailboxJson}），领取仍发 {@code MailboxClaimC2S}，
+ * {@link ClientLotteryState#mailboxJson}），领取仍发 {@code MailboxClaimC2S}，
  * 这里只负责终端风格的呈现与交互。</p>
  */
 final class DailyMailPage {
@@ -39,6 +43,7 @@ final class DailyMailPage {
     /** 领取后在收到新列表前最多锁这么久，服务端无响应时按钮自行复活。 */
     private static final long CLAIM_TIMEOUT_MILLIS = 6_000L;
     private static final int FOOTER_H = 22;
+    private static final DateTimeFormatter MAIL_TIME_FMT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     private final Gson gson = new Gson();
     private final Runnable clickSound;
@@ -55,6 +60,10 @@ final class DailyMailPage {
     private int detailMaxScroll;
 
     private final Set<String> pending = new HashSet<>();
+    private final Map<Long, String> formattedTimeCache = new HashMap<>();
+    private final Map<MailJson, List<String>> rewardLabelCache = new IdentityHashMap<>();
+    private String rewardLabelCacheLang = "";
+    private ZoneId formattedTimeZone = ZoneId.systemDefault();
     private boolean pendingAll;
     private long pendingSince;
     private Component status;
@@ -72,7 +81,7 @@ final class DailyMailPage {
         this.clickSound = clickSound;
         this.afterClaim = afterClaim;
         // 先展示缓存，同时把版本号记下；随后到达的新列表才算「已同步」
-        this.lastVersion = LotteryNetwork.ClientLotteryState.mailboxVersion;
+        this.lastVersion = ClientLotteryState.mailboxVersion;
         parse();
         refreshButton = new MailButton(Component.translatable(KEY + "refresh"), false, this::refresh);
         claimAllButton = new MailButton(Component.translatable(KEY + "claim_all"), false, this::claimAll);
@@ -151,7 +160,7 @@ final class DailyMailPage {
 
     /** 每帧/每 tick 调用：新列表到达时重新解析，并结算等待中的领取。 */
     void sync() {
-        int version = LotteryNetwork.ClientLotteryState.mailboxVersion;
+        int version = ClientLotteryState.mailboxVersion;
         if (version == lastVersion) {
             return;
         }
@@ -190,8 +199,11 @@ final class DailyMailPage {
     }
 
     private void parse() {
+        formattedTimeCache.clear();
+        rewardLabelCache.clear();
+        formattedTimeZone = ZoneId.systemDefault();
         try {
-            String json = LotteryNetwork.ClientLotteryState.mailboxJson;
+            String json = ClientLotteryState.mailboxJson;
             List<MailJson> parsed = gson.fromJson(json == null || json.isBlank() ? "[]" : json,
                     new TypeToken<List<MailJson>>() {
                     }.getType());
@@ -237,8 +249,8 @@ final class DailyMailPage {
     }
 
     int unclaimedCount() {
-        return LotteryNetwork.ClientLotteryState.mailboxUnclaimed >= 0
-                ? LotteryNetwork.ClientLotteryState.mailboxUnclaimed : (int) mails.stream().filter(m -> !m.claimed).count();
+        return ClientLotteryState.mailboxUnclaimed >= 0
+                ? ClientLotteryState.mailboxUnclaimed : (int) mails.stream().filter(m -> !m.claimed).count();
     }
 
     void tick(long now) {
@@ -254,10 +266,10 @@ final class DailyMailPage {
     // =====================================================================
 
     private void changePage(boolean next) {
-        int offset = next ? LotteryNetwork.ClientLotteryState.mailboxNext
+        int offset = next ? ClientLotteryState.mailboxNext
                 : pageHistory.isEmpty() ? 0 : pageHistory.peekLast();
         if (offset < 0 || !LotteryClientNetwork.clientRequestMailboxPage(offset)) return;
-        if (next) pageHistory.addLast(LotteryNetwork.ClientLotteryState.mailboxOffset);
+        if (next) pageHistory.addLast(ClientLotteryState.mailboxOffset);
         else if (!pageHistory.isEmpty()) pageHistory.removeLast();
         listScroll = detailScroll = 0;
         refreshing = true;
@@ -316,8 +328,8 @@ final class DailyMailPage {
     }
 
     private void refreshButtons() {
-        previousButton.active = !refreshing && LotteryNetwork.ClientLotteryState.mailboxOffset > 0;
-        nextButton.active = !refreshing && LotteryNetwork.ClientLotteryState.mailboxNext >= 0;
+        previousButton.active = !refreshing && ClientLotteryState.mailboxOffset > 0;
+        nextButton.active = !refreshing && ClientLotteryState.mailboxNext >= 0;
         MailJson mail = selected();
         boolean busy = pendingAll || (mail != null && pending.contains(mail.id));
         String key;
@@ -439,9 +451,9 @@ final class DailyMailPage {
         }
         drawHeader(g, font, l);
         drawList(g, font, mouseX, mouseY, now);
-        int start = mails.isEmpty() ? 0 : LotteryNetwork.ClientLotteryState.mailboxOffset + 1;
-        String range = start + "–" + (LotteryNetwork.ClientLotteryState.mailboxOffset + mails.size())
-                + " / " + Math.max(mails.size(), LotteryNetwork.ClientLotteryState.mailboxTotal);
+        int start = mails.isEmpty() ? 0 : ClientLotteryState.mailboxOffset + 1;
+        String range = start + "–" + (ClientLotteryState.mailboxOffset + mails.size())
+                + " / " + Math.max(mails.size(), ClientLotteryState.mailboxTotal);
         DailyBoardTheme.text(g, font, DailyBoardTheme.fit(font, range, geo.list.w() - 56),
                 geo.list.x() + 28, geo.list.bottom() + 9, DailyBoardTheme.INK_SOFT);
         drawDetail(g, font, now);
@@ -480,16 +492,19 @@ final class DailyMailPage {
             return;
         }
         GuiFx.beginClip(g, list.x() - 1, list.y(), list.right() + 1, list.bottom());
-        for (int i = 0; i < mails.size(); i++) {
-            int y = list.y() + i * geo.stride - (int) Math.round(listScroll);
-            if (y + geo.rowH < list.y() || y > list.bottom()) {
-                continue;
+        try {
+            for (int i = 0; i < mails.size(); i++) {
+                int y = list.y() + i * geo.stride - (int) Math.round(listScroll);
+                if (y + geo.rowH < list.y() || y > list.bottom()) {
+                    continue;
+                }
+                BoardRect r = new BoardRect(list.x(), y, list.w(), geo.rowH);
+                boolean hover = list.contains(mouseX, mouseY) && r.contains(mouseX, mouseY);
+                drawRow(g, font, r, mails.get(i), hover);
             }
-            BoardRect r = new BoardRect(list.x(), y, list.w(), geo.rowH);
-            boolean hover = list.contains(mouseX, mouseY) && r.contains(mouseX, mouseY);
-            drawRow(g, font, r, mails.get(i), hover);
+        } finally {
+            GuiFx.endClip(g);
         }
-        GuiFx.endClip(g);
         DailyBoardTheme.scrollbar(g, list.right() + 3, list, listScroll, maxListScroll());
     }
 
@@ -556,7 +571,7 @@ final class DailyMailPage {
         y += 3;
 
         // 附件奖励：金色胶囊，自动换行
-        List<String> rewards = rewardLabels(mail);
+        List<String> rewards = cachedRewardLabels(mail);
         DailyBoardTheme.text(g, font, Component.translatable(KEY + "detail.rewards").getString(), x, y,
                 DailyBoardTheme.MUTED);
         y += 11;
@@ -601,14 +616,17 @@ final class DailyMailPage {
         int color = mail.content == null || mail.content.isBlank() ? DailyBoardTheme.FAINT
                 : DailyBoardTheme.INK_SOFT;
         GuiFx.beginClip(g, body.x(), body.y(), body.right(), body.bottom());
-        for (int i = 0; i < lines.size(); i++) {
-            int ly = body.y() + i * 10 - (int) detailScroll;
-            if (ly + 10 < body.y() || ly > body.bottom()) {
-                continue;
+        try {
+            for (int i = 0; i < lines.size(); i++) {
+                int ly = body.y() + i * 10 - (int) detailScroll;
+                if (ly + 10 < body.y() || ly > body.bottom()) {
+                    continue;
+                }
+                g.drawString(font, lines.get(i), body.x(), ly, color, false);
             }
-            g.drawString(font, lines.get(i), body.x(), ly, color, false);
+        } finally {
+            GuiFx.endClip(g);
         }
-        GuiFx.endClip(g);
         DailyBoardTheme.scrollbar(g, body.right() - 2, body, detailScroll, detailMaxScroll);
     }
 
@@ -683,6 +701,27 @@ final class DailyMailPage {
                 ? Component.translatable(KEY + "system").getString() : mail.sender;
     }
 
+    private List<String> cachedRewardLabels(MailJson mail) {
+        if (mail == null) {
+            return List.of();
+        }
+        String currentLang = currentLanguageCode();
+        if (!Objects.equals(currentLang, rewardLabelCacheLang)) {
+            rewardLabelCache.clear();
+            rewardLabelCacheLang = currentLang;
+        }
+        return rewardLabelCache.computeIfAbsent(mail, DailyMailPage::rewardLabels);
+    }
+
+    private static String currentLanguageCode() {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc == null || mc.getLanguageManager() == null) {
+            return "";
+        }
+        String selected = mc.getLanguageManager().getSelected();
+        return selected == null ? "" : selected;
+    }
+
     private static List<String> rewardLabels(MailJson mail) {
         List<String> out = new ArrayList<>();
         for (MailReward r : MailCommandsCodec.decode(mail.commands)) {
@@ -737,11 +776,17 @@ final class DailyMailPage {
         return out;
     }
 
-    private static String formatTime(long millis) {
+    private String formatTime(long millis) {
         if (millis <= 0) {
             return "—";
         }
-        return new SimpleDateFormat("MM-dd HH:mm").format(new Date(millis));
+        ZoneId currentZone = ZoneId.systemDefault();
+        if (!Objects.equals(currentZone, formattedTimeZone)) {
+            formattedTimeCache.clear();
+            formattedTimeZone = currentZone;
+        }
+        return formattedTimeCache.computeIfAbsent(millis,
+                ts -> Instant.ofEpochMilli(ts).atZone(currentZone).format(MAIL_TIME_FMT));
     }
 
     // =====================================================================

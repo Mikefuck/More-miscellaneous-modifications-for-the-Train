@@ -20,5 +20,13 @@
     "depends": {
         "fabricloader": ">=0.18.1",
         "java": ">=21"
+    },
+    "custom": {
+        "modmenu": {
+            "parent": "habitrain_lottery",
+            "badges": [
+                "library"
+            ]
+        }
     }
 }

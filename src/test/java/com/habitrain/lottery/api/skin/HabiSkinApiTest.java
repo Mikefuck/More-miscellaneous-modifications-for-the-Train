@@ -1,12 +1,16 @@
 package com.habitrain.lottery.api.skin;
 
-
+import com.habitrain.lottery.testutil.TestRegistryResetExtension;
+import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ExtendWith(TestRegistryResetExtension.class)
 class HabiSkinApiTest {
 
     @Test
@@ -81,5 +85,41 @@ class HabiSkinApiTest {
         assertFalse(HabiSkinApi.unregister("hat", "habitrain_api_test_hat"));
         assertTrue(HabiSkinApi.find("hat", "habitrain_api_test_hat").isEmpty());
         assertFalse(HabiSkinApi.unregister("hat", null));
+    }
+
+    @Test
+    void skinItemsProviderRollbackAndGetSkinsOrderArePreserved() {
+        ResourceLocation itemA = ResourceLocation.parse("habitrain_lottery:test_custom_weapon");
+        ResourceLocation itemB = ResourceLocation.parse("habitrain_lottery:test_other_weapon");
+
+        SkinRegistrationTransaction.run("provider_a", () -> {
+            SkinItems.bindItem(itemA, "knife");
+            HabiSkinApi.register(SkinDefinition.builder("knife", "zeta_blade", 1).build());
+            HabiSkinApi.register(SkinDefinition.builder("knife", "alpha_blade", 2).build());
+            HabiSkinApi.register(SkinDefinition.builder("knife", "mu_blade", 3).build());
+        });
+        SkinRegistrationTransaction.run("provider_b", () -> SkinItems.bindItem(itemB, "bat"));
+
+        assertEquals(List.of("zeta_blade", "alpha_blade", "mu_blade"),
+                List.copyOf(HabiSkinApi.getSkins("knife").keySet()),
+                "HabiSkinApi.getSkins must preserve deterministic registration order");
+        assertEquals("knife", SkinItems.bindings().get(itemA));
+        assertEquals("bat", SkinItems.bindings().get(itemB));
+
+        // Removing provider_a must release itemA so it can rebind to a different type, while preserving itemB!
+        assertEquals(3, HabiSkinApi.removeProvider("provider_a"));
+        assertNull(SkinItems.bindings().get(itemA));
+        assertEquals("bat", SkinItems.bindings().get(itemB));
+
+        SkinRegistrationTransaction.run("provider_a", () -> SkinItems.bindItem(itemA, "revolver"));
+        assertEquals("revolver", SkinItems.bindings().get(itemA));
+
+        // Transactional rollback must undo a failed bindItem inside SkinRegistrationTransaction
+        ResourceLocation itemRollback = ResourceLocation.parse("habitrain_lottery:test_rollback_weapon");
+        assertThrows(IllegalStateException.class, () -> SkinRegistrationTransaction.run("provider_rollback", () -> {
+            SkinItems.bindItem(itemRollback, "grenade");
+            throw new IllegalStateException("abort registration");
+        }));
+        assertNull(SkinItems.bindings().get(itemRollback));
     }
 }

@@ -1,12 +1,14 @@
 package com.habitrain.lottery.network;
 
 import com.habitrain.lottery.HabiLotteryMod;
+import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.mail.MailComposeLimits;
 import com.habitrain.lottery.mail.MailDraft;
 import com.habitrain.lottery.mail.MailReward;
 import com.habitrain.lottery.mail.MailService;
 import com.habitrain.lottery.mail.MailTargetParse;
-import com.habitrain.lottery.crate.CrateCatalog;
+import com.habitrain.lottery.mixin.StoredUserEntryAccessor;
+import com.habitrain.lottery.storage.WorldLotteryPaths;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
@@ -16,16 +18,22 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
+
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * OP mail compose packet: target mode + rewards.
@@ -63,6 +71,10 @@ public record MailComposeC2SPayload(
         public static final int GREEN_APPLES = 6;
         public static final int CRATE = 7;
         public static final int KEY = 8;
+    }
+
+    /** Summary delivered back to the server thread once a background mail batch finishes. */
+    record DispatchSummary(List<UUID> succeededRecipients, int okCount, int failCount) {
     }
 
     private static void write(RegistryFriendlyByteBuf buf, MailComposeC2SPayload value) {
@@ -141,35 +153,71 @@ public record MailComposeC2SPayload(
         return new MailDraft(sender, title, content, expiresAt, list);
     }
 
+    /**
+     * Deduplicates target names case-insensitively while preserving first-seen casing and order.
+     */
+    public static List<String> deduplicateTargets(List<String> rawTargets) {
+        if (rawTargets == null || rawTargets.isEmpty()) {
+            return List.of();
+        }
+        Set<String> seenLower = new LinkedHashSet<>();
+        List<String> unique = new ArrayList<>(rawTargets.size());
+        for (String raw : rawTargets) {
+            if (raw == null) {
+                continue;
+            }
+            String trimmed = raw.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            if (seenLower.add(trimmed.toLowerCase(Locale.ROOT))) {
+                unique.add(trimmed);
+            }
+        }
+        return Collections.unmodifiableList(unique);
+    }
+
     public static void handle(ServerPlayer player, MailComposeC2SPayload payload) {
-        if (player == null) {
+        if (player == null || player.hasDisconnected()) {
             return;
         }
-        if (!LotteryNetwork.isOp(player)) {
-            player.sendSystemMessage(Component.literal("§c[邮箱] 需要 OP 才能发信"));
+        if (!AdminAuth.isOpOrSingleplayerOwner(player)) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.need_op"));
             return;
         }
-        if (LotteryNetwork.gateBlocked(player)) {
-            player.sendSystemMessage(Component.literal("§c当前为未授权的访问：未获得服务器授权修改配置"));
+        if (!AdminAuth.isAuthorizedOp(player)) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.admin.unauthorized_config"));
             return;
         }
-        if (payload.title == null || payload.title.isBlank()) {
-            player.sendSystemMessage(Component.literal("§c[邮箱] 标题不能为空"));
+        if (!WorldLotteryPaths.ready()) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.storage_not_ready"));
+            return;
+        }
+        if (payload == null || payload.title == null || payload.title.isBlank()) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.title_blank"));
             return;
         }
         MailDraft draft;
         try {
             draft = payload.toDraft();
             for (MailReward reward : draft.rewards()) {
-                if (reward.kind() == MailReward.Kind.SKIN && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty())
-                    throw new IllegalArgumentException("未注册的皮肤 " + reward.factionType());
+                if (reward.kind() == MailReward.Kind.SKIN
+                        && com.habitrain.lottery.api.skin.HabiSkinApi.fromEntry(reward.factionType()).isEmpty()) {
+                    player.sendSystemMessage(Component.translatable(
+                            "message.habitrain_lottery.mail.compose.unknown_skin", reward.factionType()));
+                    return;
+                }
                 if ((reward.kind() == MailReward.Kind.CRATE || reward.kind() == MailReward.Kind.KEY)
                         && (CrateCatalog.find(reward.factionType()) == null
-                        || CrateCatalog.find(reward.factionType()).archived()))
-                    throw new IllegalArgumentException("未注册的箱子或钥匙 " + reward.factionType());
+                        || CrateCatalog.find(reward.factionType()).archived())) {
+                    player.sendSystemMessage(Component.translatable(
+                            "message.habitrain_lottery.mail.compose.unknown_crate", reward.factionType()));
+                    return;
+                }
             }
         } catch (IllegalArgumentException invalid) {
-            player.sendSystemMessage(Component.literal("§c[邮箱] 附件无效：" + invalid.getMessage()));
+            player.sendSystemMessage(Component.translatable(
+                    "message.habitrain_lottery.mail.compose.invalid_attachment", String.valueOf(invalid.getMessage())));
             return;
         }
         // 全员发放模式默认带 30 天限时：未填写（0）时兜底为 30 天，填写了其它正数则尊重管理员设置。
@@ -179,111 +227,214 @@ public record MailComposeC2SPayload(
                             + DEFAULT_ALL_PLAYER_EXPIRY_DAYS * 24L * 60L * 60L * 1000L,
                     draft.rewards());
         }
+        if (MailDispatchExecutor.isBusy()) {
+            player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.busy"));
+            return;
+        }
+
         MinecraftServer server = player.server;
-        int ok = 0;
-        int fail = 0;
+        UUID senderUuid = player.getUUID();
+        MailDraft finalDraft = draft;
+
         switch (payload.targetMode) {
             case MODE_ALL_PLAYERS -> {
-                Map<UUID, String> recipients;
-                try { recipients = collectAllKnownPlayers(server); }
-                catch (RuntimeException failure) {
-                    HabiLotteryMod.LOGGER.error("Unable to collect all mail recipients", failure);
-                    player.sendSystemMessage(Component.literal("§c[邮箱] 收件人读取失败，未发送全员邮件"));
+                Map<UUID, String> seedRecipients;
+                try {
+                    seedRecipients = snapshotOnlineAndWhitelistedPlayers(server);
+                } catch (RuntimeException failure) {
+                    HabiLotteryMod.LOGGER.error("Unable to snapshot mail whitelist/online recipients", failure);
+                    player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.recipients_failed"));
                     return;
                 }
-                for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-                    if (MailService.send(p, draft)) {
-                        ok++;
-                    } else {
-                        fail++;
+                Path playerDataDir = server.getWorldPath(LevelResource.PLAYER_DATA_DIR);
+                Path lotteryPlayersDir = WorldLotteryPaths.playersDir();
+                Path mailboxDir = com.habitrain.lottery.storage.MetaFeaturePaths.mailDir();
+                Object profileCache = server.getProfileCache();
+                boolean submitted = MailDispatchExecutor.submit(() -> {
+                    Map<UUID, String> allRecipients = new LinkedHashMap<>(seedRecipients);
+                    try {
+                        collectDiskKnownPlayers(playerDataDir, lotteryPlayersDir, profileCache, allRecipients);
+                    } catch (RuntimeException failure) {
+                        HabiLotteryMod.LOGGER.error("Unable to collect all mail recipients on background thread", failure);
+                        server.execute(() -> {
+                            ServerPlayer senderPlayer = server.getPlayerList().getPlayer(senderUuid);
+                            if (senderPlayer != null && !senderPlayer.hasDisconnected()) {
+                                senderPlayer.sendSystemMessage(
+                                        Component.translatable("message.habitrain_lottery.mail.compose.recipients_failed"));
+                            }
+                        });
+                        return;
                     }
-                }
-                // 离线部分：白名单（含从未进服）+ 曾进服玩家（playerdata），按 UUID 去重。
-                // 在线玩家已在上面发过，这里跳过，避免重复发放。
-                for (Map.Entry<UUID, String> entry : recipients.entrySet()) {
-                    UUID uuid = entry.getKey();
-                    if (server.getPlayerList().getPlayer(uuid) != null) {
-                        continue;
-                    }
-                    if (MailService.sendOffline(uuid, entry.getValue(), draft)) {
-                        ok++;
-                    } else {
-                        fail++;
-                    }
+                    DispatchSummary summary = writeMailBatch(allRecipients, 0, finalDraft, mailboxDir);
+                    server.execute(() -> notifyBatchFinished(server, senderUuid, finalDraft, summary));
+                });
+                if (!submitted) {
+                    player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.busy"));
                 }
             }
             case MODE_OFFLINE_NAME -> {
                 boolean onlineMode = server.usesAuthentication();
-                for (String name : payload.targets) {
-                    if (name == null || name.isBlank()) {
-                        continue;
-                    }
+                List<String> uniqueNames = deduplicateTargets(payload.targets);
+                Map<UUID, String> resolved = new LinkedHashMap<>();
+                int preFail = 0;
+                for (String name : uniqueNames) {
                     ServerPlayer online = server.getPlayerList().getPlayerByName(name);
                     if (online != null) {
-                        if (MailService.send(online, draft)) {
-                            ok++;
-                        } else {
-                            fail++;
-                        }
+                        resolved.putIfAbsent(online.getUUID(), online.getGameProfile().getName());
                         continue;
                     }
-                    Optional<UUID> cacheHit = lookupProfileUuid(server, name);
+                    // Pure in-memory lookup: NEVER invoke GameProfileCache#get(String) on the Server Thread!
+                    Optional<UUID> cacheHit = ProfileCacheLookup.lookupCachedUuid(server, name);
                     Optional<UUID> uuid = resolveOfflineUuid(onlineMode, cacheHit, name);
                     if (uuid.isEmpty()) {
                         if (onlineMode) {
-                            player.sendSystemMessage(Component.literal(
-                                    "§c[邮箱] 正版服无法解析离线玩家 UUID：" + name + "（档案缓存未命中）"));
+                            player.sendSystemMessage(Component.translatable(
+                                    "message.habitrain_lottery.mail.compose.unresolved_online_mode", name));
                         } else {
-                            player.sendSystemMessage(Component.literal("§c[邮箱] 无法解析玩家：" + name));
+                            player.sendSystemMessage(Component.translatable(
+                                    "message.habitrain_lottery.mail.compose.unresolved_player", name));
                         }
-                        fail++;
+                        preFail++;
                         continue;
                     }
-                    if (MailService.sendOffline(uuid.get(), name, draft)) {
-                        ok++;
-                    } else {
-                        fail++;
-                    }
+                    resolved.putIfAbsent(uuid.get(), name);
+                }
+                if (resolved.isEmpty()) {
+                    player.sendSystemMessage(Component.translatable(
+                            "message.habitrain_lottery.mail.compose.sent_summary", 0, preFail));
+                    return;
+                }
+                int initialFailures = preFail;
+                if (!dispatchResolvedBatch(resolved, initialFailures, finalDraft, server,
+                        summary -> notifyBatchFinished(server, senderUuid, finalDraft, summary))) {
+                    player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.busy"));
                 }
             }
             default -> {
-                for (String name : payload.targets) {
-                    if (name == null || name.isBlank()) {
-                        continue;
-                    }
+                List<String> uniqueNames = deduplicateTargets(payload.targets);
+                Map<UUID, String> resolved = new LinkedHashMap<>();
+                int preFail = 0;
+                for (String name : uniqueNames) {
                     ServerPlayer online = server.getPlayerList().getPlayerByName(name);
-                    if (online != null && MailService.send(online, draft)) {
-                        ok++;
+                    if (online != null) {
+                        resolved.putIfAbsent(online.getUUID(), online.getGameProfile().getName());
                     } else {
-                        fail++;
+                        preFail++;
                     }
+                }
+                if (resolved.isEmpty()) {
+                    player.sendSystemMessage(Component.translatable(
+                            "message.habitrain_lottery.mail.compose.sent_summary", 0, preFail));
+                    return;
+                }
+                int initialFailures = preFail;
+                if (!dispatchResolvedBatch(resolved, initialFailures, finalDraft, server,
+                        summary -> notifyBatchFinished(server, senderUuid, finalDraft, summary))) {
+                    player.sendSystemMessage(Component.translatable("message.habitrain_lottery.mail.compose.busy"));
                 }
             }
         }
-        player.sendSystemMessage(Component.literal("§a[邮箱] 发送完成：成功 " + ok + "，失败 " + fail));
     }
 
     /**
-     * 收集服务器已知的全部玩家（uuid → 名字提示），用于"所有玩家"模式：
-     * <ol>
-     *   <li>白名单条目 —— 覆盖从未进服但已被登记的玩家；</li>
-     *   <li>{@code world/playerdata} 目录 —— 覆盖所有曾进服过的玩家。</li>
-     * </ol>
-     * 在线玩家不在此集合中处理（调用方单独发送并跳过）。
+     * Package-visible & unit-testable helper: dispatches resolved {@code uuid -> nameHint} mailbox
+     * writes on {@link MailDispatchExecutor} and posts {@link DispatchSummary} onto {@code callbackExecutor}.
      */
-    private static Map<UUID, String> collectAllKnownPlayers(MinecraftServer server) {
+    static boolean dispatchResolvedBatch(
+            Map<UUID, String> recipients,
+            int initialFailures,
+            MailDraft draft,
+            Executor callbackExecutor,
+            Consumer<DispatchSummary> onComplete
+    ) {
+        Map<UUID, String> snapshot = new LinkedHashMap<>(recipients);
+        Path mailboxDir = com.habitrain.lottery.storage.MetaFeaturePaths.mailDir();
+        return MailDispatchExecutor.submit(() -> {
+            DispatchSummary summary = writeMailBatch(snapshot, initialFailures, draft, mailboxDir);
+            callbackExecutor.execute(() -> onComplete.accept(summary));
+        });
+    }
+
+    private static DispatchSummary writeMailBatch(
+            Map<UUID, String> recipients,
+            int initialFailures,
+            MailDraft draft,
+            Path mailboxDir
+    ) {
+        List<UUID> succeeded = new ArrayList<>(recipients.size());
+        int fail = Math.max(0, initialFailures);
+        for (Map.Entry<UUID, String> entry : recipients.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) {
+                fail = Math.max(0, initialFailures) + recipients.size() - succeeded.size();
+                break;
+            }
+            UUID uuid = entry.getKey();
+            if (uuid == null) {
+                fail++;
+                continue;
+            }
+            if (mailboxDir != null && MailService.sendOfflineTo(
+                    WorldLotteryPaths.resolveChildFile(mailboxDir, uuid + ".json"), uuid, entry.getValue(), draft)) {
+                succeeded.add(uuid);
+            } else {
+                fail++;
+            }
+        }
+        return new DispatchSummary(Collections.unmodifiableList(succeeded), succeeded.size(), fail);
+    }
+
+    private static void notifyBatchFinished(
+            MinecraftServer server,
+            UUID senderUuid,
+            MailDraft draft,
+            DispatchSummary summary
+    ) {
+        var playerList = server.getPlayerList();
+        if (playerList == null) {
+            return;
+        }
+        Component recipientNotice = Component.translatable(
+                "message.habitrain_lottery.mail.received", draft.title());
+        for (UUID recipientId : summary.succeededRecipients()) {
+            ServerPlayer online = playerList.getPlayer(recipientId);
+            if (online != null && !online.hasDisconnected()) {
+                online.sendSystemMessage(recipientNotice);
+                LotteryNetwork.sendMailboxList(online);
+            }
+        }
+        ServerPlayer sender = playerList.getPlayer(senderUuid);
+        if (sender != null && !sender.hasDisconnected()) {
+            sender.sendSystemMessage(Component.translatable(
+                    "message.habitrain_lottery.mail.compose.sent_summary",
+                    summary.okCount(), summary.failCount()));
+        }
+    }
+
+    /**
+     * Snapshots online players and whitelist entries on the Server Thread using purely in-memory
+     * structures (never invoking blocking Mojang HTTPS requests).
+     */
+    private static Map<UUID, String> snapshotOnlineAndWhitelistedPlayers(MinecraftServer server) {
         Map<UUID, String> players = new LinkedHashMap<>();
+        boolean onlineMode = server.usesAuthentication();
+        for (ServerPlayer online : server.getPlayerList().getPlayers()) {
+            if (online != null && online.getUUID() != null) {
+                String name = online.getGameProfile().getName();
+                players.putIfAbsent(online.getUUID(),
+                        name == null || name.isBlank() ? shortUuid(online.getUUID()) : name);
+            }
+        }
         try {
             for (var entry : server.getPlayerList().getWhiteList().getEntries()) {
-                GameProfile profile = (GameProfile) ((com.habitrain.lottery.mixin.StoredUserEntryAccessor) entry).habitrain$getUser();
+                GameProfile profile = (GameProfile) ((StoredUserEntryAccessor) entry).habitrain$getUser();
                 if (profile == null) {
                     continue;
                 }
                 UUID id = profile.getId();
                 String name = profile.getName();
                 if (id == null && name != null) {
-                    id = resolveOfflineUuid(server.usesAuthentication(),
-                            lookupProfileUuid(server, name), name).orElse(null);
+                    id = resolveOfflineUuid(onlineMode,
+                            ProfileCacheLookup.lookupCachedUuid(server, name), name).orElse(null);
                 }
                 if (id == null) {
                     continue;
@@ -293,15 +444,42 @@ public record MailComposeC2SPayload(
         } catch (Throwable t) {
             throw new IllegalStateException("白名单读取失败，全员发送已取消", t);
         }
+        return players;
+    }
+
+    /**
+     * Scans {@code world/playerdata} (and {@code habitrain_lottery/players}) on the background
+     * dispatch thread so directory listing and UUID discovery never stall the Server Thread.
+     */
+    private static void collectDiskKnownPlayers(
+            Path playerDataDir,
+            Path lotteryPlayersDir,
+            Object profileCache,
+            Map<UUID, String> players
+    ) {
         try {
-            Path dataDir = server.getWorldPath(LevelResource.PLAYER_DATA_DIR);
-            if (Files.isDirectory(dataDir)) {
-                try (var stream = Files.list(dataDir)) {
+            if (playerDataDir != null && Files.isDirectory(playerDataDir)) {
+                try (var stream = Files.list(playerDataDir)) {
                     stream.filter(p -> p.getFileName().toString().endsWith(".dat")).forEach(p -> {
                         String fileName = p.getFileName().toString();
                         try {
                             UUID id = UUID.fromString(fileName.substring(0, fileName.length() - 4));
-                            players.putIfAbsent(id, resolveKnownName(server, id));
+                            players.putIfAbsent(id, resolveCachedName(profileCache, id));
+                        } catch (IllegalArgumentException ignored) {
+                        }
+                    });
+                }
+            }
+            if (lotteryPlayersDir != null && Files.isDirectory(lotteryPlayersDir)) {
+                try (var stream = Files.list(lotteryPlayersDir)) {
+                    stream.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(p -> {
+                        String fileName = p.getFileName().toString();
+                        if (fileName.length() != 41) {
+                            return;
+                        }
+                        try {
+                            UUID id = UUID.fromString(fileName.substring(0, 36));
+                            players.putIfAbsent(id, resolveCachedName(profileCache, id));
                         } catch (IllegalArgumentException ignored) {
                         }
                     });
@@ -310,22 +488,11 @@ public record MailComposeC2SPayload(
         } catch (Throwable t) {
             throw new IllegalStateException("玩家存档目录读取失败，全员发送已取消", t);
         }
-        return players;
     }
 
-    private static String resolveKnownName(MinecraftServer server, UUID id) {
-        try {
-            var cache = server.getProfileCache();
-            if (cache != null) {
-                var opt = cache.get(id);
-                if (opt != null && opt.isPresent() && opt.get().getName() != null
-                        && !opt.get().getName().isBlank()) {
-                    return opt.get().getName();
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return shortUuid(id);
+    private static String resolveCachedName(Object profileCache, UUID id) {
+        return ProfileCacheLookup.lookupCachedNameFromCache(profileCache, id)
+                .orElseGet(() -> shortUuid(id));
     }
 
     private static String shortUuid(UUID id) {
@@ -348,40 +515,5 @@ public record MailComposeC2SPayload(
             return Optional.empty();
         }
         return Optional.of(UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static Optional<UUID> lookupProfileUuid(MinecraftServer server, String name) {
-        if (server == null || name == null || name.isBlank()) {
-            return Optional.empty();
-        }
-        try {
-            var cache = server.getProfileCache();
-            if (cache == null) {
-                return Optional.empty();
-            }
-            var opt = cache.get(name);
-            if (opt == null || opt.isEmpty()) {
-                return Optional.empty();
-            }
-            Object profile = opt.get();
-            try {
-                var m = profile.getClass().getMethod("getId");
-                Object id = m.invoke(profile);
-                if (id instanceof UUID u) {
-                    return Optional.of(u);
-                }
-            } catch (NoSuchMethodException ignored) {
-            }
-            try {
-                var m = profile.getClass().getMethod("id");
-                Object id = m.invoke(profile);
-                if (id instanceof UUID u) {
-                    return Optional.of(u);
-                }
-            } catch (NoSuchMethodException ignored) {
-            }
-        } catch (Exception ignored) {
-        }
-        return Optional.empty();
     }
 }

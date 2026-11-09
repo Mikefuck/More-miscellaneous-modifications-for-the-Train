@@ -1,5 +1,5 @@
 // Actual Minecraft GUI verification; test-only source set and fixtures, never included in release jars.
-// Usage: ./gradlew -I tools/warehouse-smoke.gradle runClient --gradle-user-home ../.gradle-user-home
+// Usage: ./gradlew -I tools/warehouse-smoke.gradle runClient --no-daemon --gradle-user-home ../.gradle-user-home
 allprojects {
 afterEvaluate { project ->
     repositories {

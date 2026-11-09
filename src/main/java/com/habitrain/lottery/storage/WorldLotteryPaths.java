@@ -11,9 +11,10 @@ import java.util.UUID;
 public final class WorldLotteryPaths {
     public static final String ROOT_DIR = "habitrain_lottery";
 
-    private static Path root;
-    private static Path configDir;
-    private static Path playersDir;
+    private record PathsSnapshot(Path root, Path configDir, Path playersDir) {
+    }
+
+    private static volatile PathsSnapshot CURRENT;
 
     private WorldLotteryPaths() {
     }
@@ -43,9 +44,7 @@ public final class WorldLotteryPaths {
 
     public static void clear() {
         com.habitrain.lottery.card.SelfSelectRoleConfigService.reset();
-        root = null;
-        configDir = null;
-        playersDir = null;
+        CURRENT = null;
         // Shutdown flushes before unbinding. Never carry cached assets (or failure
         // flags) into another world, and never flush them against a new root.
         PlayerLotteryStore.get().reset();
@@ -58,8 +57,9 @@ public final class WorldLotteryPaths {
     }
 
     private static void applyRoot(Path lotteryRoot) {
-        Path nextConfig = lotteryRoot.resolve("config");
-        Path nextPlayers = lotteryRoot.resolve("players");
+        Path normalizedRoot = lotteryRoot.toAbsolutePath().normalize();
+        Path nextConfig = resolveUnder(normalizedRoot, "config");
+        Path nextPlayers = resolveUnder(normalizedRoot, "players");
         try {
             Files.createDirectories(nextConfig);
             Files.createDirectories(nextPlayers);
@@ -67,45 +67,87 @@ public final class WorldLotteryPaths {
             throw new IllegalStateException("Cannot create habitrain_lottery world dirs", e);
         }
         clear();
-        root = lotteryRoot;
-        configDir = nextConfig;
-        playersDir = nextPlayers;
+        CURRENT = new PathsSnapshot(normalizedRoot, nextConfig, nextPlayers);
     }
 
     public static Path root() {
-        return root;
+        PathsSnapshot s = CURRENT;
+        return s == null ? null : s.root();
     }
 
     public static Path configDir() {
-        return configDir;
+        PathsSnapshot s = CURRENT;
+        return s == null ? null : s.configDir();
     }
 
     public static Path playersDir() {
-        return playersDir;
+        PathsSnapshot s = CURRENT;
+        return s == null ? null : s.playersDir();
     }
 
     public static Path playerFile(UUID uuid) {
-        Path dir = playersDir;
-        return dir == null ? null : dir.resolve(uuid.toString() + ".json");
+        PathsSnapshot s = CURRENT;
+        if (s == null || uuid == null) {
+            return null;
+        }
+        return resolveChildFile(s.playersDir(), uuid.toString() + ".json");
     }
 
     public static Path configFile(String name) {
-        Path dir = configDir;
-        return dir == null ? null : dir.resolve(name);
+        PathsSnapshot s = CURRENT;
+        if (s == null) {
+            return null;
+        }
+        return resolveChildFile(s.configDir(), name);
     }
 
     public static boolean ready() {
-        return root != null;
+        return CURRENT != null;
     }
 
     /** World save root (parent of habitrain_lottery). Null if not ready. */
     public static Path worldRoot() {
-        return root == null ? null : root.getParent();
+        PathsSnapshot s = CURRENT;
+        return s == null ? null : s.root().getParent();
     }
 
     /** world/lottery_backup — sibling of habitrain_lottery. */
     public static Path backupRoot() {
         Path wr = worldRoot();
-        return wr == null ? null : wr.resolve("lottery_backup");
+        return wr == null ? null : resolveUnder(wr, "lottery_backup");
+    }
+
+    public static Path resolveUnder(Path base, String child) {
+        if (base == null || child == null || child.isBlank()) {
+            throw new IllegalArgumentException("Invalid child path: " + child);
+        }
+        Path baseAbs = base.toAbsolutePath().normalize();
+        Path resolved = baseAbs.resolve(child).normalize();
+        if (!resolved.startsWith(baseAbs) || resolved.equals(baseAbs)) {
+            throw new IllegalArgumentException("Path escapes base directory: " + child);
+        }
+        return resolved;
+    }
+
+    public static Path resolveChildFile(Path dir, String fileName) {
+        if (dir == null) {
+            return null;
+        }
+        if (fileName == null || fileName.isBlank() || ".".equals(fileName) || "..".equals(fileName)
+                || fileName.contains("..")) {
+            throw new IllegalArgumentException("Unsafe file name: " + fileName);
+        }
+        for (int i = 0; i < fileName.length(); i++) {
+            char c = fileName.charAt(i);
+            if (c == '/' || c == '\\' || c == '\0' || c == ':') {
+                throw new IllegalArgumentException("Unsafe file name: " + fileName);
+            }
+        }
+        Path baseAbs = dir.toAbsolutePath().normalize();
+        Path resolved = baseAbs.resolve(fileName).normalize();
+        if (!resolved.startsWith(baseAbs) || !baseAbs.equals(resolved.getParent())) {
+            throw new IllegalArgumentException("Path escapes directory: " + fileName);
+        }
+        return resolved;
     }
 }

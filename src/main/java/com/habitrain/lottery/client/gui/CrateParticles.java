@@ -211,11 +211,14 @@ public final class CrateParticles {
                 case CONFETTI -> {
                     float w = size, h = size * 0.5F * Math.abs((float) Math.cos(angle * 1.7F)) + 0.8F;
                     g.pose().pushPose();
-                    g.pose().translate(x, y, 0);
-                    g.pose().mulPose(com.mojang.math.Axis.ZP.rotation(angle));
-                    int c = GuiFx.fade(color, a);
-                    CrateFx.rect(g, -w / 2, -h / 2, w / 2, h / 2, c, c, GuiFx.shade(c, -0.3F), GuiFx.shade(c, -0.3F), false);
-                    g.pose().popPose();
+                    try {
+                        g.pose().translate(x, y, 0);
+                        g.pose().mulPose(com.mojang.math.Axis.ZP.rotation(angle));
+                        int c = GuiFx.fade(color, a);
+                        CrateFx.rect(g, -w / 2, -h / 2, w / 2, h / 2, c, c, GuiFx.shade(c, -0.3F), GuiFx.shade(c, -0.3F), false);
+                    } finally {
+                        g.pose().popPose();
+                    }
                 }
                 case CHARGE -> {
                     CrateFx.trail(g, x - vx * 0.06F, y - vy * 0.06F, x, y, size, color, a);

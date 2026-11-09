@@ -261,12 +261,15 @@ public final class CrateFx {
         float s = GuiFx.clamp01(strength);
         if (s <= 0.004F || size <= 0.5F) return;
         g.pose().pushPose();
-        g.pose().translate(cx, cy, 0);
-        if (rotation != 0) g.pose().mulPose(com.mojang.math.Axis.ZP.rotation(rotation));
-        streak(g, 0, 0, size, size * 0.09F, color, s);
-        streak(g, 0, 0, size * 0.09F, size, color, s);
-        streak(g, 0, 0, size * 0.45F, size * 0.45F, 0xFFFFFFFF, s * 0.35F);
-        g.pose().popPose();
+        try {
+            g.pose().translate(cx, cy, 0);
+            if (rotation != 0) g.pose().mulPose(com.mojang.math.Axis.ZP.rotation(rotation));
+            streak(g, 0, 0, size, size * 0.09F, color, s);
+            streak(g, 0, 0, size * 0.09F, size, color, s);
+            streak(g, 0, 0, size * 0.45F, size * 0.45F, 0xFFFFFFFF, s * 0.35F);
+        } finally {
+            g.pose().popPose();
+        }
         glow(g, cx, cy, size * 0.5F, color, s * 0.6F);
     }
 

@@ -1,8 +1,9 @@
 package com.habitrain.lottery.backpack;
 
-import com.habitrain.lottery.grant.LoginRewardService;
+import com.habitrain.lottery.HabiLotteryMod;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
+import com.habitrain.lottery.time.LotteryDayClock;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
@@ -50,7 +51,7 @@ public final class DailyFactionCardService {
         PlayerLotteryData before = store.getOrLoad(player).copy();
         if (store.isLoadFailed(uuid)) return false;
         boolean wasDirty = store.isDirty(uuid);
-        long today = LoginRewardService.todayEpochDayUtc();
+        long today = LotteryDayClock.monotonicEpochDay(before.lastFactionCardUseEpochDay);
         int currentBonus = before.lastFactionCardUseEpochDay == today
                 ? before.factionCardBonusUsesToday : 0;
         if (currentBonus >= MAX_BONUS_USES) return false;
@@ -77,7 +78,8 @@ public final class DailyFactionCardService {
         if (store.isLoadFailed(uuid)) return false;
         PlayerLotteryData before = store.getOrLoad(player).copy();
         boolean wasDirty = store.isDirty(uuid);
-        if (before.lastFactionCardUseEpochDay != LoginRewardService.todayEpochDayUtc()
+        long today = LotteryDayClock.monotonicEpochDay(before.lastFactionCardUseEpochDay);
+        if (before.lastFactionCardUseEpochDay != today
                 || before.factionCardBonusUsesToday <= 0) return false;
         store.update(uuid, data -> data.factionCardBonusUsesToday--);
         if (!store.flush(uuid)) {
@@ -87,12 +89,22 @@ public final class DailyFactionCardService {
         return true;
     }
 
-    public static void recordSuccessfulUse(ServerPlayer player) {
+    public static boolean recordSuccessfulUse(ServerPlayer player) {
         if (player == null) {
-            return;
+            return false;
         }
-        long today = LoginRewardService.todayEpochDayUtc();
-        PlayerLotteryStore.get().update(player.getUUID(), data -> {
+        UUID uuid = player.getUUID();
+        var store = PlayerLotteryStore.get();
+        if (!store.isTakeoverActive() || store.isLoadFailed(uuid) || store.isFlushDeferred()) {
+            return false;
+        }
+        PlayerLotteryData before = store.getOrLoad(player).copy();
+        if (store.isLoadFailed(uuid)) {
+            return false;
+        }
+        boolean wasDirty = store.isDirty(uuid);
+        long today = LotteryDayClock.monotonicEpochDay(before.lastFactionCardUseEpochDay);
+        store.update(uuid, data -> {
             if (data.lastFactionCardUseEpochDay != today) {
                 data.lastFactionCardUseEpochDay = today;
                 data.factionCardUsesToday = 0;
@@ -102,8 +114,14 @@ public final class DailyFactionCardService {
                     (long) MAX_DAILY_USES + data.factionCardBonusUsesToday,
                     (long) data.factionCardUsesToday + 1);
         });
-        PlayerLotteryStore.get().flush(player.getUUID());
-        player.sendSystemMessage(Component.literal("§e[职业卡] 今日还可使用 " + remaining(player) + " 次"));
+        if (!store.flush(uuid)) {
+            store.restoreSnapshot(uuid, before, wasDirty);
+            HabiLotteryMod.LOGGER.error("Failed persisting faction-card daily quota for {}; rolled back", uuid);
+            return false;
+        }
+        player.sendSystemMessage(Component.translatable(
+                "message.habitrain_lottery.card.remaining_today", remaining(player)));
+        return true;
     }
 
     /**
@@ -124,27 +142,39 @@ public final class DailyFactionCardService {
         if (uuid == null) {
             return;
         }
-        long today = LoginRewardService.todayEpochDayUtc();
-        PlayerLotteryStore.get().update(uuid, data -> {
+        var store = PlayerLotteryStore.get();
+        if (store.isLoadFailed(uuid)) {
+            return;
+        }
+        PlayerLotteryData before = store.getOrLoad(uuid);
+        long today = LotteryDayClock.monotonicEpochDay(before.lastFactionCardUseEpochDay);
+        store.update(uuid, data -> {
             if (data.lastFactionCardUseEpochDay != today) {
                 return;
             }
             data.factionCardUsesToday = Math.max(0, data.factionCardUsesToday - 1);
         });
-        PlayerLotteryStore.get().flush(uuid);
+        store.flush(uuid);
     }
 
     private static void normalizeUseDay(ServerPlayer player) {
-        long today = LoginRewardService.todayEpochDayUtc();
-        PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(player);
+        var store = PlayerLotteryStore.get();
+        if (store.isLoadFailed(player.getUUID())) {
+            return;
+        }
+        PlayerLotteryData data = store.getOrLoad(player);
+        if (store.isLoadFailed(player.getUUID())) {
+            return;
+        }
+        long today = LotteryDayClock.monotonicEpochDay(data.lastFactionCardUseEpochDay);
         if (data.lastFactionCardUseEpochDay == today) {
             return;
         }
-        PlayerLotteryStore.get().update(player.getUUID(), d -> {
+        store.update(player.getUUID(), d -> {
             d.lastFactionCardUseEpochDay = today;
             d.factionCardUsesToday = 0;
             d.factionCardBonusUsesToday = 0;
         });
-        PlayerLotteryStore.get().flush(player.getUUID());
+        store.flush(player.getUUID());
     }
 }

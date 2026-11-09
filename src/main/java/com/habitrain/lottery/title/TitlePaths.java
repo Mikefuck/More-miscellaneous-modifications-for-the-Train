@@ -15,25 +15,37 @@ public final class TitlePaths {
     }
 
     public static Path titlesDir() {
-        return WorldLotteryPaths.root().resolve("titles");
+        Path root = WorldLotteryPaths.root();
+        return root == null ? null : resolveUnder(root, "titles");
     }
 
     public static Path catalogFile() {
-        return titlesDir().resolve("catalog.json");
+        Path dir = titlesDir();
+        return dir == null ? null : resolveUnder(dir, "catalog.json");
     }
 
     public static Path playersDir() {
-        return titlesDir().resolve("players");
+        Path dir = titlesDir();
+        return dir == null ? null : resolveUnder(dir, "players");
     }
 
     public static Path playerFile(UUID id) {
-        return playersDir().resolve(id + ".json");
+        Path dir = playersDir();
+        if (dir == null || id == null) {
+            return null;
+        }
+        return resolveUnder(dir, id + ".json");
     }
 
     public static void ensureDirs() throws IOException {
-        if (!WorldLotteryPaths.ready()) {
+        Path players = playersDir();
+        if (players == null) {
             return;
         }
-        Files.createDirectories(playersDir());
+        Files.createDirectories(players);
+    }
+
+    private static Path resolveUnder(Path base, String child) {
+        return WorldLotteryPaths.resolveChildFile(base, child);
     }
 }

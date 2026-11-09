@@ -57,7 +57,8 @@ class AtomicJsonFilesTest {
         assertTrue(load.ok());
         assertTrue(load.usedBackup());
         assertEquals(7, load.value().greenApples);
-        assertFalse(Files.isRegularFile(file));
+        assertTrue(Files.isRegularFile(file));
+        assertEquals(7, GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), PlayerLotteryData.class).greenApples);
         assertNotNull(load.quarantined());
         assertTrue(Files.isRegularFile(load.quarantined()));
     }
@@ -73,6 +74,8 @@ class AtomicJsonFilesTest {
         assertTrue(load.usedBackup());
         assertEquals(42, load.value().greenApples);
         assertFalse(load.corrupt());
+        assertTrue(Files.isRegularFile(file));
+        assertEquals(42, GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), PlayerLotteryData.class).greenApples);
     }
 
     @Test

@@ -1,9 +1,8 @@
 package com.habitrain.lottery.api.skin;
 
-
-
 import net.minecraft.resources.ResourceLocation;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +12,9 @@ import java.util.Optional;
 public final class HabiSkinApi {
     public static final int API_VERSION = 3;
     public static final String ENTRYPOINT = "habitrain_lottery_skins";
+
+    /** Shared lock across all skin sub-registries and {@link SkinRegistrationTransaction}. */
+    static final Object REGISTRY_LOCK = HabiSkinApi.class;
 
     private static final Map<String, SkinDefinition> DEFINITIONS = new LinkedHashMap<>();
     /**
@@ -107,6 +109,7 @@ public final class HabiSkinApi {
             SkinRegistrationTransaction.remove(PROVIDERS, key);
             SkinSounds.removeEntry(key);
             SkinCardText.removeEntry(key);
+            SkinEffects.removeEntry(key);
             return SkinRegistrationTransaction.remove(DEFINITIONS, key) != null;
         } catch (IllegalArgumentException ignored) {
             return false;
@@ -118,7 +121,7 @@ public final class HabiSkinApi {
         if (providerId == null) {
             return 0;
         }
-        java.util.List<String> owned = new java.util.ArrayList<>();
+        List<String> owned = new ArrayList<>();
         for (Map.Entry<String, String> entry : PROVIDERS.entrySet()) {
             if (providerId.equals(entry.getValue())) {
                 owned.add(entry.getKey());
@@ -127,24 +130,41 @@ public final class HabiSkinApi {
         for (String key : owned) {
             SkinRegistrationTransaction.remove(PROVIDERS, key);
             SkinRegistrationTransaction.remove(DEFINITIONS, key);
-            SkinSounds.removeEntry(key);
-            SkinCardText.removeEntry(key);
+            SkinSounds.removeEntryIfOwnedOrUnowned(key, providerId);
+            SkinCardText.removeEntryIfOwnedOrUnowned(key, providerId);
+            SkinEffects.removeEntryIfOwnedOrUnowned(key, providerId);
         }
         SkinCardText.removeProvider(providerId);
+        SkinEffects.removeProvider(providerId);
+        SkinSounds.removeProvider(providerId);
+        SkinItems.removeProvider(providerId);
         return owned.size();
     }
 
+    /** Resets all independent skin sub-registries for isolated unit tests. */
+    public static void clearForTest() {
+        synchronized (REGISTRY_LOCK) {
+            DEFINITIONS.clear();
+            PROVIDERS.clear();
+            CURRENT_PROVIDER.remove();
+            SkinEffects.clearForTest();
+            SkinSounds.clearForTest();
+            SkinCardText.clearForTest();
+            SkinItems.clearForTest();
+        }
+    }
+
     /** The entrypoint provider that contributed {@code type/id}, if any. */
-    public static synchronized java.util.Optional<String> providerOf(String type, String id) {
+    public static synchronized Optional<String> providerOf(String type, String id) {
         try {
             String normalizedType = SkinDefinition.normalizeType(type);
             String normalizedId = SkinDefinition.normalizeSkinId(id);
             if (normalizedId == null) {
-                return java.util.Optional.empty();
+                return Optional.empty();
             }
-            return java.util.Optional.ofNullable(PROVIDERS.get(key(normalizedType, normalizedId)));
+            return Optional.ofNullable(PROVIDERS.get(key(normalizedType, normalizedId)));
         } catch (IllegalArgumentException ignored) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
     }
 
@@ -194,7 +214,7 @@ public final class HabiSkinApi {
         for (SkinDefinition skin : DEFINITIONS.values()) {
             if (skin.type().equals(com.habitrain.lottery.storage.SkinTypeKeys.canonical(type))) result.put(skin.id(), skin);
         }
-        return Map.copyOf(result);
+        return java.util.Collections.unmodifiableMap(result);
     }
 
     public static java.util.Set<String> types() { return SkinDefinition.SUPPORTED_TYPES; }

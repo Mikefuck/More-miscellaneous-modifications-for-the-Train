@@ -80,7 +80,8 @@ class PlayerLotteryStoreResetTest {
             assertTrue(json.contains("\"version\":2"), file.toString());
         }
         assertTrue(Files.readString(primary, StandardCharsets.UTF_8).contains("\"greenApples\":0"));
-        assertFalse(Files.exists(backupOnly), "A backup-only account must not invent a primary file");
+        assertTrue(Files.isRegularFile(backupOnly), "Offline scans need a healed primary for a valid backup-only account");
+        assertEquals(Files.readString(backupOnlyBak), Files.readString(backupOnly));
     }
 
     @Test

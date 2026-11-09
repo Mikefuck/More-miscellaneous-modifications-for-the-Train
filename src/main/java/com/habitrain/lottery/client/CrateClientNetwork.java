@@ -2,12 +2,13 @@ package com.habitrain.lottery.client;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import com.habitrain.lottery.network.CrateNetwork;
 import com.habitrain.lottery.crate.CrateService;
+import com.habitrain.lottery.network.ChunkedJsonTransfer;
+import com.habitrain.lottery.network.CrateNetwork;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 
 import java.util.Map;
@@ -16,17 +17,29 @@ import java.util.Map;
 public final class CrateClientNetwork {
     private static final Gson GSON = new Gson();
     private static final java.lang.reflect.Type INVENTORY_TYPE = new TypeToken<Map<String, Double>>() { }.getType();
+    private static final ChunkedJsonTransfer.Assembler<String> CATALOG_ASSEMBLER =
+            ChunkedJsonTransfer.newClientS2CAssembler();
+    private static final ChunkedJsonTransfer.Assembler<String> CONFIG_ASSEMBLER =
+            ChunkedJsonTransfer.newClientS2CAssembler();
     private static boolean registered;
     private static CrateNetwork.OpenRequestC2S pendingOpen;
     public static final CrateClientState STATE = new CrateClientState();
-    private CrateClientNetwork() {}
+
+    private CrateClientNetwork() {
+    }
+
+    public static void resetAssemblers() {
+        CATALOG_ASSEMBLER.reset();
+        CONFIG_ASSEMBLER.reset();
+    }
 
     public static void register() {
         if (registered) return;
         registered = true;
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> {
+            resetAssemblers();
             pendingOpen = null;
-            com.habitrain.lottery.crate.CrateCatalog.reset();
+            com.habitrain.lottery.crate.CrateCatalog.resetClient();
             STATE.inventory = Map.of();
             STATE.inventoryVersion++;
             STATE.configJson = "{}";
@@ -35,10 +48,18 @@ public final class CrateClientNetwork {
             STATE.configVersion++;
             STATE.catalogVersion++;
         }));
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> client.execute(CrateClientNetwork::resetAssemblers));
         ClientPlayNetworking.registerGlobalReceiver(CrateNetwork.CatalogS2C.TYPE, (payload, context) ->
                 context.client().execute(() -> {
+                    var complete = CATALOG_ASSEMBLER.accept(
+                            payload.json(),
+                            payload.transferId(),
+                            payload.chunkIndex(),
+                            payload.chunkCount(),
+                            "");
+                    if (complete == null) return;
                     try {
-                        CrateService.acceptCatalogJson(payload.json());
+                        CrateService.acceptCatalogJson(complete.json());
                         STATE.catalogVersion++;
                         if (Minecraft.getInstance().screen instanceof com.habitrain.lottery.client.gui.CrateAdminScreen screen)
                             screen.refreshCatalog();
@@ -61,8 +82,15 @@ public final class CrateClientNetwork {
                 }));
         ClientPlayNetworking.registerGlobalReceiver(CrateNetwork.ConfigS2C.TYPE, (payload, context) ->
                 context.client().execute(() -> {
-                    STATE.configJson = payload.json() == null ? "{}" : payload.json();
-                    STATE.configMessage = payload.message() == null ? "" : payload.message();
+                    var complete = CONFIG_ASSEMBLER.accept(
+                            payload.json(),
+                            payload.transferId(),
+                            payload.chunkIndex(),
+                            payload.chunkCount(),
+                            payload.message() == null ? "" : payload.message());
+                    if (complete == null) return;
+                    STATE.configJson = complete.json() == null ? "{}" : complete.json();
+                    STATE.configMessage = complete.metadata() == null ? "" : complete.metadata();
                     STATE.configEditable = !"crates.no_permission".equals(STATE.configMessage)
                             && !"crates.client_outdated".equals(STATE.configMessage)
                             && !"{}".equals(STATE.configJson);
@@ -75,9 +103,11 @@ public final class CrateClientNetwork {
     public static boolean connected() {
         return ClientPlayNetworking.canSend(CrateNetwork.InventoryRequestC2S.TYPE);
     }
+
     public static boolean canOpen() { return ClientPlayNetworking.canSend(CrateNetwork.OpenRequestC2S.TYPE); }
     public static boolean canEdit() { return ClientPlayNetworking.canSend(CrateNetwork.ConfigSaveC2S.TYPE); }
     public static void requestInventory() { if (connected()) ClientPlayNetworking.send(CrateNetwork.InventoryRequestC2S.INSTANCE); }
+
     public static String open(String crateId, String keyId) {
         if (!canOpen()) return null;
         if (pendingOpen == null) pendingOpen = new CrateNetwork.OpenRequestC2S(
@@ -86,8 +116,15 @@ public final class CrateClientNetwork {
         ClientPlayNetworking.send(pendingOpen);
         return pendingOpen.openId();
     }
+
     public static void requestConfig() { if (connected()) ClientPlayNetworking.send(CrateNetwork.ConfigRequestC2S.INSTANCE); }
-    public static void saveConfig(String json) { if (canEdit()) ClientPlayNetworking.send(new CrateNetwork.ConfigSaveC2S(json)); }
+
+    public static void saveConfig(String json) {
+        if (!canEdit()) return;
+        for (CrateNetwork.ConfigSaveC2S chunk : new CrateNetwork.ConfigSaveC2S(json).toWireChunks()) {
+            ClientPlayNetworking.send(chunk);
+        }
+    }
 
     public static final class CrateClientState {
         public Map<String, Double> inventory = Map.of();
