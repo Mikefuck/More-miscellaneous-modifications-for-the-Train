@@ -147,6 +147,8 @@ public final class CrateOpenScreen extends Screen {
     private long skipHeldSince = -1;
     private boolean spaceDown;
     private boolean skipQueued;
+    private boolean explicitlySkipped;
+    private boolean settlementConfirmed;
     private float skipShown;
 
     public CrateOpenScreen(Screen parent, String crateId) {
@@ -184,6 +186,7 @@ public final class CrateOpenScreen extends Screen {
         super.tick();
         refreshFromState();
         long time = now();
+        settleIfDue(time);
         if (stage.active() && !stage.hasResult() && !failure
                 && time - stage.openedAt() > CrateStage.SPIN_TIMEOUT_MS) {
             fail("screen.habitrain_lottery.crate.timeout");
@@ -206,18 +209,28 @@ public final class CrateOpenScreen extends Screen {
     }
 
     public void receive(CrateNetwork.OpenResultS2C payload) {
-        if (!crateId.equals(payload.crateId()) || !payload.openId().equals(activeOpenId)) return;
+        if (!payload.openId().equals(activeOpenId)) return;
         if (!payload.success()) {
             fail(payload.message());
             return;
         }
+        settlementConfirmed = true;
+        if (parent instanceof WarehouseScreen warehouse) warehouse.expectInventoryRevision(payload.inventoryRevision());
+        if (result != null) {
+            result = payload;
+            return;
+        }
+        receivePrepared(payload);
+    }
+
+    public void receivePrepared(CrateNetwork.OpenResultS2C payload) {
+        if (!crateId.equals(payload.crateId()) || !payload.openId().equals(activeOpenId) || result != null) return;
         long now = now();
         if (!stage.active()) stage = CrateStage.opened(now - 1L);
         failure = false;
         message = "";
         result = payload;
         rewardPage = 0;
-        if (parent instanceof WarehouseScreen warehouse) warehouse.expectInventoryRevision(payload.inventoryRevision());
         try {
             CrateService.Reward[] parsed = GSON.fromJson(payload.rewardsJson(), CrateService.Reward[].class);
             rewards = parsed == null ? List.of() : List.of(parsed);
@@ -241,7 +254,13 @@ public final class CrateOpenScreen extends Screen {
         if (skipQueued) applySkip(now);
     }
 
+    public void showPendingSettlement() {
+        message = "crates.pending";
+        toastAt = now();
+    }
+
     private void fail(String key) {
+        if (!settlementConfirmed) CrateClientNetwork.resolve(activeOpenId, CrateNetwork.ResolveOpenC2S.CANCEL);
         skipHeldSince = -1;
         skipQueued = false;
         failure = true;
@@ -261,6 +280,7 @@ public final class CrateOpenScreen extends Screen {
     }
 
     private boolean locked(long time) {
+        if (!settlementConfirmed && stage.active() && !failure) return true;
         CrateStage.Phase phase = stage.phase(time);
         return !failure && (phase == CrateStage.Phase.DISMISS || phase == CrateStage.Phase.HOLD
                 || phase == CrateStage.Phase.CAROUSEL || phase == CrateStage.Phase.BRIDGE);
@@ -286,6 +306,25 @@ public final class CrateOpenScreen extends Screen {
     @Override
     public boolean isPauseScreen() {
         return false;
+    }
+
+    private void settleIfDue(long time) {
+        if (!failure && !settlementConfirmed
+                && CrateAnimationSettlement.succeeds(stage, time, explicitlySkipped)) {
+            CrateClientNetwork.resolve(activeOpenId, explicitlySkipped
+                    ? CrateNetwork.ResolveOpenC2S.SKIP : CrateNetwork.ResolveOpenC2S.COMPLETE);
+        }
+    }
+
+    @Override
+    public void removed() {
+        if (!settlementConfirmed && stage.active()) {
+            boolean success = !failure && CrateAnimationSettlement.succeeds(stage, now(), explicitlySkipped);
+            CrateClientNetwork.resolve(activeOpenId, success
+                    ? (explicitlySkipped ? CrateNetwork.ResolveOpenC2S.SKIP : CrateNetwork.ResolveOpenC2S.COMPLETE)
+                    : CrateNetwork.ResolveOpenC2S.CANCEL);
+        }
+        super.removed();
     }
 
     // =====================================================================
@@ -465,7 +504,7 @@ public final class CrateOpenScreen extends Screen {
     private boolean readyToOpen() {
         CrateCatalog.Entry entry = CrateCatalog.find(crateId);
         return entry != null && entry.enabled() && !entry.archived() && !entry.rewards().isEmpty()
-                && crateCount() > 0 && keyCount() > 0;
+                && crateCount() > 0 && keyCount() > 0 && !CrateClientNetwork.hasPendingOpen();
     }
 
     // =====================================================================
@@ -475,6 +514,7 @@ public final class CrateOpenScreen extends Screen {
     @Override
     public void render(GuiGraphics g, int mx, int my, float partialTick) {
         long time = now();
+        settleIfDue(time);
         frameDelta = Math.min(80.0F, Math.max(1.0F, time - lastFrame));
         lastFrame = time;
         g.flush();
@@ -1078,6 +1118,8 @@ public final class CrateOpenScreen extends Screen {
         modalCancelled = false;
         skipHeldSince = -1;
         skipQueued = false;
+        explicitlySkipped = false;
+        settlementConfirmed = false;
         effects.resetForOpen();
         buildReel();
         buildStrip();
@@ -1105,6 +1147,8 @@ public final class CrateOpenScreen extends Screen {
                 if (!held || !canSkip(time)) skipHeldSince = -1;
                 else if (time - skipHeldSince >= SKIP_HOLD_MS) {
                     skipHeldSince = -1;
+                    explicitlySkipped = true;
+                    CrateClientNetwork.resolve(activeOpenId, CrateNetwork.ResolveOpenC2S.SKIP);
                     if (stage.hasResult()) applySkip(time);
                     else skipQueued = true;
                 }
@@ -1117,6 +1161,8 @@ public final class CrateOpenScreen extends Screen {
     private void applySkip(long time) {
         skipQueued = false;
         if (failure || !stage.hasResult() || time >= stage.swapAt()) return;
+        explicitlySkipped = true;
+        CrateClientNetwork.resolve(activeOpenId, CrateNetwork.ResolveOpenC2S.SKIP);
         stage = stage.skipTo(stage.swapAt(), time);
         effects.markSkippedToSwap();
     }

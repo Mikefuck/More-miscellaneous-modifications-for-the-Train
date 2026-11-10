@@ -1039,6 +1039,8 @@ public final class PlayerLotteryStore {
             }
         }
         data.pendingCrateDebits = pendingDebits;
+        data.cancelledCrateOpens = PlayerLotteryData.asBoundedSet(
+                data.cancelledCrateOpens, PlayerLotteryData.CRATE_OPEN_HISTORY_CAP);
         data.paidShopPurchases = PlayerLotteryData.asBoundedSet(
                 data.paidShopPurchases, PlayerLotteryData.PAID_SHOP_ORDERS_CAP);
         data.inventoryRevision = Math.max(0, data.inventoryRevision);

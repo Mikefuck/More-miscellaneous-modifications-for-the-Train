@@ -31,6 +31,8 @@ public final class PlayerLotteryData {
     public java.util.Set<String> crateOpenHistory = new BoundedStringSet(CRATE_OPEN_HISTORY_CAP);
     /** Open IDs whose crate and key have already been pre-debited before crate settlement finishes. */
     public Set<String> pendingCrateDebits = new LinkedHashSet<>();
+    /** Cancelled animation IDs cannot be replayed to charge or draw again. */
+    public Set<String> cancelledCrateOpens = new BoundedStringSet(CRATE_OPEN_HISTORY_CAP);
     /** Card reservations and their quota debit commit together, before the backpack debit. */
     public Map<String, CardUse> pendingCardUses = new HashMap<>();
 
@@ -113,6 +115,7 @@ public final class PlayerLotteryData {
         if (crateReceipts != null) c.crateReceipts.putAll(crateReceipts);
         c.crateOpenHistory = new BoundedStringSet(CRATE_OPEN_HISTORY_CAP, crateOpenHistory);
         if (pendingCrateDebits != null) c.pendingCrateDebits.addAll(pendingCrateDebits);
+        c.cancelledCrateOpens = new BoundedStringSet(CRATE_OPEN_HISTORY_CAP, cancelledCrateOpens);
         if (pendingCardUses != null) pendingCardUses.forEach((id, use) -> {
             if (use != null) c.pendingCardUses.put(id, new CardUse(use.kind, use.roleId, use.day));
         });

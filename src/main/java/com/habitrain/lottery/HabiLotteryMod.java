@@ -114,8 +114,8 @@ public final class HabiLotteryMod implements ModInitializer {
                 if (!SelfSelectForces.isEmpty()) {
                     LOGGER.error("Unfinished self-select refunds at shutdown: {}", SelfSelectForces.snapshot());
                 }
-                runQuietly("PlayerLotteryStore.onServerStopping", () -> PlayerLotteryStore.get().onServerStopping());
                 runQuietly("CrateService.onServerStopping", CrateService::onServerStopping);
+                runQuietly("PlayerLotteryStore.onServerStopping", () -> PlayerLotteryStore.get().onServerStopping());
                 runQuietly("DailyTaskConfigService.onServerStopping",
                         com.habitrain.lottery.daily.config.DailyTaskConfigService::onServerStopping);
                 runQuietly("DailyShopService.onServerStopping",
@@ -169,6 +169,7 @@ public final class HabiLotteryMod implements ModInitializer {
         });
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
+            if (handler.player != null) CrateService.cancelAnimations(handler.player.getUUID());
             PlayerLotteryStore.get().onPlayerQuit(handler.player);
             LocalTitleStore.get().onPlayerQuit(handler.player);
             // 审核 B-05：限流器按 玩家×频道 记账，旧实现在本模组里从不 clear，
@@ -182,6 +183,7 @@ public final class HabiLotteryMod implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(LoginRewardService::onEndServerTick);
+        ServerTickEvents.END_SERVER_TICK.register(CrateService::tickAnimations);
         // 运行期间定期尝试保存保留的脏缓存；持续 I/O 故障仍可能阻止写入。
         // 检查成本 O(cache)，仅对 dirty 项写盘。跨文件奖励另由持久化回执恢复。
         ServerTickEvents.END_SERVER_TICK.register(HabiLotteryMod::retryPendingFlush);

@@ -2,8 +2,6 @@ package com.habitrain.lottery.network;
 
 import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.PlayerStateGate;
-import com.habitrain.lottery.card.ServerMatchGate;
 import com.habitrain.lottery.crate.CrateCatalog;
 import com.habitrain.lottery.crate.CrateService;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
@@ -78,7 +76,7 @@ public final class CrateNetwork {
     }
 
     public record OpenRequestC2S(String crateId, String keyId, String openId) implements CustomPacketPayload {
-        public static final Type<OpenRequestC2S> TYPE = new Type<>(id("crate_open_request_v3"));
+        public static final Type<OpenRequestC2S> TYPE = new Type<>(id("crate_open_request_v4"));
         public static final StreamCodec<RegistryFriendlyByteBuf, OpenRequestC2S> CODEC = StreamCodec.of(
                 (b, p) -> {
                     b.writeUtf(p.crateId == null ? "" : p.crateId, 64);
@@ -86,6 +84,33 @@ public final class CrateNetwork {
                     b.writeUtf(p.openId == null ? "" : p.openId, 36);
                 },
                 b -> new OpenRequestC2S(b.readUtf(64), b.readUtf(128), b.readUtf(36)));
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** V3 clients cannot acknowledge/cancel animations, so they must not consume a crate. */
+    public record LegacyV3OpenRequestC2S(String crateId, String keyId, String openId) implements CustomPacketPayload {
+        public static final Type<LegacyV3OpenRequestC2S> TYPE = new Type<>(id("crate_open_request_v3"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, LegacyV3OpenRequestC2S> CODEC = StreamCodec.of(
+                (b, p) -> { b.writeUtf(p.crateId, 64); b.writeUtf(p.keyId, 128); b.writeUtf(p.openId, 36); },
+                b -> new LegacyV3OpenRequestC2S(b.readUtf(64), b.readUtf(128), b.readUtf(36)));
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record ResolveOpenC2S(String openId, int action) implements CustomPacketPayload {
+        public static final int COMPLETE = 0, SKIP = 1, CANCEL = 2;
+        public static final Type<ResolveOpenC2S> TYPE = new Type<>(id("crate_open_resolve_v4"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, ResolveOpenC2S> CODEC = StreamCodec.of(
+                (b, p) -> { b.writeUtf(p.openId, 36); b.writeVarInt(p.action); },
+                b -> new ResolveOpenC2S(b.readUtf(36), b.readVarInt()));
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** The rolled preview reserves items but is explicitly not a reward receipt. */
+    public record PreparedS2C(OpenResultS2C preview) implements CustomPacketPayload {
+        public static final Type<PreparedS2C> TYPE = new Type<>(id("crate_open_prepared_v4"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, PreparedS2C> CODEC = StreamCodec.of(
+                (b, p) -> OpenResultS2C.CODEC.encode(b, p.preview),
+                b -> new PreparedS2C(OpenResultS2C.CODEC.decode(b)));
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
@@ -225,6 +250,8 @@ public final class CrateNetwork {
     public static void register() {
         PayloadTypeRegistry.playC2S().register(InventoryRequestC2S.TYPE, InventoryRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(OpenRequestC2S.TYPE, OpenRequestC2S.CODEC);
+        PayloadTypeRegistry.playC2S().register(LegacyV3OpenRequestC2S.TYPE, LegacyV3OpenRequestC2S.CODEC);
+        PayloadTypeRegistry.playC2S().register(ResolveOpenC2S.TYPE, ResolveOpenC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(LegacyOpenRequestC2S.TYPE, LegacyOpenRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(ConfigRequestC2S.TYPE, ConfigRequestC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(ConfigSaveC2S.TYPE, ConfigSaveC2S.CODEC);
@@ -233,6 +260,7 @@ public final class CrateNetwork {
         PayloadTypeRegistry.playS2C().register(InventoryS2C.TYPE, InventoryS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(CatalogS2C.TYPE, CatalogS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(OpenResultS2C.TYPE, OpenResultS2C.CODEC);
+        PayloadTypeRegistry.playS2C().register(PreparedS2C.TYPE, PreparedS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(LegacyOpenResultS2C.TYPE, LegacyOpenResultS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(ConfigS2C.TYPE, ConfigS2C.CODEC);
 
@@ -261,20 +289,26 @@ public final class CrateNetwork {
                 }
                 return;
             }
-            if (PlayerStateGate.spectatorRestOrDead(player)) {
-                sendOpenFailure(player, payload.openId(), replyCrateId, replyKeyId, PlayerStateGate.ACTION_BLOCKED_KEY);
-                return;
-            }
-            if (ServerMatchGate.hasActiveMatch(player)) {
-                sendOpenFailure(player, payload.openId(), replyCrateId, replyKeyId, ServerMatchGate.MATCH_ACTIVE_BLOCKED_KEY);
-                return;
-            }
-            CrateService.OpenResult result = CrateService.open(player, payload.crateId(), payload.keyId(), payload.openId());
-
-            sendIfSupported(player, new OpenResultS2C(payload.openId(), result.success(), result.crateId(), result.keyId(), result.type(),
-                    result.skin(), result.quality().id(), result.message(), result.weeklyRemaining(), result.monthlyRemaining(),
-                    GSON.toJson(result.rewards()), result.inventoryRevision()));
+            CrateService.OpenResult result = CrateService.beginAnimation(player, payload.crateId(), payload.keyId(), payload.openId());
+            OpenResultS2C response = response(payload.openId(), result);
+            sendIfSupported(player, result.success() ? new PreparedS2C(response) : response);
             sendInventory(player);
+        }));
+        ServerPlayNetworking.registerGlobalReceiver(ResolveOpenC2S.TYPE, (payload, ctx) -> ctx.server().execute(() -> {
+            ServerPlayer player = ctx.player();
+            if (player == null) return;
+            if (payload.action() < ResolveOpenC2S.COMPLETE || payload.action() > ResolveOpenC2S.CANCEL) return;
+            if (LotteryNetwork.rateLimited(player, "crate_resolve", 100)) return;
+            CrateService.OpenResult result = CrateService.resolveAnimation(
+                    player, payload.openId(), payload.action() != ResolveOpenC2S.CANCEL);
+            sendIfSupported(player, response(payload.openId(), result));
+            sendInventory(player);
+        }));
+        ServerPlayNetworking.registerGlobalReceiver(LegacyV3OpenRequestC2S.TYPE, (payload, ctx) -> ctx.server().execute(() -> {
+            ServerPlayer player = ctx.player();
+            if (player == null || player.hasDisconnected()
+                    || LotteryNetwork.rateLimited(player, "crate_legacy_v3_open", 1000)) return;
+            sendOpenFailure(player, payload.openId(), payload.crateId(), payload.keyId(), "crates.client_outdated");
         }));
         ServerPlayNetworking.registerGlobalReceiver(LegacyOpenRequestC2S.TYPE, (payload, ctx) ->
                 ctx.server().execute(() -> {
@@ -373,6 +407,12 @@ public final class CrateNetwork {
     private static void sendOpenFailure(ServerPlayer player, String openId, String crateId, String keyId, String message) {
         sendIfSupported(player, new OpenResultS2C(
                 openId, false, crateId, keyId, "", "", "white", message, 0, 0, "[]", 0L));
+    }
+
+    private static OpenResultS2C response(String openId, CrateService.OpenResult result) {
+        return new OpenResultS2C(openId, result.success(), result.crateId(), result.keyId(), result.type(),
+                result.skin(), result.quality().id(), result.message(), result.weeklyRemaining(), result.monthlyRemaining(),
+                GSON.toJson(result.rewards()), result.inventoryRevision());
     }
 
     /** A local world owner can configure their own crates without enabling cheats. LAN guests still need OP. */

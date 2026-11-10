@@ -2,7 +2,6 @@ package com.habitrain.lottery.crate;
 
 import com.google.gson.Gson;
 import com.habitrain.lottery.HabiLotteryMod;
-import com.habitrain.lottery.PlayerStateGate;
 import com.habitrain.lottery.api.player.HabiSystemItemApi;
 import com.habitrain.lottery.api.skin.HabiSkinApi;
 import com.habitrain.lottery.api.skin.SkinDefinition;
@@ -10,7 +9,6 @@ import com.habitrain.lottery.api.skin.SkinQuality;
 import com.habitrain.lottery.backpack.LocalBackpackStore;
 import com.habitrain.lottery.backpack.PlayerCardAdminModels.CardStoreStatus;
 import com.habitrain.lottery.backpack.PlayerCardAdminService;
-import com.habitrain.lottery.card.ServerMatchGate;
 import com.habitrain.lottery.storage.AtomicJsonFiles;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
@@ -19,6 +17,7 @@ import com.habitrain.lottery.storage.WorldLotteryPaths;
 import com.habitrain.lottery.time.LotteryDayClock;
 import com.habitrain.lottery.warehouse.SystemItemBalances;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
@@ -119,6 +118,12 @@ public final class CrateService {
         public int rewardProtocol;
         /** True once crate and key have been pre-debited in PlayerLotteryStore (B-04). */
         public boolean debited;
+        /** Interactive openings reserve items; rewards are committed only at the animation boundary. */
+        public boolean interactive;
+        public boolean awaitingAnimation;
+        /** Persisted before refunding, so restart recovery cannot accidentally grant the rewards. */
+        public boolean cancelRequested;
+        public long animationExpiresAt;
         public String openId, playerId, crateId, keyId;
         public String weekKey, monthKey, primaryQualityId;
         public List<Reward> rewards = new ArrayList<>();
@@ -231,13 +236,20 @@ public final class CrateService {
         }
         ready = true;
         for (PendingOpen pending : List.copyOf(state.pendingOpens.values())) {
-            OpenResult recovered = finishPending(pending, null);
-            if (!recovered.success()) HabiLotteryMod.LOGGER.warn("Crate open {} awaits recovery: {}", pending.openId, recovered.message());
+            OpenResult recovered = pending.awaitingAnimation || pending.cancelRequested
+                    ? cancelPending(pending) : finishPending(pending, null);
+            if (state.pendingOpens.containsKey(pending.openId))
+                HabiLotteryMod.LOGGER.warn("Crate open {} awaits recovery: {}", pending.openId, recovered.message());
         }
     }
 
     public static synchronized void onServerStopping() {
-        if (ready) saveState();
+        if (ready) {
+            for (PendingOpen pending : List.copyOf(state.pendingOpens.values())) {
+                if (pending.awaitingAnimation || pending.cancelRequested) cancelPending(pending);
+            }
+            saveState();
+        }
         ready = false;
         state = new State();
         CrateCatalog.resetServer();
@@ -641,26 +653,40 @@ public final class CrateService {
         return openForAccount(player.getUUID(), player, crateId, keyId, openId);
     }
 
+    public static synchronized OpenResult beginAnimation(
+            ServerPlayer player, String crateId, String keyId, String openId) {
+        if (player == null) return fail(crateId, keyId, "crates.not_ready");
+        return beginAnimationForAccount(player.getUUID(), player, crateId, keyId, openId);
+    }
+
+    static synchronized OpenResult beginAnimationForAccount(
+            UUID uuid, ServerPlayer online, String crateId, String keyId, String openId) {
+        return openForAccount(uuid, online, crateId, keyId, openId, true);
+    }
+
     static synchronized OpenResult openForAccount(
             UUID uuid, ServerPlayer online, String crateId, String keyId, String openId) {
+        return openForAccount(uuid, online, crateId, keyId, openId, false);
+    }
+
+    private static OpenResult openForAccount(
+            UUID uuid, ServerPlayer online, String crateId, String keyId, String openId, boolean animated) {
         CrateCatalog.Entry catalogEntry = CrateCatalog.find(crateId);
         String canonicalCrate = catalogEntry == null ? "" : catalogEntry.id();
         String canonicalKey = keyId == null ? "" : keyId.trim().toLowerCase(Locale.ROOT);
         if (!ready || uuid == null || !WorldLotteryPaths.ready()) {
             return fail(canonicalCrate, canonicalKey, "crates.not_ready");
         }
-        if (ServerMatchGate.hasActiveMatch(online)) {
-            return fail(canonicalCrate, canonicalKey, "crates.in_match");
-        }
-        if (online != null && PlayerStateGate.spectatorRestOrDead(online)) {
-            return fail(canonicalCrate, canonicalKey, "crates.unavailable");
-        }
+        String rejection = CrateOpenAccess.rejection(online);
+        if (!rejection.isEmpty()) return fail(canonicalCrate, canonicalKey, rejection);
         try { UUID.fromString(openId); }
         catch (RuntimeException error) { return fail(canonicalCrate, canonicalKey, "crates.invalid_request"); }
         PlayerLotteryStore store = PlayerLotteryStore.get();
         if (store.isFlushDeferred()) return fail(canonicalCrate, canonicalKey, "crates.write_failed");
         PlayerLotteryData current = store.getOrLoad(uuid);
         if (store.isLoadFailed(uuid)) return fail(canonicalCrate, canonicalKey, "crates.write_failed");
+        if (current.cancelledCrateOpens.contains(openId))
+            return fail(canonicalCrate, canonicalKey, "crates.cancelled");
         String existing = current.crateReceipts.get(openId);
         if (existing != null) {
             PendingOpen receipt = GSON.fromJson(existing, PendingOpen.class);
@@ -798,6 +824,9 @@ public final class CrateService {
             return fail(canonicalCrate, canonicalKey, "crates.card_unavailable");
         PendingOpen pending = new PendingOpen();
         pending.rewardProtocol = 1;
+        pending.interactive = animated;
+        pending.awaitingAnimation = animated;
+        pending.animationExpiresAt = animated ? System.currentTimeMillis() + 120_000L : 0L;
         pending.openId = openId;
         pending.playerId = uuid.toString();
         pending.crateId = canonicalCrate; pending.keyId = canonicalKey;
@@ -827,9 +856,147 @@ public final class CrateService {
         return finishPending(pending, online);
     }
 
+    /** Complete/skip and cancellation are serialized with all account mutations on the server. */
+    public static synchronized OpenResult resolveAnimation(ServerPlayer player, String openId, boolean complete) {
+        if (player == null) return fail("", "", "crates.not_ready");
+        return resolveAnimationForAccount(player.getUUID(), player, openId, complete);
+    }
+
+    static synchronized OpenResult resolveAnimationForAccount(
+            UUID uuid, ServerPlayer online, String openId, boolean complete) {
+        if (!ready || uuid == null || !WorldLotteryPaths.ready()) return fail("", "", "crates.not_ready");
+        PendingOpen pending = state.pendingOpens.get(openId);
+        if (pending == null) {
+            PlayerLotteryData data = PlayerLotteryStore.get().getOrLoad(uuid);
+            if (PlayerLotteryStore.get().isLoadFailed(uuid)) return fail("", "", "crates.pending");
+            String json = data.crateReceipts.get(openId);
+            if (json != null) {
+                PendingOpen receipt = GSON.fromJson(json, PendingOpen.class);
+                if (receipt != null && uuid.toString().equals(receipt.playerId)) return resultFor(receipt);
+            }
+            return fail("", "", data.cancelledCrateOpens.contains(openId)
+                    ? "crates.cancelled" : "crates.invalid_request");
+        }
+        if (!uuid.toString().equals(pending.playerId) || !pending.interactive)
+            return fail("", "", "crates.invalid_request");
+        if (pending.cancelRequested || !complete && pending.awaitingAnimation) return cancelPending(pending);
+        if (pending.awaitingAnimation) {
+            // This durable decision precedes every reward. Later page changes cannot undo success.
+            pending.awaitingAnimation = false;
+            if (!saveState()) {
+                pending.awaitingAnimation = true;
+                return fail(pending.crateId, pending.keyId, "crates.pending");
+            }
+        }
+        return finishPending(pending, online);
+    }
+
+    private static OpenResult reserveAnimation(PendingOpen pending) {
+        try {
+            return reserveAnimationItems(pending);
+        } catch (RuntimeException failure) {
+            HabiLotteryMod.LOGGER.error("Unable to reserve crate animation {}", pending.openId, failure);
+            cancelPending(pending);
+            return fail(pending.crateId, pending.keyId, "crates.pending");
+        }
+    }
+
+    private static OpenResult reserveAnimationItems(PendingOpen pending) {
+        UUID uuid = UUID.fromString(pending.playerId);
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        PlayerLotteryData current = store.getOrLoad(uuid);
+        if (store.isLoadFailed(uuid)) return fail(pending.crateId, pending.keyId, "crates.pending");
+        if (!current.pendingCrateDebits.contains(pending.openId)) {
+            boolean saved = store.applyToPlayerWithRollback(uuid, data -> {
+                if (!SystemItemBalances.change(data.systemItems, crateItemId(pending.crateId), -1)
+                        || !SystemItemBalances.change(data.systemItems, pending.keyId, -1))
+                    throw new IllegalStateException("missing crate/key for animation reservation");
+                data.pendingCrateDebits.add(pending.openId);
+                data.inventoryRevision = Math.addExact(data.inventoryRevision, 1);
+            });
+            if (!saved) {
+                cancelPending(pending);
+                return fail(pending.crateId, pending.keyId, "crates.pending");
+            }
+        }
+        pending.debited = true;
+        pending.inventoryRevision = store.getOrLoad(uuid).inventoryRevision;
+        return resultFor(pending);
+    }
+
+    private static OpenResult cancelPending(PendingOpen pending) {
+        try {
+            return refundAnimationItems(pending);
+        } catch (RuntimeException failure) {
+            HabiLotteryMod.LOGGER.error("Unable to refund crate animation {}", pending.openId, failure);
+            return fail(pending.crateId, pending.keyId, "crates.pending");
+        }
+    }
+
+    private static OpenResult refundAnimationItems(PendingOpen pending) {
+        if (!pending.awaitingAnimation && !pending.cancelRequested)
+            return finishPending(pending, null);
+        if (!pending.cancelRequested) {
+            pending.cancelRequested = true;
+            if (!saveState()) {
+                pending.cancelRequested = false;
+                return fail(pending.crateId, pending.keyId, "crates.pending");
+            }
+        }
+        UUID uuid = UUID.fromString(pending.playerId);
+        PlayerLotteryStore store = PlayerLotteryStore.get();
+        PlayerLotteryData current = store.getOrLoad(uuid);
+        if (store.isLoadFailed(uuid)) return fail(pending.crateId, pending.keyId, "crates.pending");
+        if (!current.cancelledCrateOpens.contains(pending.openId)) {
+            if (!store.applyToPlayerWithRollback(uuid, data -> {
+                // The debit token and refund share one atomic account write. A retry never refunds twice.
+                if (data.pendingCrateDebits.remove(pending.openId)) {
+                    if (!SystemItemBalances.change(data.systemItems, crateItemId(pending.crateId), 1)
+                            || !SystemItemBalances.change(data.systemItems, pending.keyId, 1))
+                        throw new IllegalStateException("crate animation refund does not fit account");
+                    data.inventoryRevision = Math.addExact(data.inventoryRevision, 1);
+                }
+                data.cancelledCrateOpens.add(pending.openId);
+            })) return fail(pending.crateId, pending.keyId, "crates.pending");
+        }
+        state.pendingOpens.remove(pending.openId);
+        if (!saveState()) {
+            state.pendingOpens.put(pending.openId, pending);
+            return fail(pending.crateId, pending.keyId, "crates.pending");
+        }
+        return fail(pending.crateId, pending.keyId, "crates.cancelled");
+    }
+
+    public static synchronized void cancelAnimations(UUID uuid) {
+        if (!ready || uuid == null) return;
+        for (PendingOpen pending : List.copyOf(state.pendingOpens.values())) {
+            if (uuid.toString().equals(pending.playerId) && (pending.awaitingAnimation || pending.cancelRequested))
+                cancelPending(pending);
+        }
+    }
+
+    public static synchronized void tickAnimations(MinecraftServer server) {
+        if (!ready || server.getTickCount() % 20 != 0) return;
+        recoverAnimations(System.currentTimeMillis(), server);
+    }
+
+    static synchronized void recoverAnimations(long now, MinecraftServer server) {
+        for (PendingOpen pending : List.copyOf(state.pendingOpens.values())) {
+            if (!pending.interactive) continue;
+            if (pending.cancelRequested || pending.awaitingAnimation && now >= pending.animationExpiresAt) {
+                cancelPending(pending);
+            } else if (!pending.awaitingAnimation) {
+                ServerPlayer player = server == null ? null : server.getPlayerList().getPlayer(UUID.fromString(pending.playerId));
+                finishPending(pending, player);
+            }
+        }
+    }
+
     static synchronized OpenResult finishPending(PendingOpen pending, ServerPlayer online) {
         if (pending == null || pending.openId == null || pending.rewards == null || pending.rewards.isEmpty())
             return fail("", "", "crates.invalid_request");
+        if (pending.cancelRequested) return cancelPending(pending);
+        if (pending.awaitingAnimation) return reserveAnimation(pending);
         CrateOutputQuota.resetWindows(state, LotteryDayClock.today());
         UUID uuid;
         try { uuid = UUID.fromString(pending.playerId); }
