@@ -57,12 +57,10 @@ class MailComposeAsyncDispatchTest {
             profilesByUUID.put(profile.getId(), entry);
         }
 
-        @SuppressWarnings("unused")
         public Optional<GameProfile> get(String name) {
             throw new AssertionError("Blocking GameProfileCache.get(String) MUST NOT be called!");
         }
 
-        @SuppressWarnings("unused")
         public Optional<GameProfile> get(UUID id) {
             throw new AssertionError("GameProfileCache.get(UUID) MUST NOT be called!");
         }

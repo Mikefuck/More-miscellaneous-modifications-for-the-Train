@@ -105,8 +105,8 @@ public final class GameRestart {
                     current.info().startInstant().orElseThrow().toEpochMilli(), 90_000, directory, command);
             CompletableFuture<Boolean> ready = new CompletableFuture<>();
             Thread.startVirtualThread(() -> {
-                try {
-                    ready.complete(new DataInputStream(process.getInputStream()).readBoolean());
+                try (DataInputStream in = new DataInputStream(process.getInputStream())) {
+                    ready.complete(in.readBoolean());
                 } catch (IOException e) {
                     ready.completeExceptionally(e);
                 }

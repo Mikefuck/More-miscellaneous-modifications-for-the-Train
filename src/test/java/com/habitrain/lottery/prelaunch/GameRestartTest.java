@@ -56,7 +56,9 @@ class GameRestartTest {
             assertTrue(exited.waitFor(5, TimeUnit.SECONDS));
             try (DataOutputStream plan = new DataOutputStream(helper.getOutputStream())) {
                 RestartHelper.writePlan(plan, exited.pid(), 0, 1_000, root, probeCommand("fail", "sample-secret-token"));
-                assertTrue(new DataInputStream(helper.getInputStream()).readBoolean());
+                try (DataInputStream ack = new DataInputStream(helper.getInputStream())) {
+                    assertTrue(ack.readBoolean());
+                }
                 plan.writeByte(1);
             }
             assertTrue(helper.waitFor(10, TimeUnit.SECONDS));
@@ -94,12 +96,16 @@ class GameRestartTest {
         Process old = probe("wait");
         Process helper = null;
         try {
-            assertEquals("READY", new BufferedReader(new InputStreamReader(old.getInputStream())).readLine());
+            try (BufferedReader ready = new BufferedReader(new InputStreamReader(old.getInputStream()))) {
+                assertEquals("READY", ready.readLine());
+            }
             helper = helper();
             try (DataOutputStream plan = new DataOutputStream(helper.getOutputStream())) {
                 RestartHelper.writePlan(plan, old.pid(), old.info().startInstant().orElseThrow().toEpochMilli(),
                         10_000, root, probeCommand("write", marker.toString()));
-                assertTrue(new DataInputStream(helper.getInputStream()).readBoolean());
+                try (DataInputStream ack = new DataInputStream(helper.getInputStream())) {
+                    assertTrue(ack.readBoolean());
+                }
                 plan.writeByte(1);
                 plan.flush();
                 Thread.sleep(150);
@@ -127,7 +133,9 @@ class GameRestartTest {
                 RestartHelper.writePlan(plan, ProcessHandle.current().pid(),
                         ProcessHandle.current().info().startInstant().orElseThrow().toEpochMilli(),
                         1_000, root, probeCommand("write", marker.toString()));
-                assertTrue(new DataInputStream(helper.getInputStream()).readBoolean());
+                try (DataInputStream ack = new DataInputStream(helper.getInputStream())) {
+                    assertTrue(ack.readBoolean());
+                }
             }
             assertTrue(helper.waitFor(10, TimeUnit.SECONDS));
             assertFalse(Files.exists(marker));
@@ -145,7 +153,9 @@ class GameRestartTest {
                 RestartHelper.writePlan(plan, ProcessHandle.current().pid(),
                         ProcessHandle.current().info().startInstant().orElseThrow().toEpochMilli(),
                         100, root, probeCommand("write", marker.toString()));
-                assertTrue(new DataInputStream(helper.getInputStream()).readBoolean());
+                try (DataInputStream ack = new DataInputStream(helper.getInputStream())) {
+                    assertTrue(ack.readBoolean());
+                }
                 plan.writeByte(1);
             }
             assertTrue(helper.waitFor(10, TimeUnit.SECONDS));

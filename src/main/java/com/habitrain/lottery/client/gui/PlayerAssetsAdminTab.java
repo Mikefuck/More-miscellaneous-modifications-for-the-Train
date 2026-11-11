@@ -59,7 +59,6 @@ final class PlayerAssetsAdminTab {
 
     private boolean topBarBuilt;
     private int cachedY;
-    private int cachedH;
 
     private EditBox bulkDeltaBox;
     private EditBox playerSearchBox;
@@ -184,9 +183,8 @@ final class PlayerAssetsAdminTab {
         return PlayerAssetFilter.filter(players, q);
     }
 
-    void build(int y, int h) {
+    void build(int y) {
         this.cachedY = y;
-        this.cachedH = h;
         topBarWidgets.clear();
         dynamicWidgets.clear();
         cardEditWidgets.clear();

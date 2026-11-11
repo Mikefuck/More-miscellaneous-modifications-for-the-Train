@@ -354,7 +354,7 @@ public class LotteryConfigRootScreen extends Screen {
         int contentY = pageTop();
         int contentH = Math.max(ROW_H, pageBottom() - contentY);
         switch (selectedTab) {
-            case TAB_PLAYERS -> playerAssetsTab.build(contentY, contentH);
+            case TAB_PLAYERS -> playerAssetsTab.build(contentY);
             case TAB_TITLES -> titleAdminTab.build(contentY, contentH);
             case TAB_SKINS -> ConfigOverviewTabs.buildSkinsTab(this, minecraft, contentY);
             case TAB_CRATES -> ConfigOverviewTabs.buildCratesTab(this, minecraft, contentY);

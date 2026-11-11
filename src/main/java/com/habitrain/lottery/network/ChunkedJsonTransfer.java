@@ -205,7 +205,6 @@ public final class ChunkedJsonTransfer {
      * Authorizes, rate-limits (strictly on {@code chunkIndex == 0}), bounds, and reassembles
      * multi-chunk C2S admin saves on the server thread.
      */
-    @SuppressWarnings("unchecked")
     public static <M> GateResult<M> acceptAuthorizedC2S(
             UUID playerId,
             String channel,

@@ -47,7 +47,6 @@ import java.util.random.RandomGenerator;
 public final class DailyShopService {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final String FILE = "daily_shop.json";
-    private static final String TAG = "[商店]";
 
     private static volatile DailyShopConfig config = DailyShopConfig.defaults();
     private static boolean writable;

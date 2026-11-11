@@ -6,7 +6,9 @@ import io.wifi.starrailexpress.client.gui.screen.BackpackScreen;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.multiplayer.ClientPacketListener;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
@@ -21,6 +23,12 @@ import java.lang.reflect.Field;
  */
 @Mixin(Minecraft.class)
 public abstract class BackpackScreenMixin {
+    @Shadow
+    public Screen screen;
+
+    @Shadow
+    public abstract ClientPacketListener getConnection();
+
     @Unique
     private static Field habi$parentField;
     @Unique
@@ -31,11 +39,10 @@ public abstract class BackpackScreenMixin {
         if (!(screen instanceof BackpackScreen upstream)) {
             return screen;
         }
-        Minecraft self = (Minecraft) (Object) this;
-        if (self.getConnection() == null || !ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
+        if (this.getConnection() == null || !ClientPlayNetworking.canSend(CardUseRequestC2S.TYPE)) {
             return screen;
         }
-        Screen parent = habi$extractParent(upstream, self.screen);
+        Screen parent = habi$extractParent(upstream, this.screen);
         int depth = 0;
         while (parent instanceof BackpackScreen nested && depth++ < 8) {
             parent = habi$extractParent(nested, null);

@@ -1,7 +1,6 @@
 package com.habitrain.lottery.api.daily;
 
 import com.habitrain.lottery.api.player.ApiGuards;
-import com.habitrain.lottery.grant.LoginRewardService;
 import com.habitrain.lottery.network.LotteryNetwork;
 import com.habitrain.lottery.storage.PlayerLotteryData;
 import com.habitrain.lottery.storage.PlayerLotteryStore;
