@@ -52,6 +52,8 @@ public final class HabiLotteryMod implements ModInitializer {
         com.habitrain.lottery.skin.SkinNetwork.register();
         com.habitrain.lottery.skin.BackSkinNetwork.register();
         LotteryNetwork.registerServer();
+        com.habitrain.lottery.record.MatchDetailRecorder.register();
+        com.habitrain.lottery.network.MatchRecordNetwork.register();
         com.habitrain.lottery.network.SelfSelectAdminNetwork.register();
         com.habitrain.lottery.network.MailboxPages.register();
         com.habitrain.lottery.network.CrateNetwork.register();
@@ -144,6 +146,7 @@ public final class HabiLotteryMod implements ModInitializer {
                     LoginRewardService.resetObservedDayUtc();
                     com.habitrain.lottery.time.LotteryDayClock.resetAll();
                     WorldLotteryPaths.reset();
+                    com.habitrain.lottery.record.MatchDetailRecorder.reset();
                     server = null;
                 });
             }

@@ -10,7 +10,8 @@
         "LoginCalendarBlockClientMixin",
         "IndependentSkinRendererMixin",
         "SkinScreenTakeoverMixin",
-        "WarehouseHoldKeyMixin"
+        "WarehouseHoldKeyMixin",
+        "MatchRecordsScreenMixin"
     ],
     "injectors": {
         "defaultRequire": 1

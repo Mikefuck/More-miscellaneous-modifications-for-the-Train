@@ -24,6 +24,7 @@ public final class HabiLotteryClient implements ClientModInitializer {
         DailyTaskAdminClient.register();
         SelfSelectAdminClient.register();
         DailyShopClient.register();
+        com.habitrain.lottery.client.record.MatchRecordClient.register();
         ResourceManagerHelper.get(PackType.CLIENT_RESOURCES).registerReloadListener(new SimpleSynchronousResourceReloadListener() {
             private final ResourceLocation id = ResourceLocation.fromNamespaceAndPath("habitrain_lottery", "warehouse_art_cache");
 
